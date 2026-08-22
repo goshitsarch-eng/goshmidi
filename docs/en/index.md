@@ -2,10 +2,9 @@
 
 ## Introduction
 
-This application is a multiplatform MIDI file player for Linux, Windows and 
-macOS. It reads .MID (Standard MIDI Files), .KAR (Karaoke), and .WRK (Cakewalk) 
-file formats, and outputs MIDI events to hardware MIDI ports and also software 
-synths.
+This application is a MIDI file player for Linux. It reads .MID (Standard MIDI Files), .KAR (Karaoke), .RMI (RIFF RMID), and .WRK (Cakewalk) file formats, and outputs MIDI events to ALSA sequencer ports and FluidSynth.
+
+The user interface is built with GTK4 and libadwaita. Playlists are shown in a sidebar and can be saved as `.lst` files (one path per line).
 
 [Drumstick](https://drumstick.sourceforge.io) is a set of GPLv3 
 licensed C++/Qt libraries for MIDI applications. The project includes several 

@@ -9,10 +9,6 @@ on:
 
 env:
   BUILD_TYPE: RelWithDebInfo
-  DRUMSTICKNAME: DrumstickV2
-  DRUMSTICK_LOCATION: ${{github.workspace}}/DrumstickV2
-  UCHARDETNAME: Uchardet008
-  UCHARDET_LOCATION: ${{github.workspace}}/Uchardet008
 
 jobs:
   build:
@@ -21,43 +17,20 @@ jobs:
     steps:
     - uses: actions/checkout@v6
 
-    - uses: dawidd6/action-download-artifact@v21
-      with:
-        name: ${{env.DRUMSTICKNAME}}
-        github_token: ${{secrets.GH_PAT}}
-        repo: pedrolcl/drumstick
-        workflow: cmake.yml
-        allow_forks: false
-
-    - name: Extract downloaded files
-      run: tar xvf ${{env.DRUMSTICKNAME}}.tar
-
-    - uses: dawidd6/action-download-artifact@v21
-      with:
-        name: ${{env.UCHARDETNAME}}
-        github_token: ${{secrets.GH_PAT}}
-        repo: pedrolcl/uchardet
-        workflow: linux-build.yml
-        allow_forks: false
-
-    - name: Extract downloaded files
-      run: tar xvf ${{env.UCHARDETNAME}}.tar
-
-    - name: Install Qt
-      uses: jurplel/install-qt-action@v4
-      with:
-        arch: linux_gcc_64
-        version: '6.10.*'
-        modules: qt5compat
-
     - name: Dependencies
-      run: sudo apt-get update && sudo apt-get install -yq pkg-config libasound2-dev
+      run: sudo apt-get update && sudo apt-get install -yq
+        cmake g++ pkg-config
+        libgtk-4-dev libadwaita-1-dev
+        libasound2-dev libfluidsynth-dev libuchardet-dev
 
     - name: Configure CMake
       run: cmake -B ${{github.workspace}}/build
         -DBUILD_DOCS=OFF
+        -DBUILD_TESTING=ON
         -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}}
-        -DCMAKE_PREFIX_PATH:STRING="${{env.DRUMSTICK_LOCATION}};${{env.UCHARDET_LOCATION}}"
 
     - name: Build
       run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}}
+
+    - name: Test
+      run: ctest --test-dir ${{github.workspace}}/build --output-on-failure

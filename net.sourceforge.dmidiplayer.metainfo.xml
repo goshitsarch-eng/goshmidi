@@ -7,13 +7,14 @@
     <metadata_license>CC0-1.0</metadata_license>
     <project_license>GPL-3.0+</project_license>
     <description>
-        <p>Multiplatform MIDI File Player for Linux, Windows and macOS with advanced features:</p>
+        <p>MIDI File Player with a GTK4/libadwaita interface and advanced features:</p>
         <ul>
-            <li>MIDI Output to hardware MIDI ports, or any other Drumstick backend like soft-synths</li>
+            <li>MIDI Output to ALSA ports or FluidSynth</li>
             <li>Transpose song tonality between -12 and +12 semitones</li>
             <li>Change MIDI volume level (using MIDI CC7)</li>
             <li>Scale song speed between half and double tempo</li>
-            <li>Piano Players, MIDI Channels, Rhythm, and Lyrics (Karaoke) views</li>
+            <li>Piano, MIDI Channels, Rhythm, and Lyrics (Karaoke) views</li>
+            <li>First-class playlists with shuffle, repeat, and auto-advance</li>
             <li>Supports .MID (Standard MIDI files), .RMI (RIFF RMID), .KAR (MIDI Karaoke), and .WRK (Cakewalk) file formats</li>
         </ul>
     </description>

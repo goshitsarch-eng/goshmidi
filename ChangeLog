@@ -1,3 +1,8 @@
+2026-08-22
+    * Rewrite the application with GTK4 and libadwaita
+    * First-class playlist sidebar (load/save .lst, shuffle, repeat, auto-advance)
+    * MIDI engine without Qt/Drumstick: SMF/KAR/RMI/WRK, ALSA and FluidSynth output
+
 2024-12-30
     * Release 1.7.5
 
