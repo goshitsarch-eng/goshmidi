@@ -11,7 +11,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
-#include <gdk/gdk.h>
+#include <pango/pangocairo.h>
 #include <glib/gi18n.h>
 #include <sstream>
 
@@ -63,6 +63,10 @@ bool noteIsBlack(int midi)
     int n = midi % 12;
     return n == 1 || n == 3 || n == 6 || n == 8 || n == 10;
 }
+
+struct PrintData {
+    char* text{};
+};
 
 } // namespace
 
@@ -1525,8 +1529,13 @@ void MainWindow::buildUi(AdwApplication* app)
     gtk_box_append(GTK_BOX(lbar), GTK_WIDGET(m_lyricCodec));
     GtkWidget* copyBtn = gtk_button_new_from_icon_name("edit-copy-symbolic");
     GtkWidget* saveBtn = gtk_button_new_from_icon_name("document-save-symbolic");
+    GtkWidget* printBtn = gtk_button_new_from_icon_name("document-print-symbolic");
+    gtk_widget_set_tooltip_text(copyBtn, "Copy lyrics");
+    gtk_widget_set_tooltip_text(saveBtn, "Save lyrics");
+    gtk_widget_set_tooltip_text(printBtn, "Print lyrics");
     gtk_box_append(GTK_BOX(lbar), copyBtn);
     gtk_box_append(GTK_BOX(lbar), saveBtn);
+    gtk_box_append(GTK_BOX(lbar), printBtn);
     gtk_box_append(GTK_BOX(lyricsPage), lbar);
     m_lyricsView = GTK_TEXT_VIEW(gtk_text_view_new());
     gtk_text_view_set_wrap_mode(m_lyricsView, GTK_WRAP_WORD_CHAR);
@@ -1590,6 +1599,32 @@ void MainWindow::buildUi(AdwApplication* app)
                                                   g_object_unref(f);
                                               },
                                               self);
+                     }),
+                     this);
+    g_signal_connect(printBtn, "clicked", (GCallback)(+[](GtkButton*, gpointer d) {
+                         auto* self = static_cast<MainWindow*>(d);
+                         GtkTextIter a, b;
+                         auto* buf = gtk_text_view_get_buffer(self->m_lyricsView);
+                         gtk_text_buffer_get_bounds(buf, &a, &b);
+                         char* t = gtk_text_buffer_get_text(buf, &a, &b, false);
+                         GtkPrintOperation* op = gtk_print_operation_new();
+                         gtk_print_operation_set_n_pages(op, 1);
+                         auto* pd = new PrintData{t};
+                         g_signal_connect(op, "draw-page", (GCallback)(+[](GtkPrintOperation*, GtkPrintContext* ctx, gint, gpointer data) {
+                                              auto* pd = static_cast<PrintData*>(data);
+                                              cairo_t* cr = gtk_print_context_get_cairo_context(ctx);
+                                              PangoLayout* layout = gtk_print_context_create_pango_layout(ctx);
+                                              pango_layout_set_text(layout, pd->text ? pd->text : "", -1);
+                                              pango_layout_set_width(layout,
+                                                  pango_units_from_double(gtk_print_context_get_width(ctx)));
+                                              pango_cairo_show_layout(cr, layout);
+                                              g_object_unref(layout);
+                                          }), pd);
+                         gtk_print_operation_run(op, GTK_PRINT_OPERATION_ACTION_PRINT_DIALOG,
+                                                 GTK_WINDOW(self->m_window), nullptr);
+                         g_object_unref(op);
+                         g_free(pd->text);
+                         delete pd;
                      }),
                      this);
 
