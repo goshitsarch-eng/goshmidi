@@ -1,320 +1,108 @@
 #[==========================================================================[
-Drumstick MIDI File Player Multiplatform Program
-Copyright (C) 2006-2024 Pedro Lopez-Cabanillas <plcl@users.sourceforge.net>
-
-This program is free software; you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation; either version 3 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program. If not, see <http://www.gnu.org/licenses/>.
+Drumstick MIDI File Player — GTK4/libadwaita
+Copyright (C) 2006-2026 Pedro Lopez-Cabanillas <plcl@users.sourceforge.net>
 #]==========================================================================]
 
 cmake_minimum_required(VERSION 3.16)
 
-project ( dmidiplayer
+project(dmidiplayer
     VERSION 1.7.5
-    LANGUAGES CXX
-    DESCRIPTION "Drumstick MIDI File Player Multiplatform Program"
+    LANGUAGES C CXX
+    DESCRIPTION "Drumstick MIDI File Player"
     HOMEPAGE_URL "https://sourceforge.net/p/dmidiplayer/"
 )
 
-set(PROJECT_RELEASE_DATE "December 30, 2024")
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
-set(CMAKE_AUTOMOC ON)
-set(CMAKE_AUTORCC ON)
-set(CMAKE_AUTOUIC ON)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
-
-option(BUILD_DOCS "Process Markdown sources of man pages and help files" ON)
-option(EMBED_TRANSLATIONS "Embed translations instead of installing" OFF)
-option(USE_QT5 "Choose to build with Qt5 instead of Qt6" OFF)
-
-# CMAKE_SYSTEM_PROCESSOR is broken on Windows with MSVC
-# cmake bug https://gitlab.kitware.com/cmake/cmake/-/issues/15170 still open in 2024/12
-if(MSVC)
-    string(TOLOWER ${MSVC_CXX_ARCHITECTURE_ID} CMAKE_SYSTEM_PROCESSOR)
-endif()
-
+include(GNUInstallDirs)
 include(SCMRevision)
 
-if (USE_QT5)
-    find_package( QT NAMES Qt5 REQUIRED)
-else()
-    find_package( QT NAMES Qt6 REQUIRED)
-endif()
+option(BUILD_DOCS "Process Markdown sources of man pages and help files" OFF)
+option(BUILD_TESTING "Build sequence and playlist tests" ON)
 
-if(QT_VERSION VERSION_LESS 6.0.0)
-    find_package ( Qt5 5.15 COMPONENTS Gui Widgets PrintSupport LinguistTools REQUIRED )
-else()
-    find_package ( Qt6 6.2 COMPONENTS Gui Widgets PrintSupport LinguistTools Core5Compat REQUIRED )
-endif()
+find_package(PkgConfig REQUIRED)
+find_package(Threads REQUIRED)
+pkg_check_modules(GTK4 REQUIRED IMPORTED_TARGET gtk4)
+pkg_check_modules(ADWAITA REQUIRED IMPORTED_TARGET libadwaita-1)
+pkg_check_modules(ALSA REQUIRED IMPORTED_TARGET alsa)
+pkg_check_modules(FLUIDSYNTH REQUIRED IMPORTED_TARGET fluidsynth)
+pkg_check_modules(UCHARDET REQUIRED IMPORTED_TARGET uchardet)
+pkg_check_modules(GLIB REQUIRED IMPORTED_TARGET glib-2.0)
 
-find_package ( Drumstick 2.10 COMPONENTS File RT Widgets REQUIRED )
-find_package ( uchardet 0.0.8 COMPONENTS libuchardet REQUIRED )
+find_program(GLIB_COMPILE_RESOURCES glib-compile-resources REQUIRED)
 
-SET(SOURCES
-    channels.cpp
-    channels.h
-    connections.cpp
-    connections.h
-    connections.ui
-    events.cpp
-    events.h
-    guiplayer.cpp
-    guiplayer.h
-    guiplayer.qrc
-    guiplayer.ui
-    helpwindow.cpp
-    helpwindow.h
-    docs/help.qrc
-    framelesswindow.cpp
-    framelesswindow.h
-    iconutils.cpp
-    iconutils.h
-    instrumentset.cpp
-    instrumentset.h
-    loopdialog.cpp
-    loopdialog.h
-    loopdialog.ui
-    lyrics.cpp
-    lyrics.h
-    pianola.cpp
-    pianola.h
-    playlist.cpp
-    playlist.h
-    playlist.ui
-    playerabout.cpp
-    playerabout.h
-    playerabout.ui
-    playermain.cpp
-    prefsdialog.cpp
-    prefsdialog.h
-    prefsdialog.ui
-    recentfileshelper.cpp
-    recentfileshelper.h
-    rhythmview.cpp
-    rhythmview.h
-    seqplayer.cpp
-    seqplayer.h
-    sequence.cpp
-    sequence.h
-    settings.cpp
-    settings.h
-    toolbareditdialog.cpp
-    toolbareditdialog.h
-    toolbareditdialog.ui
-    vumeter.cpp
-    vumeter.h
+set(GRESOURCE_XML ${CMAKE_SOURCE_DIR}/data/dmidiplayer.gresource.xml)
+set(GRESOURCE_C ${CMAKE_CURRENT_BINARY_DIR}/dmidiplayer-resources.c)
+add_custom_command(
+    OUTPUT ${GRESOURCE_C}
+    COMMAND ${GLIB_COMPILE_RESOURCES}
+            --target=${GRESOURCE_C}
+            --sourcedir=${CMAKE_SOURCE_DIR}/data
+            --generate-source
+            ${GRESOURCE_XML}
+    DEPENDS ${GRESOURCE_XML} ${CMAKE_SOURCE_DIR}/data/style.css
+    VERBATIM
 )
 
-if (WIN32)
-    include(CheckCXXSourceCompiles)
-    check_cxx_source_compiles("#include <Windows.h>
-        int main() { EnumWindows([](HWND, LPARAM) -> BOOL { return true; }, 0); return 0; }"
-        COMPILER_SUPPORTED)
-    if (NOT COMPILER_SUPPORTED)
-        message(FATAL_ERROR "Sorry, your compiler is not supported: ${CMAKE_CXX_COMPILER}")
-    endif()
-    list(APPEND SOURCES winsnap.cpp winsnap.h)
-endif()
-
-set ( TRANSLATIONS
-   translations/${PROJECT_NAME}_cs.ts
-   translations/${PROJECT_NAME}_de.ts
-   translations/${PROJECT_NAME}_es.ts
-   translations/${PROJECT_NAME}_fr.ts
-   translations/${PROJECT_NAME}_gl.ts
-   translations/${PROJECT_NAME}_it.ts
-   translations/${PROJECT_NAME}_ka.ts
-   translations/${PROJECT_NAME}_ru.ts
+set(CORE_SOURCES
+    src/midi/events.cpp
+    src/midi/sequence.cpp
+    src/midi/output.cpp
+    src/midi/player.cpp
+    src/app/settings.cpp
+    src/app/playlist.cpp
 )
 
-if (QT_VERSION VERSION_LESS 5.15.0)
-    qt5_add_translation (QM_FILES ${TRANSLATIONS})
-else()
-    qt_add_translation (QM_FILES ${TRANSLATIONS})
-endif()
-add_custom_target (translations ALL DEPENDS ${QM_FILES})
-include(TranslationUtils)
+add_library(dmidi-core STATIC ${CORE_SOURCES})
+target_include_directories(dmidi-core PUBLIC ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(dmidi-core PUBLIC
+    PkgConfig::GLIB
+    PkgConfig::ALSA
+    PkgConfig::FLUIDSYNTH
+    PkgConfig::UCHARDET
+    Threads::Threads
+)
 
-get_target_property(DRUMSTICK_LOCATION Drumstick::Widgets LOCATION)
-get_filename_component(DRUMSTICK_PREFIX ${DRUMSTICK_LOCATION} DIRECTORY)
-get_filename_component(DRUMSTICK_PREFIX ${DRUMSTICK_PREFIX} DIRECTORY)
-
-get_target_property(UCHARDET_LOCATION uchardet::libuchardet LOCATION)
-get_filename_component(UCHARDET_PREFIX ${UCHARDET_LOCATION} DIRECTORY)
-get_filename_component(UCHARDET_PREFIX ${UCHARDET_PREFIX} DIRECTORY)
-
-if (EXISTS ${DRUMSTICK_PREFIX}/share/drumstick/)
-    file(GLOB WIDGETS_TRANS "${DRUMSTICK_PREFIX}/share/drumstick/drumstick-widgets_*.qm")
-elseif (EXISTS ${DRUMSTICK_PREFIX}/library/widgets/)
-    file(GLOB WIDGETS_TRANS "${DRUMSTICK_PREFIX}/library/widgets/drumstick-widgets_*.qm")
-endif()
-
-if (EMBED_TRANSLATIONS)
-    file(COPY ${WIDGETS_TRANS} DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
-    add_app_translations_resource(APP_RES ${QM_FILES} ${WIDGETS_TRANS})
-    add_qt_translations_resource(QT_RES cs de es fr gl it ka ru)
-    list(APPEND SOURCES ${APP_RES} ${QT_RES})
-else()
-    if (APPLE)
-        set_source_files_properties (${WIDGETS_TRANS} PROPERTIES
-            MACOSX_PACKAGE_LOCATION Resources )
-        list (APPEND SOURCES ${WIDGETS_TRANS})
-    endif()
+add_executable(dmidiplayer
+    src/main.cpp
+    src/ui/window.cpp
+    ${GRESOURCE_C}
+)
+target_link_libraries(dmidiplayer PRIVATE
+    dmidi-core
+    PkgConfig::GTK4
+    PkgConfig::ADWAITA
+)
+target_compile_definitions(dmidiplayer PRIVATE
+    VERSION="${PROJECT_VERSION}"
+    DATADIR="${CMAKE_INSTALL_FULL_DATADIR}"
+)
+if(DEFINED PROJECT_WC_REVISION)
+    target_compile_definitions(dmidiplayer PRIVATE REVISION=${PROJECT_WC_REVISION})
 endif()
 
-if (WIN32)
-    include (InstallRequiredSystemLibraries)
-    install (FILES ${CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS}
-             DESTINATION .)
-    set(FLUIDSYNTH_PREFIX $ENV{FLUIDSYNTH})
-    configure_file(${CMAKE_CURRENT_SOURCE_DIR}/${PROJECT_NAME}_msvc.nsi.in
-        ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}.nsi IMMEDIATE @ONLY)
-    configure_file(${CMAKE_CURRENT_SOURCE_DIR}/${PROJECT_NAME}.rc.in
-        ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}.rc IMMEDIATE @ONLY)
-    set (RC_FILE ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}.rc)
-    set (RES_FILE ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}.res.obj)
-    find_program (WINDRES_EXECUTABLE NAMES windres mingw32-windres i686-mingw32-windres)
-    if (MINGW)
-        exec_program (${WINDRES_EXECUTABLE}
-            ARGS "-i ${RC_FILE} -o ${RES_FILE} --include-dir=${CMAKE_CURRENT_SOURCE_DIR}/icons")
-        list (APPEND SOURCES ${RES_FILE})
-    else ()
-        list (APPEND SOURCES ${RC_FILE})
-    endif ()
-endif ()
-
-include(GNUInstallDirs)
-add_subdirectory(docs)
 add_subdirectory(examples)
+add_subdirectory(icons)
 
-if (APPLE)
-    set_source_files_properties (${EXAMPLES} PROPERTIES
-        MACOSX_PACKAGE_LOCATION Resources )
-    list (APPEND SOURCES ${EXAMPLES})
-    set (ICON_FILE ${CMAKE_CURRENT_SOURCE_DIR}/icons/${PROJECT_NAME}.icns)
-    list (APPEND SOURCES ${ICON_FILE} ${QM_FILES})
-    set (MACOSX_BUNDLE_ICON_FILE ${PROJECT_NAME}.icns)
-    set_source_files_properties (${ICON_FILE} PROPERTIES
-        MACOSX_PACKAGE_LOCATION Resources)
-    if (NOT EMBED_TRANSLATIONS)
-        set_source_files_properties (${QM_FILES} PROPERTIES
-            MACOSX_PACKAGE_LOCATION Resources)
-        add_qt_translations(QT_TRANSLATIONS cs de es fr gl it ru)
-        set_source_files_properties (${QT_TRANSLATIONS} PROPERTIES
-            MACOSX_PACKAGE_LOCATION translations)
-        list (APPEND SOURCES ${QT_TRANSLATIONS})
-    endif ()
-endif ()
-
-message (STATUS "Drumstick MIDI File Player v${PROJECT_VERSION}
-     install prefix: ${CMAKE_INSTALL_PREFIX}
-     Build configuration: ${CMAKE_BUILD_TYPE}
-     Operating System: ${CMAKE_SYSTEM_NAME}
-     Processor: ${CMAKE_SYSTEM_PROCESSOR}
-     Qt Version: ${QT_VERSION}
-     Drumstick Version: ${Drumstick_VERSION}
-     Uchardet Version: ${uchardet_VERSION}"
-)
-
-add_executable ( ${PROJECT_NAME} ${SOURCES} )
-if (BUILD_DOCS)
-    add_dependencies ( ${PROJECT_NAME} update_helpfiles )
+if(BUILD_DOCS)
+    add_subdirectory(docs)
 endif()
 
-target_link_libraries ( ${PROJECT_NAME} PRIVATE
-    Qt${QT_VERSION_MAJOR}::Widgets
-    Qt${QT_VERSION_MAJOR}::PrintSupport
-    Drumstick::File
-    Drumstick::RT
-    Drumstick::Widgets
-    uchardet::libuchardet
-)
-
-if (QT_VERSION VERSION_GREATER_EQUAL 6.0.0)
-    target_link_libraries( ${PROJECT_NAME} PRIVATE
-        Qt6::Core5Compat
-    )
-endif()
-
-if (WIN32)
-    set_target_properties ( ${PROJECT_NAME} PROPERTIES WIN32_EXECUTABLE true )
-    target_link_libraries ( ${PROJECT_NAME} PRIVATE winmm dwmapi )
-endif ()
-
-if (APPLE)
-    set_target_properties ( ${PROJECT_NAME} PROPERTIES
-    MACOSX_BUNDLE true
-    MACOSX_BUNDLE_GUI_IDENTIFIER "net.sourceforge.${PROJECT_NAME}"
-    MACOSX_BUNDLE_BUNDLE_NAME "${PROJECT_NAME}"
-    MACOSX_BUNDLE_DISPLAY_NAME "${PROJECT_NAME}"
-    MACOSX_BUNDLE_INFO_STRING "${PROJECT_DESCRIPTION}"
-    MACOSX_BUNDLE_LONG_VERSION_STRING "${PROJECT_VERSION}"
-    MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
-    MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
-    MACOSX_BUNDLE_COPYRIGHT "Copyright © 2021-2024, Pedro López-Cabanillas &lt;plcl@users.sf.net&gt;")
-    target_link_libraries(${PROJECT_NAME} PRIVATE "-framework CoreFoundation -framework Cocoa")
-endif ()
-
-target_compile_definitions( ${PROJECT_NAME} PRIVATE
-    VERSION=${PROJECT_VERSION}
-    $<$<BOOL:${EMBED_TRANSLATIONS}>:TRANSLATIONS_EMBEDDED>
-)
-if (DEFINED PROJECT_WC_REVISION)
-    target_compile_definitions( ${PROJECT_NAME} PRIVATE
-        REVISION=${PROJECT_WC_REVISION} )
+if(BUILD_TESTING)
+    enable_testing()
+    add_executable(dmidiplayer-test tests/test_sequence.cpp)
+    target_link_libraries(dmidiplayer-test PRIVATE dmidi-core)
+    add_test(NAME sequence_playlist
+             COMMAND dmidiplayer-test ${CMAKE_SOURCE_DIR}/examples)
 endif()
 
 if(UNIX AND NOT APPLE)
-    add_subdirectory(icons)
-    install(TARGETS ${PROJECT_NAME}
-        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-    install(FILES ${QM_FILES}
-        DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/${PROJECT_NAME})
-    install(FILES "net.sourceforge.dmidiplayer.desktop"
-        DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/applications)
-    install(FILES "net.sourceforge.dmidiplayer.metainfo.xml"
-        DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/metainfo)
-
-    # uninstall target
-    if(NOT TARGET uninstall)
-      configure_file(
-        "${CMAKE_SOURCE_DIR}/cmake/cmake_uninstall.cmake.in"
-        "${CMAKE_CURRENT_BINARY_DIR}/cmake_uninstall.cmake"
-        IMMEDIATE @ONLY)
-      add_custom_target ( uninstall
-        COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_BINARY_DIR}/cmake_uninstall.cmake)
-    endif()
-
-    find_package(Git)
-    if (Git_FOUND)
-        find_program(GZIP gzip)
-        find_program(BZIP2 bzip2)
-        if ((EXISTS ${GZIP}) AND (EXISTS ${BZIP2}))
-            set(ARCHNAME ${PROJECT_NAME}-${PROJECT_VERSION})
-            add_custom_target ( tarballs
-                COMMAND ${GIT_EXECUTABLE} archive --format=zip --prefix=${ARCHNAME}/ --output ${CMAKE_BINARY_DIR}/${ARCHNAME}.zip master
-                COMMAND ${GIT_EXECUTABLE} archive --format=tar --prefix=${ARCHNAME}/ master | ${GZIP} > ${CMAKE_BINARY_DIR}/${ARCHNAME}.tar.gz
-                COMMAND ${GIT_EXECUTABLE} archive --format=tar --prefix=${ARCHNAME}/ master | ${BZIP2} > ${CMAKE_BINARY_DIR}/${ARCHNAME}.tar.bz2
-                WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-                COMMENT "Creating tarballs..."
-                VERBATIM )
-        else()
-            message(WARNING "Missing utilities for tarball creation")
-        endif()
-    endif()
-
-else()
-    include(DeploymentUtils)
+    install(TARGETS dmidiplayer RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    install(FILES net.sourceforge.dmidiplayer.desktop
+            DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/applications)
+    install(FILES net.sourceforge.dmidiplayer.metainfo.xml
+            DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/metainfo)
 endif()

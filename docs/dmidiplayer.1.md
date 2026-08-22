@@ -36,11 +36,11 @@ and outputs MIDI events to hardware MIDI ports and also software synths.
   
 -d, --driver _driver_
 
-:   Drumstick::RT MIDI Out Driver.
+:   MIDI Out backend: `ALSA`, `FluidSynth`, or `Dummy`.
 
 -c, --connection _connection_
 
-:   Drumstick::RT MIDI Out Connection.
+:   MIDI Out connection (ALSA `client:port`, or `fluidsynth`).
 
 ## Standard Options
 
