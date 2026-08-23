@@ -1,4 +1,7 @@
 2026-08-23
+    * Display name is Gosh Midi Player; binary and settings paths stay dmidiplayer
+    * About dialog credits original dmidiplayer (Drumstick MIDI File Player)
+    * Fix crash when loading a song (shared channel patch dropdown model)
     * ALSA output lists MT-32 / GS / XG ports and sends to the chosen hardware synth
     * Instrument maps and SysEx resets for GM, GS (SC-55), XG, and MT-32
     * Companion .syx files are sent before playback (MT-32 dumps)

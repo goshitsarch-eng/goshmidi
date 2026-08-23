@@ -1,18 +1,27 @@
-Drumstick MIDI File Player (GTK4 / libadwaita)
-==============================================
+Gosh Midi Player
+================
 
-[![Build on Linux](https://github.com/pedrolcl/dmidiplayer/actions/workflows/linux-build.yml/badge.svg)](https://github.com/pedrolcl/dmidiplayer/actions/workflows/linux-build.yml)
+A MIDI file player for Linux with a GTK4 and libadwaita interface. This is a
+display-name fork of **[dmidiplayer](https://sourceforge.net/p/dmidiplayer/)**
+(Drumstick MIDI File Player) by Pedro López-Cabanillas. The command name,
+settings paths, and application ID are unchanged (`dmidiplayer`,
+`~/.config/dmidiplayer`, `~/.dmidiplayer`).
 
-A MIDI file player for Linux with a GTK4 and libadwaita interface. It reads
-**.MID** / **.MIDI** (Standard MIDI Files), **.KAR** (Karaoke), **.RMI** (RIFF RMID),
-and **.WRK** (Cakewalk) files, and sends MIDI events to ALSA sequencer ports or to
-an embedded FluidSynth backend.
+It reads **.MID** / **.MIDI** (Standard MIDI Files), **.KAR** (Karaoke),
+**.RMI** (RIFF RMID), and **.WRK** (Cakewalk) files, and sends MIDI events to
+ALSA sequencer ports or to an embedded FluidSynth backend.
 
-This is a full rewrite of the former Qt/Drumstick UI. Playback features are
-kept at parity, and **playlists are a first-class sidebar** instead of a
-separate dialog.
+This GTK4 rewrite keeps playback at parity with the original Qt UI, and
+**playlists are a first-class sidebar**.
 
-![Screenshot](screenshot.png "all windows")
+![Screenshot of the GTK4 Gosh Midi Player window with playlist, lyrics, and playback controls](screenshot.png "Gosh Midi Player")
+
+Original project
+----------------
+
+* Homepage: [dmidiplayer.sourceforge.io](https://dmidiplayer.sourceforge.io/)
+* SourceForge: [sourceforge.net/p/dmidiplayer](https://sourceforge.net/p/dmidiplayer/)
+* GitHub (upstream): [pedrolcl/dmidiplayer](https://github.com/pedrolcl/dmidiplayer)
 
 Key features
 ------------

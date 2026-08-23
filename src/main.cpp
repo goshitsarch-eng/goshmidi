@@ -38,7 +38,8 @@ int main(int argc, char** argv)
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "-h" || a == "--help") {
-            std::cout << "dmidiplayer " << VERSION << "\n"
+            std::cout << "Gosh Midi Player (dmidiplayer) " << VERSION << "\n"
+                      << "Based on dmidiplayer (Drumstick MIDI File Player) by Pedro López-Cabanillas.\n"
                       << "Usage: dmidiplayer [options] [midi_files]\n"
                       << "  -h, --help                 Show help\n"
                       << "  -v, --version              Show version\n"
@@ -49,7 +50,8 @@ int main(int argc, char** argv)
             return 0;
         }
         if (a == "-v" || a == "--version") {
-            std::cout << VERSION << "\n";
+            std::cout << "Gosh Midi Player (dmidiplayer) " << VERSION << "\n"
+                      << "Based on dmidiplayer (Drumstick MIDI File Player) by Pedro López-Cabanillas.\n";
             return 0;
         }
         if (a == "-p" || a == "--portable") {
