@@ -27,11 +27,11 @@ const char* kHelpText =
     "Transpose with Pitch (-12..+12, percussion excluded). Tempo 50–200%. Volume 0–200% (CC7).\n\n"
     "Playlists are .lst text files with one path per line. Drag files onto the window to make a "
     "temporary playlist. Repeat can be off, current song, or whole playlist.\n\n"
-    "MIDI output: ALSA sequencer ports (your own synth: MT-32, SC-55, USB MIDI) or "
+    "MIDI output: ALSA sequencer ports (Munt/MT-32, Nuked SC-55, USB MIDI) or "
     "FluidSynth with a SoundFont you choose. Configure in MIDI Setup.\n\n"
-    "For Roland MT-32 / Munt and SC-55 (Sound Canvas): pick ALSA, the synth's port, "
-    "the matching instrument map, and MT-32 or GS reset. Companion .syx files next to "
-    "a MIDI file are sent automatically before playback.\n\n"
+    "Start Munt (mt32emu-qt) or Nuked-SC55 first so they appear as ALSA ports. "
+    "Then MIDI Setup → ALSA → pick MT-32:Standard or Virtual SC55. Companion .syx "
+    "files next to a MIDI file are sent automatically before playback.\n\n"
     "Song settings can be stored in ~/.dmidiplayer/<song>.cfg (encoding, pitch, tempo, volume, "
     "per-channel mute/solo/lock/patch/level).\n";
 
@@ -1036,7 +1036,7 @@ void MainWindow::showMidiSetup()
         if (!w->plist.empty())
             gtk_drop_down_set_selected(w->ports, sel);
         if (w->plist.empty())
-            gtk_label_set_text(w->status, "No destinations. Start Munt or attach the synth, then Refresh.");
+            gtk_label_set_text(w->status, "No destinations. Start mt32emu-qt (Munt) or Nuked-SC55, then Refresh.");
         else
             gtk_label_set_text(w->status, "");
         w->filling = false;

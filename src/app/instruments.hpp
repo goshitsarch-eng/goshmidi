@@ -132,11 +132,14 @@ inline std::pair<int, int> inferDeviceProfile(const std::string& label)
         return static_cast<char>(std::tolower(c));
     });
     auto has = [&](const char* s) { return lower.find(s) != std::string::npos; };
-    if (has("mt-32") || has("mt32") || has("munt") || has("cm-32") || has("cm32") || has("cm-64")
-        || has("cm64"))
+    // Munt's second port remaps GM onto the MT-32; keep GM names/reset there.
+    if (has("gm emulation") || has("gm-emulation"))
+        return {kInstrumentMapGm, 1};
+    if (has("mt-32") || has("mt32") || has("munt") || has("mt32emu") || has("cm-32") || has("cm32")
+        || has("cm-64") || has("cm64") || has("lapc"))
         return {kInstrumentMapMt32, 4}; // MT-32 reset
     if (has("sc-55") || has("sc55") || has("sc-88") || has("sc88") || has("sc-8850") || has("canvas")
-        || has("rt-55") || has("rt55") || has("nuked-sc"))
+        || has("rt-55") || has("rt55") || has("nuked") || has("virtual sc55") || has("virtual sc-55"))
         return {kInstrumentMapGs, 2}; // GS reset
     if (has("xg") || has("s-yxg") || has("mu50") || has("mu80") || has("mu100"))
         return {kInstrumentMapGm, 3};

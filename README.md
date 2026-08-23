@@ -51,9 +51,14 @@ playlist).
 
 For sound without an external synth, install a GM SoundFont (for example
 `fluid-soundfont-gm`) and select the **FluidSynth** backend in MIDI Setup.
-To use your own module (Roland MT-32 / Munt, SC-55 / Sound Canvas, USB MIDI):
+To use your own module (Roland MT-32 / [Munt](https://github.com/munt/munt),
+SC-55 / [Nuked-SC55](https://github.com/PanykSystem/Nuked-SC55-GUI-Float), USB MIDI):
 
-1. Start the synth or emulator so it appears as an ALSA sequencer port.
-2. Open **MIDI Setup**, choose **ALSA**, pick the port, and Apply.
-   Ports named like MT-32 or SC-55 select the matching instrument map and reset.
+1. Start the emulator so it appears as an ALSA sequencer port
+   (`mt32emu-qt` → `MT-32:Standard`; Nuked-SC55 → `Virtual SC55` / similar).
+2. Open **MIDI Setup**, choose **ALSA**, pick that port, and Apply.
+   Named ports select the matching instrument map and SysEx reset.
 3. Optionally send a companion `.syx` dump by placing it next to the `.mid` file.
+
+Both emulators must be running **before** you connect; use **Refresh ports** if
+you started them after opening MIDI Setup.

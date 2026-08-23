@@ -90,9 +90,17 @@ int main(int argc, char** argv)
     auto mtProf = dmidi::inferDeviceProfile("Munt:MT-32 Synth (128:0)");
     CHECK(mtProf.first == dmidi::kInstrumentMapMt32 && mtProf.second == dmidi::kSysexResetMt32,
           "infer munt/mt32");
+    auto muntStd = dmidi::inferDeviceProfile("MT-32:Standard (128:0)");
+    CHECK(muntStd.first == dmidi::kInstrumentMapMt32, "infer munt Standard port");
+    auto muntGm = dmidi::inferDeviceProfile("MT-32:GM Emulation (128:1)");
+    CHECK(muntGm.first == dmidi::kInstrumentMapGm && muntGm.second == dmidi::kSysexResetGm,
+          "munt GM Emulation stays GM");
     auto scProf = dmidi::inferDeviceProfile("Roland:SC-55 (20:0)");
     CHECK(scProf.first == dmidi::kInstrumentMapGs && scProf.second == dmidi::kSysexResetGs,
           "infer sc-55");
+    auto nukedProf = dmidi::inferDeviceProfile("Virtual SC55:RtMidi (129:0)");
+    CHECK(nukedProf.first == dmidi::kInstrumentMapGs && nukedProf.second == dmidi::kSysexResetGs,
+          "infer nuked virtual sc55");
     auto rtProf = dmidi::inferDeviceProfile("USB MIDI:RT-55 Port 1");
     CHECK(rtProf.first == dmidi::kInstrumentMapGs, "infer rt-55 as GS/SC-55 family");
 
