@@ -30,7 +30,7 @@
     <content_rating type="oars-1.1" />
     <screenshots>
         <screenshot type="default">
-            <image>https://dmidiplayer.sourceforge.io/screenshot.png</image>
+            <image>https://raw.githubusercontent.com/goshitsarch-eng/goshmidi/Main/screenshot.png</image>
             <caption>Playing a MIDI file with Gosh MIDI Player</caption>
         </screenshot>
     </screenshots>
