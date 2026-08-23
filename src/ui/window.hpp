@@ -16,7 +16,7 @@
 
 namespace dmidi {
 
-inline constexpr const char* kAppDisplayName = "Gosh Midi Player";
+inline constexpr const char* kAppDisplayName = "Gosh MIDI Player";
 
 class MainWindow {
 public:

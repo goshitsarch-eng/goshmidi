@@ -21,7 +21,7 @@ namespace dmidi {
 namespace {
 
 const char* kHelpText =
-    "Gosh Midi Player is a MIDI file player with lyrics, piano, channels, and playlists.\n"
+    "Gosh MIDI Player is a MIDI file player with lyrics, piano, channels, and playlists.\n"
     "It is based on dmidiplayer (Drumstick MIDI File Player) by Pedro López-Cabanillas.\n\n"
     "Supported files: .mid .midi .kar .rmi .wrk\n\n"
     "Playback: Play, Pause, Stop, previous/next playlist item, jump to bar, loop between bars.\n"
@@ -885,15 +885,15 @@ void MainWindow::showAbout()
 {
     AdwDialog* about = adw_about_dialog_new();
     adw_about_dialog_set_application_name(ADW_ABOUT_DIALOG(about), kAppDisplayName);
-    adw_about_dialog_set_application_icon(ADW_ABOUT_DIALOG(about), "dmidiplayer");
+    adw_about_dialog_set_application_icon(ADW_ABOUT_DIALOG(about), "com.goshapps.GoshMIDI");
     adw_about_dialog_set_version(ADW_ABOUT_DIALOG(about), VERSION);
     adw_about_dialog_set_developer_name(ADW_ABOUT_DIALOG(about), "Pedro López-Cabanillas");
     adw_about_dialog_set_copyright(ADW_ABOUT_DIALOG(about),
                                   "Copyright © 2006–2026 Pedro López-Cabanillas and contributors");
     adw_about_dialog_set_license_type(ADW_ABOUT_DIALOG(about), GTK_LICENSE_GPL_3_0);
-    adw_about_dialog_set_website(ADW_ABOUT_DIALOG(about), "https://sourceforge.net/p/dmidiplayer/");
+    adw_about_dialog_set_website(ADW_ABOUT_DIALOG(about), "https://github.com/goshitsarch-eng/goshmidi");
     adw_about_dialog_set_support_url(ADW_ABOUT_DIALOG(about), "https://dmidiplayer.sourceforge.io/");
-    adw_about_dialog_set_issue_url(ADW_ABOUT_DIALOG(about), "https://github.com/pedrolcl/dmidiplayer/issues");
+    adw_about_dialog_set_issue_url(ADW_ABOUT_DIALOG(about), "https://github.com/goshitsarch-eng/goshmidi/issues");
     adw_about_dialog_set_comments(
         ADW_ABOUT_DIALOG(about),
         "GTK4/libadwaita MIDI player based on dmidiplayer (Drumstick MIDI File Player) "
@@ -901,7 +901,7 @@ void MainWindow::showAbout()
         "and GitHub. The command name and settings paths are still dmidiplayer.");
     const char* developers[] = {
         "Pedro López-Cabanillas (original dmidiplayer)",
-        "Gosh Midi Player contributors",
+        "Gosh MIDI Player contributors",
         nullptr,
     };
     adw_about_dialog_set_developers(ADW_ABOUT_DIALOG(about), developers);
@@ -1609,7 +1609,7 @@ void MainWindow::buildUi(AdwApplication* app)
     g_menu_append(help, "Preferences", "app.prefs");
     g_menu_append(help, "Help", "app.help");
     g_menu_append(help, "Original dmidiplayer", "app.website");
-    g_menu_append(help, "About Gosh Midi Player", "app.about");
+    g_menu_append(help, "About Gosh MIDI Player", "app.about");
     g_menu_append_section(menu, "File", G_MENU_MODEL(file));
     g_menu_append_section(menu, "Playback", G_MENU_MODEL(play));
     g_menu_append_section(menu, "Repeat", G_MENU_MODEL(rpt));

@@ -38,7 +38,7 @@ int main(int argc, char** argv)
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "-h" || a == "--help") {
-            std::cout << "Gosh Midi Player (dmidiplayer) " << VERSION << "\n"
+            std::cout << "Gosh MIDI Player (dmidiplayer) " << VERSION << "\n"
                       << "Based on dmidiplayer (Drumstick MIDI File Player) by Pedro López-Cabanillas.\n"
                       << "Usage: dmidiplayer [options] [midi_files]\n"
                       << "  -h, --help                 Show help\n"
@@ -50,7 +50,7 @@ int main(int argc, char** argv)
             return 0;
         }
         if (a == "-v" || a == "--version") {
-            std::cout << "Gosh Midi Player (dmidiplayer) " << VERSION << "\n"
+            std::cout << "Gosh MIDI Player (dmidiplayer) " << VERSION << "\n"
                       << "Based on dmidiplayer (Drumstick MIDI File Player) by Pedro López-Cabanillas.\n";
             return 0;
         }
@@ -85,7 +85,7 @@ int main(int argc, char** argv)
     adw_init();
     dmidi::AppSettings::instance().load();
 
-    AdwApplication* app = adw_application_new("net.sourceforge.dmidiplayer", G_APPLICATION_DEFAULT_FLAGS);
+    AdwApplication* app = adw_application_new("com.goshapps.GoshMIDI", G_APPLICATION_DEFAULT_FLAGS);
     g_object_set_data_full(G_OBJECT(app), "files", new std::vector<std::string>(files),
                            [](gpointer p) { delete static_cast<std::vector<std::string>*>(p); });
     g_object_set_data_full(G_OBJECT(app), "backend", new std::string(backend),

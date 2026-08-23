@@ -1,5 +1,5 @@
 2026-08-23
-    * Display name is Gosh Midi Player; binary and settings paths stay dmidiplayer
+    * Display name is Gosh MIDI Player; binary and settings paths stay dmidiplayer
     * About dialog credits original dmidiplayer (Drumstick MIDI File Player)
     * Fix crash when loading a song (shared channel patch dropdown model)
     * ALSA output lists MT-32 / GS / XG ports and sends to the chosen hardware synth
