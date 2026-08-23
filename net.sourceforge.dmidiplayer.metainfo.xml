@@ -2,12 +2,14 @@
 <!-- Copyright 2021-2024 dmidiplayer developers -->
 <component type="desktop-application">
     <id>net.sourceforge.dmidiplayer</id>
-    <name>dmidiplayer</name>
-    <summary>Drumstick Multiplatform MIDI File Player</summary>
+    <name>Gosh Midi Player</name>
+    <summary>MIDI file player based on dmidiplayer (Drumstick MIDI File Player)</summary>
     <metadata_license>CC0-1.0</metadata_license>
     <project_license>GPL-3.0+</project_license>
     <description>
-        <p>MIDI File Player with a GTK4/libadwaita interface and advanced features:</p>
+        <p>Gosh Midi Player is a GTK4/libadwaita MIDI file player based on dmidiplayer
+        (Drumstick MIDI File Player) by Pedro López-Cabanillas. The command name remains
+        dmidiplayer. Advanced features:</p>
         <ul>
             <li>MIDI Output to ALSA ports or FluidSynth</li>
             <li>Transpose song tonality between -12 and +12 semitones</li>

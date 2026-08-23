@@ -21,7 +21,8 @@ namespace dmidi {
 namespace {
 
 const char* kHelpText =
-    "dmidiplayer is a MIDI file player with lyrics, piano, channels, and playlists.\n\n"
+    "Gosh Midi Player is a MIDI file player with lyrics, piano, channels, and playlists.\n"
+    "It is based on dmidiplayer (Drumstick MIDI File Player) by Pedro López-Cabanillas.\n\n"
     "Supported files: .mid .midi .kar .rmi .wrk\n\n"
     "Playback: Play, Pause, Stop, previous/next playlist item, jump to bar, loop between bars.\n"
     "Transpose with Pitch (-12..+12, percussion excluded). Tempo 50–200%. Volume 0–200% (CC7).\n\n"
@@ -384,7 +385,7 @@ void MainWindow::loadCurrent(bool autoPlayNow)
     AppSettings::instance().lastDirectory = std::filesystem::path(path).parent_path().string();
     gtk_label_set_text(m_songTitle, m_player.song().currentFile().c_str());
     gtk_window_set_title(GTK_WINDOW(m_window),
-                         (std::string("dmidiplayer — ") + m_player.song().currentFile()).c_str());
+                         (std::string(kAppDisplayName) + " — " + m_player.song().currentFile()).c_str());
     gtk_range_set_value(GTK_RANGE(m_posScale), 0);
     gtk_label_set_text(m_timeLabel, "00:00:00");
     char bpm[32];
@@ -516,19 +517,16 @@ void MainWindow::refreshPlaylistView()
 
 void MainWindow::applyInstrumentMap()
 {
+    if (!m_patchModel)
+        return;
     m_refreshingChannels = true;
-    GtkStringList* patches = gtk_string_list_new(nullptr);
     int map = AppSettings::instance().instrumentMap;
+    const char* names[129];
     for (int p = 0; p < 128; ++p)
-        gtk_string_list_append(patches, patchName(map, p));
-    for (int i = 0; i < kMidiChannels; ++i) {
-        if (!m_chPatch[i])
-            continue;
-        guint sel = gtk_drop_down_get_selected(m_chPatch[i]);
-        gtk_drop_down_set_model(m_chPatch[i], G_LIST_MODEL(patches));
-        if (sel < 128)
-            gtk_drop_down_set_selected(m_chPatch[i], sel);
-    }
+        names[p] = patchName(map, p);
+    names[128] = nullptr;
+    guint n = g_list_model_get_n_items(G_LIST_MODEL(m_patchModel));
+    gtk_string_list_splice(m_patchModel, 0, n, names);
     m_refreshingChannels = false;
 }
 
@@ -536,17 +534,12 @@ void MainWindow::refreshChannels()
 {
     m_refreshingChannels = true;
     auto& song = m_player.song();
-    GtkStringList* patches = gtk_string_list_new(nullptr);
-    int map = AppSettings::instance().instrumentMap;
-    for (int p = 0; p < 128; ++p)
-        gtk_string_list_append(patches, patchName(map, p));
     for (int i = 0; i < kMidiChannels; ++i) {
         bool used = song.channelUsed(i);
         gtk_widget_set_visible(m_chRow[i], used);
         if (!used)
             continue;
         gtk_editable_set_text(GTK_EDITABLE(m_chName[i]), song.channelLabel(i).c_str());
-        gtk_drop_down_set_model(m_chPatch[i], G_LIST_MODEL(patches));
         m_pianoVisible[i] = true;
         if (m_pianoShow[i])
             gtk_check_button_set_active(m_pianoShow[i], true);
@@ -891,14 +884,38 @@ void MainWindow::showLoop()
 void MainWindow::showAbout()
 {
     AdwDialog* about = adw_about_dialog_new();
-    adw_about_dialog_set_application_name(ADW_ABOUT_DIALOG(about), "dmidiplayer");
+    adw_about_dialog_set_application_name(ADW_ABOUT_DIALOG(about), kAppDisplayName);
     adw_about_dialog_set_application_icon(ADW_ABOUT_DIALOG(about), "dmidiplayer");
     adw_about_dialog_set_version(ADW_ABOUT_DIALOG(about), VERSION);
     adw_about_dialog_set_developer_name(ADW_ABOUT_DIALOG(about), "Pedro López-Cabanillas");
+    adw_about_dialog_set_copyright(ADW_ABOUT_DIALOG(about),
+                                  "Copyright © 2006–2026 Pedro López-Cabanillas and contributors");
     adw_about_dialog_set_license_type(ADW_ABOUT_DIALOG(about), GTK_LICENSE_GPL_3_0);
     adw_about_dialog_set_website(ADW_ABOUT_DIALOG(about), "https://sourceforge.net/p/dmidiplayer/");
-    adw_about_dialog_set_comments(ADW_ABOUT_DIALOG(about),
-                                  "Drumstick Multiplatform MIDI File Player — GTK4/libadwaita rewrite with playlists.");
+    adw_about_dialog_set_support_url(ADW_ABOUT_DIALOG(about), "https://dmidiplayer.sourceforge.io/");
+    adw_about_dialog_set_issue_url(ADW_ABOUT_DIALOG(about), "https://github.com/pedrolcl/dmidiplayer/issues");
+    adw_about_dialog_set_comments(
+        ADW_ABOUT_DIALOG(about),
+        "GTK4/libadwaita MIDI player based on dmidiplayer (Drumstick MIDI File Player) "
+        "by Pedro López-Cabanillas. The original application remains available from SourceForge "
+        "and GitHub. The command name and settings paths are still dmidiplayer.");
+    const char* developers[] = {
+        "Pedro López-Cabanillas (original dmidiplayer)",
+        "Gosh Midi Player contributors",
+        nullptr,
+    };
+    adw_about_dialog_set_developers(ADW_ABOUT_DIALOG(about), developers);
+    const char* original[] = {
+        "dmidiplayer — Drumstick MIDI File Player",
+        nullptr,
+    };
+    adw_about_dialog_add_credit_section(ADW_ABOUT_DIALOG(about), "Original application", original);
+    adw_about_dialog_add_link(ADW_ABOUT_DIALOG(about), "Original dmidiplayer (SourceForge)",
+                              "https://sourceforge.net/p/dmidiplayer/");
+    adw_about_dialog_add_link(ADW_ABOUT_DIALOG(about), "Original dmidiplayer (GitHub)",
+                              "https://github.com/pedrolcl/dmidiplayer");
+    adw_about_dialog_add_link(ADW_ABOUT_DIALOG(about), "Original documentation",
+                              "https://dmidiplayer.sourceforge.io/");
     adw_dialog_present(about, GTK_WIDGET(m_window));
 }
 
@@ -1442,7 +1459,7 @@ void MainWindow::buildUi(AdwApplication* app)
 {
     auto& st = AppSettings::instance();
     m_window = ADW_APPLICATION_WINDOW(adw_application_window_new(GTK_APPLICATION(app)));
-    gtk_window_set_title(GTK_WINDOW(m_window), "dmidiplayer");
+    gtk_window_set_title(GTK_WINDOW(m_window), kAppDisplayName);
     gtk_window_set_default_size(GTK_WINDOW(m_window), st.windowWidth, st.windowHeight);
 
     m_toasts = ADW_TOAST_OVERLAY(adw_toast_overlay_new());
@@ -1591,8 +1608,8 @@ void MainWindow::buildUi(AdwApplication* app)
     g_menu_append(help, "MIDI Setup", "app.midi");
     g_menu_append(help, "Preferences", "app.prefs");
     g_menu_append(help, "Help", "app.help");
-    g_menu_append(help, "Website", "app.website");
-    g_menu_append(help, "About dmidiplayer", "app.about");
+    g_menu_append(help, "Original dmidiplayer", "app.website");
+    g_menu_append(help, "About Gosh Midi Player", "app.about");
     g_menu_append_section(menu, "File", G_MENU_MODEL(file));
     g_menu_append_section(menu, "Playback", G_MENU_MODEL(play));
     g_menu_append_section(menu, "Repeat", G_MENU_MODEL(rpt));
@@ -1650,6 +1667,7 @@ void MainWindow::buildUi(AdwApplication* app)
     m_volumeValue = GTK_LABEL(gtk_label_new("100%"));
     gtk_widget_add_css_class(GTK_WIDGET(m_volumeValue), "dash-value");
     m_pitch = GTK_SPIN_BUTTON(gtk_spin_button_new_with_range(-12, 12, 1));
+    gtk_spin_button_set_value(m_pitch, 0);
     addStat(0, "Tempo", GTK_WIDGET(m_tempoValue));
     addStat(1, "Volume", GTK_WIDGET(m_volumeValue));
     addStat(2, "Pitch", GTK_WIDGET(m_pitch));
@@ -1855,10 +1873,10 @@ void MainWindow::buildUi(AdwApplication* app)
     gtk_widget_set_margin_start(GTK_WIDGET(m_channelsBox), 8);
     gtk_widget_set_margin_end(GTK_WIDGET(m_channelsBox), 8);
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(chPage), GTK_WIDGET(m_channelsBox));
-    GtkStringList* patchModel = gtk_string_list_new(nullptr);
+    m_patchModel = gtk_string_list_new(nullptr);
     int map = AppSettings::instance().instrumentMap;
     for (int p = 0; p < 128; ++p)
-        gtk_string_list_append(patchModel, patchName(map, p));
+        gtk_string_list_append(m_patchModel, patchName(map, p));
     for (int i = 0; i < kMidiChannels; ++i) {
         GtkWidget* row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
         m_chRow[i] = row;
@@ -1884,7 +1902,7 @@ void MainWindow::buildUi(AdwApplication* app)
         gtk_scale_set_draw_value(m_chVol[i], false);
         gtk_box_append(GTK_BOX(row), GTK_WIDGET(m_chVol[i]));
         gtk_box_append(GTK_BOX(row), GTK_WIDGET(m_chLock[i]));
-        m_chPatch[i] = GTK_DROP_DOWN(gtk_drop_down_new(G_LIST_MODEL(patchModel), nullptr));
+        m_chPatch[i] = GTK_DROP_DOWN(gtk_drop_down_new(G_LIST_MODEL(m_patchModel), nullptr));
         gtk_widget_set_size_request(GTK_WIDGET(m_chPatch[i]), 180, -1);
         gtk_box_append(GTK_BOX(row), GTK_WIDGET(m_chPatch[i]));
         gtk_box_append(m_channelsBox, row);

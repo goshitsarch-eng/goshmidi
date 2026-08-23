@@ -16,6 +16,8 @@
 
 namespace dmidi {
 
+inline constexpr const char* kAppDisplayName = "Gosh Midi Player";
+
 class MainWindow {
 public:
     MainWindow(AdwApplication* app);
@@ -97,6 +99,7 @@ private:
     GtkLevelBar* m_chMeter[kMidiChannels]{};
     GtkScale* m_chVol[kMidiChannels]{};
     GtkDropDown* m_chPatch[kMidiChannels]{};
+    GtkStringList* m_patchModel{};
     GtkCheckButton* m_pianoShow[kMidiChannels]{};
     double m_chLevel[kMidiChannels]{};
     bool m_chSoloed[kMidiChannels]{};

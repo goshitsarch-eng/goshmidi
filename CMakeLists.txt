@@ -8,7 +8,7 @@ cmake_minimum_required(VERSION 3.16)
 project(dmidiplayer
     VERSION 1.7.5
     LANGUAGES C CXX
-    DESCRIPTION "Drumstick MIDI File Player"
+    DESCRIPTION "Gosh Midi Player"
     HOMEPAGE_URL "https://sourceforge.net/p/dmidiplayer/"
 )
 
