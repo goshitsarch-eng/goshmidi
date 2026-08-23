@@ -14,7 +14,8 @@ ALSA sequencer ports or to an embedded FluidSynth backend.
 This GTK4 rewrite keeps playback at parity with the original Qt UI, and
 **playlists are a first-class sidebar**.
 
-![Screenshot of the GTK4 Gosh Midi Player window with playlist, lyrics, and playback controls](screenshot.png "Gosh Midi Player")
+![App Screenshot](screenshot.png)
+
 
 Original project
 ----------------
