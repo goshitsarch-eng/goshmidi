@@ -40,7 +40,8 @@ and outputs MIDI events to hardware MIDI ports and also software synths.
 
 -c, --connection _connection_
 
-:   MIDI Out connection (ALSA `client:port`, or `fluidsynth`).
+:   MIDI Out connection (ALSA `client:port`, or `fluidsynth`). Use this to send
+    events to your own synth (for example Munt/MT-32 or an SC-55 on USB MIDI).
 
 ## Standard Options
 

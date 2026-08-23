@@ -74,12 +74,15 @@ public:
 
     void setDrumsChannel(int ch0based) { m_drumsChannel = ch0based; }
     int drumsChannel() const { return m_drumsChannel; }
-    void setSysexReset(int kind) { m_sysexReset = kind; } // 0 none, 1 GM, 2 GS, 3 XG
+    void setSysexReset(int kind) { m_sysexReset = kind; } // 0 none, 1 GM, 2 GS, 3 XG, 4 MT-32
+    int sysexReset() const { return m_sysexReset; }
+    void setCompanionSyx(const std::string& path) { m_companionSyx = path; }
 
     void allNotesOff();
     void resetControllers();
     void resetPrograms();
     void sendResetMessage();
+    void sendCompanionSysex();
     void sendVolumeEvents();
     void shutupSound();
 
@@ -105,6 +108,7 @@ private:
     void initChannels();
     int boundedFloor(int initial, double factor) const;
     void emitToUi(const std::function<void()>& fn);
+    void sendSysexPaced(const std::vector<uint8_t>& data);
 
     Sequence m_song;
     MidiOutput* m_out{};
@@ -121,6 +125,8 @@ private:
     int m_volumeFactor{100};
     int m_drumsChannel{kGmDrumChannel};
     int m_sysexReset{};
+    bool m_resumeWithoutReset{};
+    std::string m_companionSyx;
     int m_volume[kMidiChannels]{};
     int m_lastPgm[kMidiChannels]{};
     int m_lockedPgm[kMidiChannels]{};

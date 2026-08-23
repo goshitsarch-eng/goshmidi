@@ -17,7 +17,10 @@ separate dialog.
 Key features
 ------------
 
-* MIDI output to ALSA hardware/soft-synth ports, FluidSynth, or a dummy sink
+* MIDI output to ALSA hardware/soft-synth ports (MT-32, SC-55, USB MIDI, Munt),
+  FluidSynth with your own SoundFont, or a dummy sink
+* Instrument maps and SysEx resets for GM, GS (SC-55), XG, and MT-32
+* Automatic companion `.syx` loading (same name as the MIDI file, or `Folder.syx`)
 * Transpose song tonality between -12 and +12 semitones (percussion excluded)
 * Change MIDI volume (CC7) from 0% to 200%
 * Scale song speed between 50% and 200% tempo
@@ -48,3 +51,9 @@ playlist).
 
 For sound without an external synth, install a GM SoundFont (for example
 `fluid-soundfont-gm`) and select the **FluidSynth** backend in MIDI Setup.
+To use your own module (Roland MT-32 / Munt, SC-55 / Sound Canvas, USB MIDI):
+
+1. Start the synth or emulator so it appears as an ALSA sequencer port.
+2. Open **MIDI Setup**, choose **ALSA**, pick the port, and Apply.
+   Ports named like MT-32 or SC-55 select the matching instrument map and reset.
+3. Optionally send a companion `.syx` dump by placing it next to the `.mid` file.

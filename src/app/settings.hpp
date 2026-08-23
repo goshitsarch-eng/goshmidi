@@ -22,7 +22,8 @@ struct AppSettings {
     bool autoAdvance{true};
     bool autoSongSettings{false};
     bool advancedPorts{false};
-    int sysexReset{1}; // GM
+    int sysexReset{1}; // 0 none, 1 GM, 2 GS, 3 XG, 4 MT-32
+    int instrumentMap{0}; // 0 GM, 1 GS/SC-55, 2 MT-32
     int highlightPalette{2}; // channels
     bool velocityColor{true};
     bool octaveSubscript{false};

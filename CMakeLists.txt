@@ -52,6 +52,7 @@ set(CORE_SOURCES
     src/midi/sequence.cpp
     src/midi/output.cpp
     src/midi/player.cpp
+    src/midi/sysex.cpp
     src/app/settings.cpp
     src/app/playlist.cpp
 )

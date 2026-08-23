@@ -124,6 +124,7 @@ void AppSettings::load()
     autoSongSettings = flag("autoSongSettings", autoSongSettings);
     advancedPorts = flag("advancedPorts", advancedPorts);
     sysexReset = num("sysexReset", sysexReset);
+    instrumentMap = num("instrumentMap", instrumentMap);
     highlightPalette = num("highlightPalette", highlightPalette);
     velocityColor = flag("velocityColor", velocityColor);
     octaveSubscript = flag("octaveSubscript", octaveSubscript);
@@ -166,6 +167,7 @@ void AppSettings::save() const
     g_key_file_set_boolean(kf, "General", "autoSongSettings", autoSongSettings);
     g_key_file_set_boolean(kf, "General", "advancedPorts", advancedPorts);
     g_key_file_set_integer(kf, "General", "sysexReset", sysexReset);
+    g_key_file_set_integer(kf, "General", "instrumentMap", instrumentMap);
     g_key_file_set_integer(kf, "General", "highlightPalette", highlightPalette);
     g_key_file_set_boolean(kf, "General", "velocityColor", velocityColor);
     g_key_file_set_boolean(kf, "General", "octaveSubscript", octaveSubscript);

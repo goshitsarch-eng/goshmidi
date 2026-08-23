@@ -6,11 +6,13 @@
 
 #include "../app/instruments.hpp"
 #include "../app/settings.hpp"
+#include "../midi/sysex.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <pango/pangocairo.h>
 #include <glib/gi18n.h>
 #include <sstream>
@@ -25,7 +27,11 @@ const char* kHelpText =
     "Transpose with Pitch (-12..+12, percussion excluded). Tempo 50–200%. Volume 0–200% (CC7).\n\n"
     "Playlists are .lst text files with one path per line. Drag files onto the window to make a "
     "temporary playlist. Repeat can be off, current song, or whole playlist.\n\n"
-    "MIDI output: ALSA sequencer ports or FluidSynth (SoundFont). Configure in MIDI Setup.\n\n"
+    "MIDI output: ALSA sequencer ports (your own synth: MT-32, SC-55, USB MIDI) or "
+    "FluidSynth with a SoundFont you choose. Configure in MIDI Setup.\n\n"
+    "For Roland MT-32 / Munt and SC-55 (Sound Canvas): pick ALSA, the synth's port, "
+    "the matching instrument map, and MT-32 or GS reset. Companion .syx files next to "
+    "a MIDI file are sent automatically before playback.\n\n"
     "Song settings can be stored in ~/.dmidiplayer/<song>.cfg (encoding, pitch, tempo, volume, "
     "per-channel mute/solo/lock/patch/level).\n";
 
@@ -222,8 +228,14 @@ MainWindow::MainWindow(AdwApplication* app)
         m_outputs.setSoundFont(st.soundFont);
     std::string backend = st.lastOutputBackend.empty() ? "FluidSynth" : st.lastOutputBackend;
     std::string port = st.lastOutputConnection;
-    if (!m_outputs.select(backend, port))
-        m_outputs.select("Dummy", "dummy");
+    if (!m_outputs.select(backend, port)) {
+        if (backend != "FluidSynth")
+            m_outputs.select("FluidSynth", "fluidsynth");
+        if (!m_outputs.current() || (m_outputs.current()->backendName() != backend && backend != "FluidSynth"))
+            toast("Saved MIDI port is unavailable; choose it again in MIDI Setup");
+        if (!m_outputs.current())
+            m_outputs.select("Dummy", "dummy");
+    }
     m_player.setOutput(m_outputs.current());
     m_player.setDrumsChannel(std::clamp(st.drumsChannel, 1, 16) - 1);
     m_player.setSysexReset(st.sysexReset);
@@ -322,9 +334,17 @@ void MainWindow::connectOutput(const std::string& backend, const std::string& po
     m_player.setOutput(m_outputs.current());
     auto& st = AppSettings::instance();
     st.lastOutputBackend = backend;
-    st.lastOutputConnection = port;
+    st.lastOutputConnection = port.empty() && m_outputs.current() ? m_outputs.current()->currentPort()
+                                                                 : port;
+    st.save();
     if (m_outputs.current() && !m_outputs.current()->lastError().empty())
         toast(m_outputs.current()->lastError());
+    else if (m_outputs.current()) {
+        std::string msg = "MIDI output: " + m_outputs.current()->backendName();
+        if (!m_outputs.current()->currentPort().empty())
+            msg += " " + m_outputs.current()->currentPort();
+        toast(msg);
+    }
 }
 
 void MainWindow::openFiles(const std::vector<std::string>& files, bool replacePlaylist)
@@ -494,12 +514,32 @@ void MainWindow::refreshPlaylistView()
     }
 }
 
+void MainWindow::applyInstrumentMap()
+{
+    m_refreshingChannels = true;
+    GtkStringList* patches = gtk_string_list_new(nullptr);
+    int map = AppSettings::instance().instrumentMap;
+    for (int p = 0; p < 128; ++p)
+        gtk_string_list_append(patches, patchName(map, p));
+    for (int i = 0; i < kMidiChannels; ++i) {
+        if (!m_chPatch[i])
+            continue;
+        guint sel = gtk_drop_down_get_selected(m_chPatch[i]);
+        gtk_drop_down_set_model(m_chPatch[i], G_LIST_MODEL(patches));
+        if (sel < 128)
+            gtk_drop_down_set_selected(m_chPatch[i], sel);
+    }
+    m_refreshingChannels = false;
+}
+
 void MainWindow::refreshChannels()
 {
+    m_refreshingChannels = true;
     auto& song = m_player.song();
     GtkStringList* patches = gtk_string_list_new(nullptr);
+    int map = AppSettings::instance().instrumentMap;
     for (int p = 0; p < 128; ++p)
-        gtk_string_list_append(patches, gmPatchName(p));
+        gtk_string_list_append(patches, patchName(map, p));
     for (int i = 0; i < kMidiChannels; ++i) {
         bool used = song.channelUsed(i);
         gtk_widget_set_visible(m_chRow[i], used);
@@ -511,6 +551,7 @@ void MainWindow::refreshChannels()
         if (m_pianoShow[i])
             gtk_check_button_set_active(m_pianoShow[i], true);
     }
+    m_refreshingChannels = false;
 }
 
 void MainWindow::refreshLyrics()
@@ -870,17 +911,36 @@ void MainWindow::showHelp()
 
 void MainWindow::showMidiSetup()
 {
+    struct Widgets {
+        MainWindow* self{};
+        GtkWindow* win{};
+        GtkDropDown* backend{};
+        GtkDropDown* ports{};
+        GtkCheckButton* adv{};
+        GtkDropDown* map{};
+        GtkDropDown* reset{};
+        GtkEditable* sf{};
+        GtkLabel* status{};
+        std::vector<MidiPort> plist;
+        std::function<void()> refillFn;
+        bool filling{true};
+    };
+    auto* w = new Widgets;
+    w->self = this;
+
     GtkWidget* dlg = gtk_window_new();
+    w->win = GTK_WINDOW(dlg);
     gtk_window_set_title(GTK_WINDOW(dlg), "MIDI Setup");
     gtk_window_set_transient_for(GTK_WINDOW(dlg), GTK_WINDOW(m_window));
     gtk_window_set_modal(GTK_WINDOW(dlg), true);
-    gtk_window_set_default_size(GTK_WINDOW(dlg), 420, 280);
-    GtkWidget* box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
+    gtk_window_set_default_size(GTK_WINDOW(dlg), 480, 420);
+    GtkWidget* box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
     gtk_widget_set_margin_top(box, 18);
     gtk_widget_set_margin_bottom(box, 18);
     gtk_widget_set_margin_start(box, 18);
     gtk_widget_set_margin_end(box, 18);
     gtk_window_set_child(GTK_WINDOW(dlg), box);
+
     gtk_box_append(GTK_BOX(box), gtk_label_new("Output backend"));
     GtkStringList* backs = gtk_string_list_new(nullptr);
     auto names = m_outputs.backendNames();
@@ -893,71 +953,219 @@ void MainWindow::showMidiSetup()
     GtkWidget* backend = gtk_drop_down_new(G_LIST_MODEL(backs), nullptr);
     gtk_drop_down_set_selected(GTK_DROP_DOWN(backend), bsel);
     gtk_box_append(GTK_BOX(box), backend);
+    w->backend = GTK_DROP_DOWN(backend);
+
+    GtkWidget* advRow = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     GtkWidget* adv = gtk_check_button_new_with_label("Show all ports");
     gtk_check_button_set_active(GTK_CHECK_BUTTON(adv), AppSettings::instance().advancedPorts);
-    gtk_box_append(GTK_BOX(box), adv);
-    gtk_box_append(GTK_BOX(box), gtk_label_new("Connection"));
+    gtk_box_append(GTK_BOX(advRow), adv);
+    GtkWidget* refresh = gtk_button_new_with_label("Refresh ports");
+    gtk_box_append(GTK_BOX(advRow), refresh);
+    gtk_box_append(GTK_BOX(box), advRow);
+    w->adv = GTK_CHECK_BUTTON(adv);
+
+    gtk_box_append(GTK_BOX(box), gtk_label_new("Connection (your MIDI synth / Munt / USB port)"));
     GtkWidget* ports = gtk_drop_down_new(G_LIST_MODEL(gtk_string_list_new(nullptr)), nullptr);
     gtk_box_append(GTK_BOX(box), ports);
-    gtk_box_append(GTK_BOX(box), gtk_label_new("FluidSynth SoundFont"));
+    w->ports = GTK_DROP_DOWN(ports);
+
+    gtk_box_append(GTK_BOX(box), gtk_label_new("Instrument map"));
+    GtkStringList* maps = gtk_string_list_new(nullptr);
+    gtk_string_list_append(maps, "GM");
+    gtk_string_list_append(maps, "GS (SC-55)");
+    gtk_string_list_append(maps, "MT-32");
+    GtkWidget* map = gtk_drop_down_new(G_LIST_MODEL(maps), nullptr);
+    gtk_drop_down_set_selected(GTK_DROP_DOWN(map),
+                               static_cast<guint>(std::clamp(AppSettings::instance().instrumentMap, 0, 2)));
+    gtk_box_append(GTK_BOX(box), map);
+    w->map = GTK_DROP_DOWN(map);
+
+    gtk_box_append(GTK_BOX(box), gtk_label_new("System Exclusive reset (sent before each song)"));
+    GtkStringList* resets = gtk_string_list_new(nullptr);
+    gtk_string_list_append(resets, sysexResetName(0));
+    gtk_string_list_append(resets, sysexResetName(1));
+    gtk_string_list_append(resets, sysexResetName(2));
+    gtk_string_list_append(resets, sysexResetName(3));
+    gtk_string_list_append(resets, sysexResetName(4));
+    GtkWidget* reset = gtk_drop_down_new(G_LIST_MODEL(resets), nullptr);
+    gtk_drop_down_set_selected(GTK_DROP_DOWN(reset),
+                               static_cast<guint>(std::clamp(AppSettings::instance().sysexReset, 0, 4)));
+    gtk_box_append(GTK_BOX(box), reset);
+    w->reset = GTK_DROP_DOWN(reset);
+
+    gtk_box_append(GTK_BOX(box), gtk_label_new("FluidSynth SoundFont (.sf2 / .sf3)"));
+    GtkWidget* sfRow = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     GtkWidget* sf = gtk_entry_new();
+    gtk_widget_set_hexpand(sf, true);
     gtk_editable_set_text(GTK_EDITABLE(sf), AppSettings::instance().soundFont.c_str());
-    gtk_box_append(GTK_BOX(box), sf);
+    gtk_entry_set_placeholder_text(GTK_ENTRY(sf), "Optional: your GM, MT-32, or SC-55 SoundFont");
+    GtkWidget* browse = gtk_button_new_with_label("Browse…");
+    gtk_box_append(GTK_BOX(sfRow), sf);
+    gtk_box_append(GTK_BOX(sfRow), browse);
+    gtk_box_append(GTK_BOX(box), sfRow);
+    w->sf = GTK_EDITABLE(sf);
 
-    auto refill = [this, backend, ports, adv]() {
-        guint bi = gtk_drop_down_get_selected(GTK_DROP_DOWN(backend));
-        auto names = m_outputs.backendNames();
-        if (bi >= names.size())
+    GtkWidget* status = gtk_label_new("");
+    gtk_label_set_wrap(GTK_LABEL(status), true);
+    gtk_label_set_xalign(GTK_LABEL(status), 0);
+    gtk_widget_add_css_class(status, "dim-label");
+    gtk_box_append(GTK_BOX(box), status);
+    w->status = GTK_LABEL(status);
+
+    w->refillFn = [w]() {
+        w->filling = true;
+        guint bi = gtk_drop_down_get_selected(w->backend);
+        auto names = w->self->m_outputs.backendNames();
+        if (bi >= names.size()) {
+            w->filling = false;
             return;
-        auto* out = m_outputs.find(names[bi]);
+        }
+        auto* out = w->self->m_outputs.find(names[bi]);
         GtkStringList* list = gtk_string_list_new(nullptr);
-        auto plist = out ? out->ports(gtk_check_button_get_active(GTK_CHECK_BUTTON(adv))) : std::vector<MidiPort>{};
-        for (auto& p : plist)
-            gtk_string_list_append(list, p.label.c_str());
-        gtk_drop_down_set_model(GTK_DROP_DOWN(ports), G_LIST_MODEL(list));
-        g_object_set_data(G_OBJECT(ports), "raw", new std::vector<MidiPort>(plist));
-        if (!plist.empty())
-            gtk_drop_down_set_selected(GTK_DROP_DOWN(ports), 0);
+        w->plist = out ? out->ports(gtk_check_button_get_active(w->adv)) : std::vector<MidiPort>{};
+        guint sel = 0;
+        auto want = AppSettings::instance().lastOutputConnection;
+        if (w->self->m_outputs.current() && names[bi] == w->self->m_outputs.current()->backendName())
+            want = w->self->m_outputs.current()->currentPort();
+        for (guint i = 0; i < w->plist.size(); ++i) {
+            gtk_string_list_append(list, w->plist[i].label.c_str());
+            if (!want.empty() && (w->plist[i].id == want || w->plist[i].label.find(want) != std::string::npos))
+                sel = i;
+        }
+        gtk_drop_down_set_model(w->ports, G_LIST_MODEL(list));
+        if (!w->plist.empty())
+            gtk_drop_down_set_selected(w->ports, sel);
+        if (w->plist.empty())
+            gtk_label_set_text(w->status, "No destinations. Start Munt or attach the synth, then Refresh.");
+        else
+            gtk_label_set_text(w->status, "");
+        w->filling = false;
     };
-    refill();
-    g_signal_connect(backend, "notify::selected", (GCallback)(+[](GObject*, GParamSpec*, gpointer data) {
-                         (*static_cast<std::function<void()>*>(data))();
-                     }),
-                     new std::function<void()>(refill));
-    g_signal_connect(adv, "toggled", (GCallback)(+[](GtkCheckButton*, gpointer data) {
-                         (*static_cast<std::function<void()>*>(data))();
-                     }),
-                     new std::function<void()>(refill));
 
+    w->refillFn();
+    g_signal_connect(backend, "notify::selected", (GCallback)(+[](GObject*, GParamSpec*, gpointer data) {
+                         auto* w = static_cast<Widgets*>(data);
+                         w->refillFn();
+                     }),
+                     w);
+    g_signal_connect(adv, "toggled", (GCallback)(+[](GtkCheckButton*, gpointer data) {
+                         auto* w = static_cast<Widgets*>(data);
+                         w->refillFn();
+                     }),
+                     w);
+    g_signal_connect(refresh, "clicked", (GCallback)(+[](GtkButton*, gpointer data) {
+                         auto* w = static_cast<Widgets*>(data);
+                         w->refillFn();
+                     }),
+                     w);
+    g_signal_connect(ports, "notify::selected", (GCallback)(+[](GObject*, GParamSpec*, gpointer data) {
+                         auto* w = static_cast<Widgets*>(data);
+                         if (w->filling)
+                             return;
+                         guint pi = gtk_drop_down_get_selected(w->ports);
+                         if (pi >= w->plist.size())
+                             return;
+                         auto profile = inferDeviceProfile(w->plist[pi].label);
+                         gtk_drop_down_set_selected(w->map, static_cast<guint>(profile.first));
+                         gtk_drop_down_set_selected(w->reset, static_cast<guint>(profile.second));
+                     }),
+                     w);
+
+    g_signal_connect(browse, "clicked", (GCallback)(+[](GtkButton*, gpointer data) {
+                         auto* w = static_cast<Widgets*>(data);
+                         GtkFileDialog* fd = gtk_file_dialog_new();
+                         gtk_file_dialog_set_title(fd, "Choose SoundFont");
+                         GtkFileFilter* flt = gtk_file_filter_new();
+                         gtk_file_filter_set_name(flt, "SoundFont");
+                         gtk_file_filter_add_pattern(flt, "*.sf2");
+                         gtk_file_filter_add_pattern(flt, "*.sf3");
+                         gtk_file_filter_add_pattern(flt, "*.SF2");
+                         gtk_file_filter_add_pattern(flt, "*.SF3");
+                         GListStore* filters = g_list_store_new(GTK_TYPE_FILE_FILTER);
+                         g_list_store_append(filters, flt);
+                         gtk_file_dialog_set_filters(fd, G_LIST_MODEL(filters));
+                         gtk_file_dialog_open(fd, w->win, nullptr,
+                                              +[](GObject* src, GAsyncResult* res, gpointer data) {
+                                                  auto* w = static_cast<Widgets*>(data);
+                                                  GFile* f = gtk_file_dialog_open_finish(GTK_FILE_DIALOG(src), res, nullptr);
+                                                  if (!f)
+                                                      return;
+                                                  char* p = g_file_get_path(f);
+                                                  if (p) {
+                                                      gtk_editable_set_text(w->sf, p);
+                                                      g_free(p);
+                                                  }
+                                                  g_object_unref(f);
+                                              },
+                                              w);
+                     }),
+                     w);
+
+    GtkWidget* btnRow = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_widget_set_halign(btnRow, GTK_ALIGN_END);
+    GtkWidget* test = gtk_button_new_with_label("Test note");
     GtkWidget* apply = gtk_button_new_with_label("Apply");
-    gtk_box_append(GTK_BOX(box), apply);
-    g_object_set_data(G_OBJECT(apply), "self", this);
-    g_object_set_data(G_OBJECT(apply), "backend", backend);
-    g_object_set_data(G_OBJECT(apply), "ports", ports);
-    g_object_set_data(G_OBJECT(apply), "sf", sf);
-    g_object_set_data(G_OBJECT(apply), "adv", adv);
-    g_object_set_data(G_OBJECT(apply), "win", dlg);
-    g_signal_connect(apply, "clicked", (GCallback)(+[](GtkButton* b, gpointer) {
-                         auto* self = static_cast<MainWindow*>(g_object_get_data(G_OBJECT(b), "self"));
-                         auto* backend = GTK_DROP_DOWN(g_object_get_data(G_OBJECT(b), "backend"));
-                         auto* ports = GTK_DROP_DOWN(g_object_get_data(G_OBJECT(b), "ports"));
-                         auto* sf = GTK_EDITABLE(g_object_get_data(G_OBJECT(b), "sf"));
-                         auto names = self->m_outputs.backendNames();
-                         guint bi = gtk_drop_down_get_selected(backend);
-                         auto* plist = static_cast<std::vector<MidiPort>*>(g_object_get_data(G_OBJECT(ports), "raw"));
+    gtk_widget_add_css_class(apply, "suggested-action");
+    gtk_box_append(GTK_BOX(btnRow), test);
+    gtk_box_append(GTK_BOX(btnRow), apply);
+    gtk_box_append(GTK_BOX(box), btnRow);
+
+    g_signal_connect(test, "clicked", (GCallback)(+[](GtkButton*, gpointer data) {
+                         auto* w = static_cast<Widgets*>(data);
+                         auto names = w->self->m_outputs.backendNames();
+                         guint bi = gtk_drop_down_get_selected(w->backend);
                          std::string portId;
-                         guint pi = gtk_drop_down_get_selected(ports);
-                         if (plist && pi < plist->size())
-                             portId = (*plist)[pi].id;
-                         AppSettings::instance().soundFont = gtk_editable_get_text(sf);
-                         AppSettings::instance().advancedPorts =
-                             gtk_check_button_get_active(GTK_CHECK_BUTTON(g_object_get_data(G_OBJECT(b), "adv")));
-                         self->m_outputs.setSoundFont(AppSettings::instance().soundFont);
+                         guint pi = gtk_drop_down_get_selected(w->ports);
+                         if (pi < w->plist.size())
+                             portId = w->plist[pi].id;
+                         AppSettings::instance().soundFont = gtk_editable_get_text(w->sf);
+                         w->self->m_outputs.setSoundFont(AppSettings::instance().soundFont);
+                         if (bi < names.size())
+                             w->self->connectOutput(names[bi], portId);
+                         auto* out = w->self->m_outputs.current();
+                         if (!out) {
+                             gtk_label_set_text(w->status, "No MIDI output");
+                             return;
+                         }
+                         out->sendNoteOn(0, 60, 96);
+                         g_timeout_add(400, [](gpointer data) -> gboolean {
+                             auto* out = static_cast<MidiOutput*>(data);
+                             if (out)
+                                 out->sendNoteOff(0, 60, 0);
+                             return G_SOURCE_REMOVE;
+                         }, out);
+                         gtk_label_set_text(w->status, "Sent Middle C on channel 1");
+                     }),
+                     w);
+
+    g_signal_connect(apply, "clicked", (GCallback)(+[](GtkButton*, gpointer data) {
+                         auto* w = static_cast<Widgets*>(data);
+                         auto* self = w->self;
+                         auto names = self->m_outputs.backendNames();
+                         guint bi = gtk_drop_down_get_selected(w->backend);
+                         std::string portId;
+                         guint pi = gtk_drop_down_get_selected(w->ports);
+                         if (pi < w->plist.size())
+                             portId = w->plist[pi].id;
+                         auto& st = AppSettings::instance();
+                         st.soundFont = gtk_editable_get_text(w->sf);
+                         st.advancedPorts = gtk_check_button_get_active(w->adv);
+                         st.instrumentMap = static_cast<int>(gtk_drop_down_get_selected(w->map));
+                         st.sysexReset = static_cast<int>(gtk_drop_down_get_selected(w->reset));
+                         self->m_player.setSysexReset(st.sysexReset);
+                         self->m_outputs.setSoundFont(st.soundFont);
                          if (bi < names.size())
                              self->connectOutput(names[bi], portId);
-                         gtk_window_destroy(GTK_WINDOW(g_object_get_data(G_OBJECT(b), "win")));
+                         self->applyInstrumentMap();
+                         st.save();
+                         gtk_window_destroy(w->win);
                      }),
-                     nullptr);
+                     w);
+
+    g_signal_connect(dlg, "destroy", (GCallback)(+[](GtkWidget*, gpointer data) {
+                         delete static_cast<Widgets*>(data);
+                     }),
+                     w);
     gtk_window_present(GTK_WINDOW(dlg));
 }
 
@@ -988,18 +1196,28 @@ void MainWindow::showPrefs()
     GtkStringList* resets = gtk_string_list_new(nullptr);
     gtk_string_list_append(resets, "None");
     gtk_string_list_append(resets, "GM Reset");
-    gtk_string_list_append(resets, "GS Reset");
+    gtk_string_list_append(resets, "GS Reset (SC-55)");
     gtk_string_list_append(resets, "XG Reset");
+    gtk_string_list_append(resets, "MT-32 Reset");
     auto* reset = adw_combo_row_new();
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(reset), "MIDI System Exclusive Reset");
     adw_combo_row_set_model(ADW_COMBO_ROW(reset), G_LIST_MODEL(resets));
-    adw_combo_row_set_selected(ADW_COMBO_ROW(reset), st.sysexReset);
+    adw_combo_row_set_selected(ADW_COMBO_ROW(reset), static_cast<guint>(std::clamp(st.sysexReset, 0, 4)));
+    GtkStringList* maps = gtk_string_list_new(nullptr);
+    gtk_string_list_append(maps, "GM");
+    gtk_string_list_append(maps, "GS (SC-55)");
+    gtk_string_list_append(maps, "MT-32");
+    auto* imap = adw_combo_row_new();
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(imap), "Instrument map (GM / GS SC-55 / MT-32)");
+    adw_combo_row_set_model(ADW_COMBO_ROW(imap), G_LIST_MODEL(maps));
+    adw_combo_row_set_selected(ADW_COMBO_ROW(imap), static_cast<guint>(std::clamp(st.instrumentMap, 0, 2)));
     adw_preferences_group_add(grp, drums);
     adw_preferences_group_add(grp, solo);
     adw_preferences_group_add(grp, autoplay);
     adw_preferences_group_add(grp, adv);
     adw_preferences_group_add(grp, songs);
     adw_preferences_group_add(grp, reset);
+    adw_preferences_group_add(grp, imap);
     adw_preferences_page_add(page, grp);
     adw_preferences_window_add(win, page);
 
@@ -1083,6 +1301,7 @@ void MainWindow::showPrefs()
                          st.autoAdvance = adw_switch_row_get_active(ADW_SWITCH_ROW(get("adv")));
                          st.autoSongSettings = adw_switch_row_get_active(ADW_SWITCH_ROW(get("songs")));
                          st.sysexReset = static_cast<int>(adw_combo_row_get_selected(ADW_COMBO_ROW(get("reset"))));
+                         st.instrumentMap = static_cast<int>(adw_combo_row_get_selected(ADW_COMBO_ROW(get("imap"))));
                          st.futureColor = gtk_editable_get_text(GTK_EDITABLE(get("future")));
                          st.pastColor = gtk_editable_get_text(GTK_EDITABLE(get("past")));
                          st.highlightColor = gtk_editable_get_text(GTK_EDITABLE(get("hi")));
@@ -1095,6 +1314,7 @@ void MainWindow::showPrefs()
                          st.octaveSubscript = adw_switch_row_get_active(ADW_SWITCH_ROW(get("oct")));
                          self->m_player.setDrumsChannel(std::clamp(st.drumsChannel, 1, 16) - 1);
                          self->m_player.setSysexReset(st.sysexReset);
+                         self->applyInstrumentMap();
                          self->refreshLyrics();
                          st.save();
                          gtk_window_destroy(w);
@@ -1107,6 +1327,7 @@ void MainWindow::showPrefs()
     g_object_set_data(G_OBJECT(win), "adv", adv);
     g_object_set_data(G_OBJECT(win), "songs", songs);
     g_object_set_data(G_OBJECT(win), "reset", reset);
+    g_object_set_data(G_OBJECT(win), "imap", imap);
     g_object_set_data(G_OBJECT(win), "future", future);
     g_object_set_data(G_OBJECT(win), "past", past);
     g_object_set_data(G_OBJECT(win), "hi", hi);
@@ -1635,8 +1856,9 @@ void MainWindow::buildUi(AdwApplication* app)
     gtk_widget_set_margin_end(GTK_WIDGET(m_channelsBox), 8);
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(chPage), GTK_WIDGET(m_channelsBox));
     GtkStringList* patchModel = gtk_string_list_new(nullptr);
+    int map = AppSettings::instance().instrumentMap;
     for (int p = 0; p < 128; ++p)
-        gtk_string_list_append(patchModel, gmPatchName(p));
+        gtk_string_list_append(patchModel, patchName(map, p));
     for (int i = 0; i < kMidiChannels; ++i) {
         GtkWidget* row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
         m_chRow[i] = row;
@@ -1691,6 +1913,8 @@ void MainWindow::buildUi(AdwApplication* app)
                          this);
         g_signal_connect(m_chPatch[i], "notify::selected", (GCallback)(+[](GObject* o, GParamSpec*, gpointer d) {
                              auto* self = static_cast<MainWindow*>(d);
+                             if (self->m_refreshingChannels)
+                                 return;
                              int ch = GPOINTER_TO_INT(g_object_get_data(o, "ch"));
                              int pgm = static_cast<int>(gtk_drop_down_get_selected(GTK_DROP_DOWN(o)));
                              self->m_player.setPatch(ch, pgm);

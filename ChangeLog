@@ -1,3 +1,10 @@
+2026-08-23
+    * ALSA output lists MT-32 / GS / XG ports and sends to the chosen hardware synth
+    * Instrument maps and SysEx resets for GM, GS (SC-55), XG, and MT-32
+    * Companion .syx files are sent before playback (MT-32 dumps)
+    * MIDI Setup: refresh ports, SoundFont picker, test note, remember connection
+    * Pause no longer re-sends a synth reset; FluidSynth tries PulseAudio/PipeWire/ALSA
+
 2026-08-22
     * Rewrite the application with GTK4 and libadwaita
     * First-class playlist sidebar (load/save .lst, shuffle, repeat, auto-advance)

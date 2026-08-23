@@ -163,12 +163,12 @@ MidiEvent* Sequence::nextEvent()
 void Sequence::setTickPosition(int64_t tick)
 {
     for (size_t i = 0; i < m_events.size(); ++i) {
-        if (m_events[i].tick > tick) {
-            m_pos = i > 0 ? i - 1 : 0;
+        if (m_events[i].tick >= tick) {
+            m_pos = i;
             return;
         }
     }
-    m_pos = m_events.empty() ? 0 : m_events.size() - 1;
+    m_pos = m_events.size();
 }
 
 MidiEvent* Sequence::jumpToBar(int bar)
