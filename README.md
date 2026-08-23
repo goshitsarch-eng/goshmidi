@@ -14,7 +14,8 @@ ALSA sequencer ports or to an embedded FluidSynth backend.
 This GTK4 rewrite keeps playback at parity with the original Qt UI, and
 **playlists are a first-class sidebar**.
 
-![App Screenshot](screenshot.png)
+![App Screenshot](https://p.kagi.com/proxy/screenshot.png?c=IVBIz-djrqhBdoI1kAYWuIGdBLzVdwgu0RO3DCOd_o3wHzM7zafCPDhPaFUe6FuRQx3eskzbUvHhtBSisKAaDPlR2o8sJArato3jLu0QNpAYAUg84hhh9hbq0oz6KTK3)
+
 
 
 Original project
