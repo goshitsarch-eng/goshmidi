@@ -8,9 +8,11 @@ cmake_minimum_required(VERSION 3.16)
 project(dmidiplayer
     VERSION 1.7.5
     LANGUAGES C CXX
-    DESCRIPTION "Gosh Midi Player"
-    HOMEPAGE_URL "https://sourceforge.net/p/dmidiplayer/"
+    DESCRIPTION "Gosh MIDI Player"
+    HOMEPAGE_URL "https://github.com/goshitsarch-eng/goshmidi"
 )
+
+set(GOSH_APP_ID "com.goshapps.GoshMIDI")
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -102,8 +104,10 @@ endif()
 
 if(UNIX AND NOT APPLE)
     install(TARGETS dmidiplayer RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-    install(FILES net.sourceforge.dmidiplayer.desktop
+    install(FILES com.goshapps.GoshMIDI.desktop
             DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/applications)
-    install(FILES net.sourceforge.dmidiplayer.metainfo.xml
+    install(FILES com.goshapps.GoshMIDI.metainfo.xml
             DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/metainfo)
+    install(FILES LICENSE
+            DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/licenses/${GOSH_APP_ID})
 endif()

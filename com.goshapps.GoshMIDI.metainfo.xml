@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- Copyright 2021-2024 dmidiplayer developers -->
 <component type="desktop-application">
-    <id>net.sourceforge.dmidiplayer</id>
-    <name>Gosh Midi Player</name>
+    <id>com.goshapps.GoshMIDI</id>
+    <name>Gosh MIDI Player</name>
     <summary>MIDI file player based on dmidiplayer (Drumstick MIDI File Player)</summary>
     <metadata_license>CC0-1.0</metadata_license>
-    <project_license>GPL-3.0+</project_license>
+    <project_license>GPL-3.0-or-later</project_license>
     <description>
-        <p>Gosh Midi Player is a GTK4/libadwaita MIDI file player based on dmidiplayer
+        <p>Gosh MIDI Player is a GTK4/libadwaita MIDI file player based on dmidiplayer
         (Drumstick MIDI File Player) by Pedro López-Cabanillas. The command name remains
         dmidiplayer. Advanced features:</p>
         <ul>
@@ -20,16 +20,18 @@
             <li>Supports .MID (Standard MIDI files), .RMI (RIFF RMID), .KAR (MIDI Karaoke), and .WRK (Cakewalk) file formats</li>
         </ul>
     </description>
-    <launchable type="desktop-id">net.sourceforge.dmidiplayer.desktop</launchable>
-    <url type="homepage">https://sourceforge.net/p/dmidiplayer/</url>
-    <developer_name>Pedro López-Cabanillas</developer_name>
-    <update_contact>plcl_AT_users.sourceforge.net</update_contact>
-    <translation type="qt">dmidiplayer</translation>
-    <content_rating type="oars-1.1" /> <!-- this is broken, validator fails -->
+    <launchable type="desktop-id">com.goshapps.GoshMIDI.desktop</launchable>
+    <url type="homepage">https://github.com/goshitsarch-eng/goshmidi</url>
+    <url type="bugtracker">https://github.com/goshitsarch-eng/goshmidi/issues</url>
+    <url type="vcs-browser">https://github.com/goshitsarch-eng/goshmidi</url>
+    <developer id="com.goshapps">
+        <name>Gosh Apps</name>
+    </developer>
+    <content_rating type="oars-1.1" />
     <screenshots>
         <screenshot type="default">
             <image>https://dmidiplayer.sourceforge.io/screenshot.png</image>
-            <caption>All Windows Screenshot</caption>
+            <caption>Playing a MIDI file with Gosh MIDI Player</caption>
         </screenshot>
     </screenshots>
     <releases>

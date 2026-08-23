@@ -1,11 +1,11 @@
-Gosh Midi Player
+Gosh MIDI Player
 ================
 
 A MIDI file player for Linux with a GTK4 and libadwaita interface. This is a
 display-name fork of **[dmidiplayer](https://sourceforge.net/p/dmidiplayer/)**
-(Drumstick MIDI File Player) by Pedro López-Cabanillas. The command name,
-settings paths, and application ID are unchanged (`dmidiplayer`,
-`~/.config/dmidiplayer`, `~/.dmidiplayer`).
+(Drumstick MIDI File Player) by Pedro López-Cabanillas. The command and compatible settings paths remain
+`dmidiplayer`, `~/.config/dmidiplayer`, and `~/.dmidiplayer`; Gosh Apps releases
+use the permanent application ID `com.goshapps.GoshMIDI`.
 
 It reads **.MID** / **.MIDI** (Standard MIDI Files), **.KAR** (Karaoke),
 **.RMI** (RIFF RMID), and **.WRK** (Cakewalk) files, and sends MIDI events to
