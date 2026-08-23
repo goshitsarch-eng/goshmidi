@@ -36,7 +36,6 @@ private:
     void refreshPlaylistView();
     void refreshChannels();
     void refreshLyrics();
-    void refreshMidiSetupLists();
     void setStatus(const std::string& text);
     void updateTime(std::chrono::milliseconds ms, int64_t ticks);
     void loadCurrent(bool autoPlay);
@@ -56,6 +55,7 @@ private:
     void applyTempo(int percent);
     void applyVolume(int percent);
     void applyPitch(int semis);
+    void applyInstrumentMap();
     void saveSongSettings();
     void loadSongSettings();
     void applyChannelSoloMute();
@@ -114,6 +114,7 @@ private:
     bool m_tightenKeys{};
     int m_repeat{};
     bool m_refreshingLyrics{};
+    bool m_refreshingChannels{};
 };
 
 } // namespace dmidi

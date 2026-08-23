@@ -3,10 +3,15 @@
 */
 
 #include "midi/sequence.hpp"
+#include "midi/sysex.hpp"
 #include "app/playlist.hpp"
+#include "app/instruments.hpp"
 
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <string>
+#include <vector>
 
 static int g_fail;
 
@@ -69,6 +74,47 @@ int main(int argc, char** argv)
     CHECK(dmidi::isSupportedMidiFile("song.wrk"), "wrk supported");
     CHECK(dmidi::isSupportedMidiFile("song.rmi"), "rmi supported");
     CHECK(!dmidi::isSupportedMidiFile("song.wav"), "wav rejected");
+
+    auto gm = dmidi::sysexResetMessage(dmidi::kSysexResetGm);
+    CHECK(gm.size() == 6 && gm.front() == 0xF0 && gm.back() == 0xF7, "GM reset framing");
+    auto mt = dmidi::sysexResetMessage(dmidi::kSysexResetMt32);
+    CHECK(mt.size() == 11 && mt[3] == 0x16 && mt[4] == 0x12, "MT-32 reset model/command");
+    CHECK(dmidi::sysexResetSettleMs(dmidi::kSysexResetMt32) >= 40, "MT-32 needs settle time");
+    std::vector<uint8_t> blob{0x00, 0xF0, 0x41, 0x10, 0xF7, 0xF0, 0x7E, 0x7F, 0x09, 0x01, 0xF7};
+    auto msgs = dmidi::parseSysexMessages(blob);
+    CHECK(msgs.size() == 2, "parse concatenated sysex");
+    CHECK(msgs[1] == gm, "second message is GM reset");
+
+    CHECK(std::string(dmidi::patchName(dmidi::kInstrumentMapMt32, 0)) == "Acou Piano 1", "MT-32 piano");
+    CHECK(std::string(dmidi::patchName(dmidi::kInstrumentMapGm, 0)) == "Acoustic Grand Piano", "GM piano");
+    auto mtProf = dmidi::inferDeviceProfile("Munt:MT-32 Synth (128:0)");
+    CHECK(mtProf.first == dmidi::kInstrumentMapMt32 && mtProf.second == dmidi::kSysexResetMt32,
+          "infer munt/mt32");
+    auto muntStd = dmidi::inferDeviceProfile("MT-32:Standard (128:0)");
+    CHECK(muntStd.first == dmidi::kInstrumentMapMt32, "infer munt Standard port");
+    auto muntGm = dmidi::inferDeviceProfile("MT-32:GM Emulation (128:1)");
+    CHECK(muntGm.first == dmidi::kInstrumentMapGm && muntGm.second == dmidi::kSysexResetGm,
+          "munt GM Emulation stays GM");
+    auto scProf = dmidi::inferDeviceProfile("Roland:SC-55 (20:0)");
+    CHECK(scProf.first == dmidi::kInstrumentMapGs && scProf.second == dmidi::kSysexResetGs,
+          "infer sc-55");
+    auto nukedProf = dmidi::inferDeviceProfile("Virtual SC55:RtMidi (129:0)");
+    CHECK(nukedProf.first == dmidi::kInstrumentMapGs && nukedProf.second == dmidi::kSysexResetGs,
+          "infer nuked virtual sc55");
+    auto rtProf = dmidi::inferDeviceProfile("USB MIDI:RT-55 Port 1");
+    CHECK(rtProf.first == dmidi::kInstrumentMapGs, "infer rt-55 as GS/SC-55 family");
+
+    auto tmpdir = std::filesystem::temp_directory_path();
+    auto midPath = tmpdir / "dmidi-syx-song.mid";
+    auto syx = tmpdir / "dmidi-syx-song.syx";
+    {
+        std::ofstream out(syx, std::ios::binary);
+        out.write(reinterpret_cast<const char*>(mt.data()), static_cast<std::streamsize>(mt.size()));
+    }
+    CHECK(dmidi::companionSyxPath(midPath.string()) == syx.string(), "companion .syx next to midi");
+    auto loaded = dmidi::loadSysexFile(syx.string());
+    CHECK(loaded.size() == 1 && loaded[0] == mt, "load .syx file");
+    std::filesystem::remove(syx);
 
     if (g_fail) {
         std::cerr << g_fail << " checks failed\n";

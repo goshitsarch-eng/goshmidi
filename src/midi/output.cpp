@@ -7,9 +7,27 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fluidsynth.h>
 #include <alsa/asoundlib.h>
+
+#ifndef SND_SEQ_PORT_TYPE_MIDI_GS
+#define SND_SEQ_PORT_TYPE_MIDI_GS (1<<3)
+#endif
+#ifndef SND_SEQ_PORT_TYPE_MIDI_XG
+#define SND_SEQ_PORT_TYPE_MIDI_XG (1<<4)
+#endif
+#ifndef SND_SEQ_PORT_TYPE_MIDI_MT32
+#define SND_SEQ_PORT_TYPE_MIDI_MT32 (1<<5)
+#endif
+#ifndef SND_SEQ_PORT_TYPE_MIDI_GM2
+#define SND_SEQ_PORT_TYPE_MIDI_GM2 (1<<6)
+#endif
+#ifndef SND_SEQ_PORT_TYPE_SYNTHESIZER
+#define SND_SEQ_PORT_TYPE_SYNTHESIZER (1<<10)
+#endif
 
 namespace dmidi {
 namespace {
@@ -80,7 +98,7 @@ public:
         snd_seq_client_info_set_client(cinfo, -1);
         while (snd_seq_query_next_client(m_seq, cinfo) >= 0) {
             int client = snd_seq_client_info_get_client(cinfo);
-            if (client == snd_seq_client_id(m_seq))
+            if (client == snd_seq_client_id(m_seq) || client == 0)
                 continue;
             snd_seq_port_info_set_client(pinfo, client);
             snd_seq_port_info_set_port(pinfo, -1);
@@ -89,10 +107,16 @@ public:
                 unsigned type = snd_seq_port_info_get_type(pinfo);
                 if (!(caps & SND_SEQ_PORT_CAP_WRITE) || !(caps & SND_SEQ_PORT_CAP_SUBS_WRITE))
                     continue;
-                if (!advanced && !(type & (SND_SEQ_PORT_TYPE_MIDI_GENERIC | SND_SEQ_PORT_TYPE_SYNTH
-                                           | SND_SEQ_PORT_TYPE_MIDI_GM | SND_SEQ_PORT_TYPE_APPLICATION
-                                           | SND_SEQ_PORT_TYPE_HARDWARE | SND_SEQ_PORT_TYPE_PORT
-                                           | SND_SEQ_PORT_TYPE_SOFTWARE)))
+                if (caps & SND_SEQ_PORT_CAP_NO_EXPORT)
+                    continue;
+                // Include MT-32 / GS / XG / GM2 synths (Munt, SC-55, hardware modules).
+                const unsigned midiish = SND_SEQ_PORT_TYPE_MIDI_GENERIC | SND_SEQ_PORT_TYPE_SYNTH
+                    | SND_SEQ_PORT_TYPE_MIDI_GM | SND_SEQ_PORT_TYPE_MIDI_GS
+                    | SND_SEQ_PORT_TYPE_MIDI_XG | SND_SEQ_PORT_TYPE_MIDI_MT32
+                    | SND_SEQ_PORT_TYPE_MIDI_GM2 | SND_SEQ_PORT_TYPE_APPLICATION
+                    | SND_SEQ_PORT_TYPE_HARDWARE | SND_SEQ_PORT_TYPE_PORT
+                    | SND_SEQ_PORT_TYPE_SOFTWARE | SND_SEQ_PORT_TYPE_SYNTHESIZER;
+                if (!advanced && type != 0 && !(type & midiish))
                     continue;
                 char id[32];
                 std::snprintf(id, sizeof(id), "%d:%d", client, snd_seq_port_info_get_port(pinfo));
@@ -187,10 +211,11 @@ public:
             return;
         snd_seq_event_t ev;
         snd_seq_ev_clear(&ev);
+        m_sysexScratch = data;
         snd_seq_ev_set_source(&ev, m_port);
-        snd_seq_ev_set_subs(&ev);
+        route(ev);
         snd_seq_ev_set_direct(&ev);
-        snd_seq_ev_set_sysex(&ev, data.size(), const_cast<uint8_t*>(data.data()));
+        snd_seq_ev_set_sysex(&ev, m_sysexScratch.size(), m_sysexScratch.data());
         snd_seq_event_output_direct(m_seq, &ev);
     }
 
@@ -226,9 +251,17 @@ private:
             break;
         }
         snd_seq_ev_set_source(&ev, m_port);
-        snd_seq_ev_set_subs(&ev);
+        route(ev);
         snd_seq_ev_set_direct(&ev);
         snd_seq_event_output_direct(m_seq, &ev);
+    }
+
+    void route(snd_seq_event_t& ev)
+    {
+        if (m_subscribed)
+            snd_seq_ev_set_dest(&ev, m_dest.client, m_dest.port);
+        else
+            snd_seq_ev_set_subs(&ev);
     }
 
     snd_seq_t* m_seq{};
@@ -237,6 +270,7 @@ private:
     bool m_subscribed{};
     std::string m_current;
     std::string m_error;
+    std::vector<uint8_t> m_sysexScratch;
 };
 
 class FluidOutput : public MidiOutput {
@@ -263,15 +297,30 @@ public:
         close();
         m_error.clear();
         m_settings = new_fluid_settings();
-        fluid_settings_setstr(m_settings, "audio.driver", "pulseaudio");
         fluid_settings_setnum(m_settings, "synth.gain", 0.6);
         m_synth = new_fluid_synth(m_settings);
-        m_adriver = new_fluid_audio_driver(m_settings, m_synth);
+        if (!m_synth) {
+            m_error = "Unable to create FluidSynth";
+            return false;
+        }
+        const char* drivers[] = {"pulseaudio", "pipewire", "alsa", "jack", "sdl2", nullptr};
+        for (int i = 0; drivers[i]; ++i) {
+            fluid_settings_setstr(m_settings, "audio.driver", drivers[i]);
+            m_adriver = new_fluid_audio_driver(m_settings, m_synth);
+            if (m_adriver)
+                break;
+        }
+        if (!m_adriver)
+            m_error = "No audio driver (tried PulseAudio, PipeWire, ALSA, JACK)";
         std::string sf = m_requestedSf.empty() ? findDefaultSoundFont() : m_requestedSf;
         if (sf.empty() || fluid_synth_sfload(m_synth, sf.c_str(), 1) == FLUID_FAILED) {
-            m_error = sf.empty() ? "No SoundFont found. Install fluid-soundfont-gm or choose a .sf2 file."
-                                 : "Unable to load SoundFont";
-            // keep synth so MIDI is accepted silently
+            std::string sfErr = sf.empty()
+                ? "No SoundFont found. Choose a .sf2/.sf3 file (GM, MT-32, or SC-55) in MIDI Setup."
+                : "Unable to load SoundFont";
+            if (m_error.empty())
+                m_error = sfErr;
+            else
+                m_error += "; " + sfErr;
         }
         m_current = "fluidsynth";
         return true;
@@ -360,6 +409,7 @@ std::vector<std::string> defaultSoundFontPaths()
         "/usr/share/sounds/sf3/default.sf3",
         "/usr/share/sounds/sf2/TimGM6mb.sf2",
         "/usr/share/sounds/sf2/FluidR3_GS.sf2",
+        "/usr/local/share/soundfonts/default.sf2",
     };
 }
 

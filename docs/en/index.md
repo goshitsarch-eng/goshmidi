@@ -2,7 +2,7 @@
 
 ## Introduction
 
-This application is a MIDI file player for Linux. It reads .MID (Standard MIDI Files), .KAR (Karaoke), .RMI (RIFF RMID), and .WRK (Cakewalk) file formats, and outputs MIDI events to ALSA sequencer ports and FluidSynth.
+This application is a MIDI file player for Linux. It reads .MID (Standard MIDI Files), .KAR (Karaoke), .RMI (RIFF RMID), and .WRK (Cakewalk) file formats, and outputs MIDI events to ALSA sequencer ports (including your own MT-32, SC-55, or USB MIDI module) and FluidSynth.
 
 The user interface is built with GTK4 and libadwaita. Playlists are shown in a sidebar and can be saved as `.lst` files (one path per line).
 
@@ -17,8 +17,8 @@ Linux...
 
 Some key features:
 
-* MIDI Output to hardware MIDI ports, or any other Drumstick backend like soft
-  synths
+* MIDI Output to hardware MIDI ports (ALSA: MT-32, SC-55, USB MIDI, Munt) or
+  FluidSynth with a SoundFont you choose
 * [Transpose](https://en.wikipedia.org/wiki/Transposition_(music)) song tonality 
   between -12 and +12 semitones
 * Change MIDI volume level (using MIDI CC7)

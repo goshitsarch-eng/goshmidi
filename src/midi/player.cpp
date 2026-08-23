@@ -3,17 +3,15 @@
 */
 
 #include "player.hpp"
+#include "sysex.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <glib.h>
 
 namespace dmidi {
 
 namespace {
-constexpr uint8_t kGmReset[] = {0xF0, 0x7E, 0x7F, 0x09, 0x01, 0xF7};
-constexpr uint8_t kGsReset[] = {0xF0, 0x41, 0x10, 0x42, 0x12, 0x40, 0x00, 0x7F, 0x00, 0x41, 0xF7};
-constexpr uint8_t kXgReset[] = {0xF0, 0x43, 0x10, 0x4C, 0x00, 0x00, 0x7E, 0x00, 0xF7};
-
 struct IdleJob {
     std::function<void()> fn;
 };
@@ -65,7 +63,10 @@ void SequencePlayer::emitToUi(const std::function<void()>& fn)
 bool SequencePlayer::loadFile(const std::string& fileName)
 {
     stop();
+    m_paused = false;
+    m_resumeWithoutReset = false;
     bool ok = m_song.loadFile(fileName);
+    m_companionSyx = companionSyxPath(fileName);
     m_songPositionTicks = 0;
     m_firstBeat = m_song.firstBeat();
     m_latestBeat = m_firstBeat;
@@ -82,6 +83,7 @@ void SequencePlayer::play()
         return;
     if (m_song.empty())
         return;
+    m_resumeWithoutReset = m_paused.load();
     m_stopRequested = false;
     m_paused = false;
     m_running = true;
@@ -95,11 +97,17 @@ void SequencePlayer::pause()
     if (!m_running.load())
         return;
     m_paused = true;
-    stop();
+    m_stopRequested = true;
+    if (m_thread.joinable())
+        m_thread.join();
+    m_running = false;
+    allNotesOff();
 }
 
 void SequencePlayer::stop()
 {
+    m_paused = false;
+    m_resumeWithoutReset = false;
     m_stopRequested = true;
     if (m_thread.joinable())
         m_thread.join();
@@ -268,19 +276,46 @@ void SequencePlayer::resetPrograms()
     }
 }
 
+void SequencePlayer::sendSysexPaced(const std::vector<uint8_t>& data)
+{
+    if (!m_out || data.empty())
+        return;
+    auto msgs = parseSysexMessages(data);
+    if (msgs.empty()) {
+        m_out->sendSysex(data);
+        return;
+    }
+    for (auto& msg : msgs) {
+        m_out->sendSysex(msg);
+        int wait = sysexPacingMs(msg.size());
+        if (wait > 0)
+            std::this_thread::sleep_for(std::chrono::milliseconds(wait));
+    }
+}
+
 void SequencePlayer::sendResetMessage()
 {
-    if (!m_out || m_sysexReset <= 0)
+    if (!m_out)
         return;
-    std::vector<uint8_t> msg;
-    if (m_sysexReset == 1)
-        msg.assign(std::begin(kGmReset), std::end(kGmReset));
-    else if (m_sysexReset == 2)
-        msg.assign(std::begin(kGsReset), std::end(kGsReset));
-    else if (m_sysexReset == 3)
-        msg.assign(std::begin(kXgReset), std::end(kXgReset));
-    if (!msg.empty())
+    auto msg = sysexResetMessage(m_sysexReset);
+    if (msg.empty())
+        return;
+    m_out->sendSysex(msg);
+    int wait = sysexResetSettleMs(m_sysexReset);
+    if (wait > 0)
+        std::this_thread::sleep_for(std::chrono::milliseconds(wait));
+}
+
+void SequencePlayer::sendCompanionSysex()
+{
+    if (!m_out || m_companionSyx.empty())
+        return;
+    auto msgs = loadSysexFile(m_companionSyx);
+    for (auto& msg : msgs) {
         m_out->sendSysex(msg);
+        int wait = std::max(sysexPacingMs(msg.size()), 15);
+        std::this_thread::sleep_for(std::chrono::milliseconds(wait));
+    }
 }
 
 void SequencePlayer::sendVolumeEvents()
@@ -371,7 +406,7 @@ void SequencePlayer::playEvent(const MidiEvent& ev)
     } else {
         switch (ev.kind) {
         case MidiEvent::Kind::SysEx:
-            m_out->sendSysex(ev.data);
+            sendSysexPaced(ev.data);
             break;
         case MidiEvent::Kind::Text:
             if (onText) {
@@ -384,7 +419,7 @@ void SequencePlayer::playEvent(const MidiEvent& ev)
         case MidiEvent::Kind::Tempo:
             m_song.updateTempo(ev.tempo);
             if (onTempo) {
-                double t = ev.tempo;
+                double t = m_song.currentTempo();
                 emitToUi([this, t] { onTempo(t); });
             }
             break;
@@ -423,9 +458,13 @@ void SequencePlayer::playerLoop()
     const int echoRes = 50;
     auto currentTime = Clock::now();
     auto startTime = currentTime;
-    sendResetMessage();
-    resetControllers();
-    sendVolumeEvents();
+    if (!m_resumeWithoutReset) {
+        sendResetMessage();
+        sendCompanionSysex();
+        resetControllers();
+        sendVolumeEvents();
+    }
+    m_resumeWithoutReset = false;
     if (onStarted)
         emitToUi([this] { onStarted(); });
 
@@ -469,8 +508,12 @@ void SequencePlayer::playerLoop()
             }
             playEvent(*ev);
         }
-        if (m_loopEnabled && !m_stopRequested.load())
+        if (m_loopEnabled && !m_stopRequested.load()) {
             jumpToBar(m_loopStart);
+            currentTime = Clock::now();
+            startTime = currentTime;
+            echoTicks = m_songPositionTicks.load();
+        }
     } while (m_song.hasMoreEvents() && !m_stopRequested.load());
 
     bool finished = !m_song.hasMoreEvents() && !m_stopRequested.load();
