@@ -100,6 +100,10 @@ if(BUILD_TESTING)
     target_link_libraries(dmidiplayer-test PRIVATE dmidi-core)
     add_test(NAME sequence_playlist
              COMMAND dmidiplayer-test ${CMAKE_SOURCE_DIR}/examples)
+    add_test(NAME canonical_application_identity
+             COMMAND ${CMAKE_COMMAND}
+                     -DPROJECT_SOURCE_DIR=${CMAKE_SOURCE_DIR}
+                     -P ${CMAKE_SOURCE_DIR}/tests/check_identity.cmake)
 endif()
 
 if(UNIX AND NOT APPLE)

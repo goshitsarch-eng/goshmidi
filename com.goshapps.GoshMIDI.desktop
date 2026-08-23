@@ -9,5 +9,6 @@ Categories=AudioVideo;Audio;Midi;
 MimeType=audio/midi;audio/x-midi;audio/cakewalk;application/x-riff;
 Comment=MIDI and Karaoke player based on dmidiplayer (Drumstick MIDI File Player)
 StartupNotify=true
+StartupWMClass=com.goshapps.GoshMIDI
 Comment[es]=Reproductor de archivos MIDI y Karaoke basado en dmidiplayer
 Comment[ru]=MIDI и караоке-проигрыватель на основе dmidiplayer
