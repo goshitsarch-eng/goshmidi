@@ -11,22 +11,42 @@
 #include <iostream>
 #include <vector>
 
-static void on_activate(GtkApplication* app, gpointer)
+static dmidi::MainWindow* mainWindow = nullptr;
+
+static dmidi::MainWindow* ensure_window(GtkApplication* app)
 {
-    static dmidi::MainWindow* win = nullptr;
-    if (!win) {
-        win = new dmidi::MainWindow(ADW_APPLICATION(app));
-        gtk_window_present(win->gtkWindow());
-        auto* files = static_cast<std::vector<std::string>*>(g_object_get_data(G_OBJECT(app), "files"));
+    if (!mainWindow) {
+        mainWindow = new dmidi::MainWindow(ADW_APPLICATION(app));
         auto* backend = static_cast<std::string*>(g_object_get_data(G_OBJECT(app), "backend"));
         auto* conn = static_cast<std::string*>(g_object_get_data(G_OBJECT(app), "conn"));
         if (backend && conn && !backend->empty() && !conn->empty())
-            win->connectOutput(*backend, *conn);
-        if (files && !files->empty())
-            win->openFiles(*files, true);
-    } else {
-        gtk_window_present(win->gtkWindow());
+            mainWindow->connectOutput(*backend, *conn);
     }
+    return mainWindow;
+}
+
+static void on_activate(GtkApplication* app, gpointer)
+{
+    auto* win = ensure_window(app);
+    gtk_window_present(win->gtkWindow());
+}
+
+static void on_open(GtkApplication* app, GFile** files, gint nFiles, const gchar*, gpointer)
+{
+    std::vector<std::string> paths;
+    paths.reserve(static_cast<std::size_t>(nFiles));
+    for (gint i = 0; i < nFiles; ++i) {
+        gchar* path = g_file_get_path(files[i]);
+        if (path) {
+            paths.emplace_back(path);
+            g_free(path);
+        }
+    }
+
+    auto* win = ensure_window(app);
+    if (!paths.empty())
+        win->openFiles(paths, true);
+    gtk_window_present(win->gtkWindow());
 }
 
 int main(int argc, char** argv)
@@ -85,15 +105,24 @@ int main(int argc, char** argv)
     adw_init();
     dmidi::AppSettings::instance().load();
 
-    AdwApplication* app = adw_application_new("com.goshapps.GoshMIDI", G_APPLICATION_DEFAULT_FLAGS);
-    g_object_set_data_full(G_OBJECT(app), "files", new std::vector<std::string>(files),
-                           [](gpointer p) { delete static_cast<std::vector<std::string>*>(p); });
+    AdwApplication* app = adw_application_new("com.goshapps.GoshMIDI", G_APPLICATION_HANDLES_OPEN);
     g_object_set_data_full(G_OBJECT(app), "backend", new std::string(backend),
                            [](gpointer p) { delete static_cast<std::string*>(p); });
     g_object_set_data_full(G_OBJECT(app), "conn", new std::string(conn),
                            [](gpointer p) { delete static_cast<std::string*>(p); });
     g_signal_connect(app, "activate", G_CALLBACK(on_activate), nullptr);
-    int status = g_application_run(G_APPLICATION(app), 0, nullptr);
+    g_signal_connect(app, "open", G_CALLBACK(on_open), nullptr);
+
+    std::vector<std::string> applicationArgs{argv[0]};
+    applicationArgs.insert(applicationArgs.end(), files.begin(), files.end());
+    std::vector<char*> applicationArgv;
+    applicationArgv.reserve(applicationArgs.size() + 1);
+    for (auto& arg : applicationArgs)
+        applicationArgv.push_back(arg.data());
+    applicationArgv.push_back(nullptr);
+
+    int status = g_application_run(G_APPLICATION(app), static_cast<int>(applicationArgs.size()),
+                                   applicationArgv.data());
     g_object_unref(app);
     return status;
 }
