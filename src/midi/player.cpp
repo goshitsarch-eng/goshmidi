@@ -1,29 +1,16 @@
 /*
-    Drumstick MIDI File Player — GTK4/libadwaita rewrite
+    Gosh MIDI Player — Qt6/Kirigami
 */
 
 #include "player.hpp"
 #include "sysex.hpp"
 
+#include "../app/dispatch.hpp"
+
 #include <algorithm>
 #include <cmath>
-#include <glib.h>
 
 namespace dmidi {
-
-namespace {
-struct IdleJob {
-    std::function<void()> fn;
-};
-
-gboolean idleTrampoline(gpointer data)
-{
-    auto* job = static_cast<IdleJob*>(data);
-    job->fn();
-    delete job;
-    return G_SOURCE_REMOVE;
-}
-} // namespace
 
 SequencePlayer::SequencePlayer()
 {
@@ -55,9 +42,7 @@ int SequencePlayer::boundedFloor(int initial, double factor) const
 
 void SequencePlayer::emitToUi(const std::function<void()>& fn)
 {
-    if (!fn)
-        return;
-    g_idle_add(idleTrampoline, new IdleJob{fn});
+    postToUiThread(fn);
 }
 
 bool SequencePlayer::loadFile(const std::string& fileName)

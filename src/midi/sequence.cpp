@@ -1,16 +1,18 @@
 /*
-    Drumstick MIDI File Player — GTK4/libadwaita rewrite
+    Gosh MIDI Player — Qt6/Kirigami
     Copyright (C) 2006-2026 Pedro Lopez-Cabanillas and contributors
 */
 
 #include "sequence.hpp"
+
+#include <QByteArray>
+#include <QTextCodec>
 
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
-#include <glib.h>
 #include <uchardet.h>
 
 namespace dmidi {
@@ -369,22 +371,11 @@ std::string Sequence::decodeText(const std::vector<uint8_t>& data) const
 {
     if (data.empty())
         return {};
-    gsize br = 0, bw = 0;
-    GError* err = nullptr;
-    char* conv = g_convert(reinterpret_cast<const char*>(data.data()),
-                           static_cast<gssize>(data.size()),
-                           "UTF-8",
-                           m_charset.c_str(),
-                           &br,
-                           &bw,
-                           &err);
-    if (err) {
-        g_error_free(err);
-        return std::string(data.begin(), data.end());
-    }
-    std::string s(conv, bw);
-    g_free(conv);
-    return s;
+    const QByteArray raw(reinterpret_cast<const char*>(data.data()),
+                         static_cast<qsizetype>(data.size()));
+    if (auto* codec = QTextCodec::codecForName(QByteArray::fromStdString(m_charset)))
+        return codec->toUnicode(raw).toStdString();
+    return std::string(data.begin(), data.end());
 }
 
 std::vector<std::string> Sequence::getText(TextType type) const
@@ -409,8 +400,23 @@ std::vector<std::pair<int, std::vector<uint8_t>>> Sequence::getRawText(int track
 
 std::vector<std::string> Sequence::extraCodecNames()
 {
-    return {"UTF-8", "ISO-8859-1", "WINDOWS-1252", "SHIFT_JIS", "GBK", "BIG5", "KOI8-R", "EUC-KR",
-            "ISO-8859-2", "ISO-8859-5", "ISO-8859-9", "WINDOWS-1251", "WINDOWS-1250", "MACINTOSH"};
+    // Curated shortlist — the encodings karaoke files are actually written in.
+    // Anything Qt cannot provide on this system is dropped so the encoding
+    // chooser never offers a codec that would fail to decode.
+    static const char* const kPreferred[] = {
+        "UTF-8",       "ISO-8859-1",   "WINDOWS-1252", "SHIFT_JIS",    "GBK",
+        "BIG5",        "KOI8-R",       "EUC-KR",       "EUC-JP",       "ISO-8859-2",
+        "ISO-8859-5",  "ISO-8859-7",   "ISO-8859-9",   "ISO-8859-15",  "WINDOWS-1250",
+        "WINDOWS-1251", "WINDOWS-1253", "WINDOWS-1254", "WINDOWS-1256", "MACINTOSH",
+    };
+    std::vector<std::string> out;
+    for (const char* name : kPreferred) {
+        if (QTextCodec::codecForName(name))
+            out.emplace_back(name);
+    }
+    if (out.empty())
+        out.emplace_back("UTF-8");
+    return out;
 }
 
 void Sequence::feedCharset(const std::vector<uint8_t>& data)

@@ -1,5 +1,5 @@
 /*
-    Drumstick MIDI File Player — GTK4/libadwaita rewrite
+    Gosh MIDI Player — Qt6/Kirigami
     Copyright (C) 2006-2026 Pedro Lopez-Cabanillas and contributors
 */
 

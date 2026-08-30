@@ -4,7 +4,9 @@
 
 This application is a MIDI file player for Linux. It reads .MID (Standard MIDI Files), .KAR (Karaoke), .RMI (RIFF RMID), and .WRK (Cakewalk) file formats, and outputs MIDI events to ALSA sequencer ports (including your own MT-32, SC-55, or USB MIDI module) and FluidSynth.
 
-The user interface is built with GTK4 and libadwaita. Playlists are shown in a sidebar and can be saved as `.lst` files (one path per line).
+The user interface is built with Qt 6 and Kirigami, and follows the desktop's colour scheme in light and dark. Playlists are shown in a sidebar and can be saved as `.lst` files (one path or address per line).
+
+Files that live on a network share can be played directly: pick one in the file dialog, or use **Open Location** (Ctrl+L) and type an address such as `smb://server/music/song.mid`.
 
 [Drumstick](https://drumstick.sourceforge.io) is a set of GPLv3 
 licensed C++/Qt libraries for MIDI applications. The project includes several 

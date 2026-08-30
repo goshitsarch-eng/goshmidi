@@ -2,9 +2,9 @@ name: Build on Linux
 
 on:
   push:
-    branches: [ "devel", "master" ]
+    branches: [ "devel", "master", "Main" ]
   pull_request:
-    branches: [ "devel", "master" ]
+    branches: [ "devel", "master", "Main" ]
   workflow_dispatch:
 
 env:
@@ -12,15 +12,33 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # Pinned: the KDE neon archive below is built against 24.04.
+    runs-on: ubuntu-24.04
 
     steps:
     - uses: actions/checkout@v6
 
+    # Ubuntu 24.04 ships no KDE Frameworks 6, so take Qt 6 and KF6 from the
+    # KDE neon archive, which targets this same release.
+    - name: Add the KDE neon archive
+      run: |
+        sudo curl -fsSL https://archive.neon.kde.org/public.key -o /etc/apt/keyrings/neon.asc
+        sudo tee /etc/apt/sources.list.d/neon.sources >/dev/null <<'SOURCES'
+        Types: deb
+        URIs: http://archive.neon.kde.org/user/
+        Suites: noble
+        Components: main
+        Signed-By: /etc/apt/keyrings/neon.asc
+        SOURCES
+        sudo apt-get update
+
     - name: Dependencies
-      run: sudo apt-get update && sudo apt-get install -yq
-        cmake g++ pkg-config
-        libgtk-4-dev libadwaita-1-dev
+      run: sudo apt-get install -yq --no-install-recommends
+        cmake g++ pkg-config extra-cmake-modules
+        qt6-base-dev qt6-declarative-dev qt6-tools-dev qt6-5compat-dev
+        kf6-kirigami-dev kf6-kirigami-addons-dev
+        libkf6coreaddons-dev libkf6i18n-dev libkf6config-dev
+        libkf6kio-dev libkf6iconthemes-dev libkf6colorscheme-dev
         libasound2-dev libfluidsynth-dev libuchardet-dev
 
     - name: Configure CMake
@@ -34,3 +52,6 @@ jobs:
 
     - name: Test
       run: ctest --test-dir ${{github.workspace}}/build --output-on-failure
+
+    - name: Lint the QML
+      run: cmake --build ${{github.workspace}}/build --target all_qmllint

@@ -1,3 +1,17 @@
+2026-08-30
+    * Rewrite the user interface in Qt 6 and Kirigami; nothing GTK or libadwaita remains
+    * Follows the Plasma colour scheme in light and dark, with the org.kde.desktop style
+    * Convergent layout: the playlist sits beside the player on wide windows
+    * Play files from network shares — smb://, sftp://, dav:// and anything else KIO
+      reaches — which the file dialog previously listed but could not open
+    * Fetch a companion .syx dump from the same remote directory
+    * Add Open Location (Ctrl+L) for opening an address directly
+    * Karaoke lyrics honour the KAR '/' and '\' line and verse markers, and the
+      highlight follows the song's position rather than a running count
+    * Single instance over D-Bus: opening a file hands it to the running window
+    * Settings move to QSettings and text decoding to Qt, keeping the existing
+      ~/.config/dmidiplayer/dmidiplayer.conf and ~/.dmidiplayer/<song>.cfg files
+
 2026-08-23
     * Display name is Gosh MIDI Player; binary and settings paths stay dmidiplayer
     * About dialog credits original dmidiplayer (Drumstick MIDI File Player)

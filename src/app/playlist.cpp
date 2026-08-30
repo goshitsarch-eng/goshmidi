@@ -1,5 +1,5 @@
 /*
-    Drumstick MIDI File Player — GTK4/libadwaita rewrite
+    Gosh MIDI Player — Qt6/Kirigami
 */
 
 #include "playlist.hpp"
@@ -11,6 +11,20 @@
 #include <random>
 
 namespace dmidi {
+namespace {
+
+// Local paths are canonicalised so duplicates collapse; remote locators are
+// kept verbatim because they are URLs, not filesystem paths.
+std::string normalise(const std::string& locator)
+{
+    if (isRemoteLocator(locator))
+        return locator;
+    std::error_code ec;
+    auto canonical = std::filesystem::weakly_canonical(locator, ec);
+    return ec ? locator : canonical.string();
+}
+
+} // namespace
 
 bool Playlist::load(const std::string& fileName)
 {
@@ -23,13 +37,18 @@ bool Playlist::load(const std::string& fileName)
     while (std::getline(in, line)) {
         if (!line.empty() && line.back() == '\r')
             line.pop_back();
-        if (line.empty())
+        if (line.empty() || line[0] == '#')
             continue;
+        if (isRemoteLocator(line)) {
+            if (isSupportedMidiFile(line))
+                m_items.push_back(line);
+            continue;
+        }
         std::filesystem::path p(line);
         if (p.is_relative())
             p = base / p;
         if (isSupportedMidiFile(p.string()))
-            m_items.push_back(std::filesystem::weakly_canonical(p).string());
+            m_items.push_back(normalise(p.string()));
     }
     m_file = fileName;
     m_current = m_items.empty() ? -1 : 0;
@@ -77,7 +96,7 @@ void Playlist::add(const std::string& path)
 {
     if (!isSupportedMidiFile(path))
         return;
-    m_items.push_back(std::filesystem::weakly_canonical(path).string());
+    m_items.push_back(normalise(path));
     if (m_current < 0)
         m_current = 0;
     m_dirty = true;

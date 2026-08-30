@@ -7,8 +7,9 @@
     <metadata_license>CC0-1.0</metadata_license>
     <project_license>GPL-3.0-or-later</project_license>
     <description>
-        <p>Gosh MIDI Player is a GTK4/libadwaita MIDI file player based on dmidiplayer
-        (Drumstick MIDI File Player) by Pedro López-Cabanillas. The command name remains
+        <p>Gosh MIDI Player is a Qt 6 and Kirigami MIDI file player for the Plasma desktop,
+        based on dmidiplayer (Drumstick MIDI File Player) by Pedro López-Cabanillas. It follows
+        the system colour scheme in both light and dark. The command name remains
         dmidiplayer. Advanced features:</p>
         <ul>
             <li>MIDI Output to ALSA ports or FluidSynth</li>
@@ -18,6 +19,7 @@
             <li>Piano, MIDI Channels, Rhythm, and Lyrics (Karaoke) views</li>
             <li>First-class playlists with shuffle, repeat, and auto-advance</li>
             <li>Supports .MID (Standard MIDI files), .RMI (RIFF RMID), .KAR (MIDI Karaoke), and .WRK (Cakewalk) file formats</li>
+            <li>Plays files straight from network shares — Samba, SSH, WebDAV and anything else KIO can reach</li>
         </ul>
     </description>
     <launchable type="desktop-id">com.goshapps.GoshMIDI.desktop</launchable>
@@ -35,6 +37,15 @@
         </screenshot>
     </screenshots>
     <releases>
+        <release version="2.0.0" date="2026-08-30">
+            <description>
+                <p>The interface has been rewritten in Qt 6 and Kirigami and now looks and behaves
+                like a native Plasma application, following the system colour scheme in light and
+                dark. Files on network shares, which the file dialog listed but could not open,
+                now play in the app: any address KIO can reach is fetched in the background,
+                together with its companion SysEx dump.</p>
+            </description>
+        </release>
         <release version="1.7.5" date="2024-12-30" />
         <release version="1.7.4" date="2024-08-31" />
         <release version="1.7.3" date="2023-10-12" />

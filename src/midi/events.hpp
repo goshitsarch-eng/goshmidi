@@ -1,5 +1,5 @@
 /*
-    Drumstick MIDI File Player — GTK4/libadwaita rewrite
+    Gosh MIDI Player — Qt6/Kirigami
     Copyright (C) 2006-2026 Pedro Lopez-Cabanillas and contributors
 
     This program is free software; you can redistribute it and/or modify
@@ -187,6 +187,11 @@ inline int clampMidi(int v)
     return v;
 }
 
+// A "locator" is either a local filesystem path or a URL a KIO worker can
+// reach (smb://, sftp://, nfs://, dav://, …).
+bool isRemoteLocator(const std::string& locator);
+std::string locatorFileName(const std::string& locator);
 bool isSupportedMidiFile(const std::string& path);
+bool isPlaylistFile(const std::string& path);
 
 } // namespace dmidi

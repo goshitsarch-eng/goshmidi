@@ -1,14 +1,15 @@
 [Desktop Entry]
 Name=Gosh MIDI Player
 GenericName=MIDI File Player
-Exec=dmidiplayer %F
+Exec=dmidiplayer %U
 Icon=com.goshapps.GoshMIDI
 Terminal=false
 Type=Application
-Categories=AudioVideo;Audio;Midi;
+Categories=AudioVideo;Audio;Midi;Qt;KDE;
 MimeType=audio/midi;audio/x-midi;audio/cakewalk;application/x-riff;
 Comment=MIDI and Karaoke player based on dmidiplayer (Drumstick MIDI File Player)
 StartupNotify=true
 StartupWMClass=com.goshapps.GoshMIDI
 Comment[es]=Reproductor de archivos MIDI y Karaoke basado en dmidiplayer
 Comment[ru]=MIDI и караоке-проигрыватель на основе dmidiplayer
+Keywords=MIDI;Karaoke;player;SMF;KAR;RMI;Cakewalk;lyrics;

@@ -1,38 +1,44 @@
 /*
-    Drumstick MIDI File Player — GTK4/libadwaita rewrite
+    Gosh MIDI Player — Qt6/Kirigami
 */
 
 #include "settings.hpp"
 
+#include <QDir>
+#include <QSettings>
+#include <QStandardPaths>
+#include <QString>
+#include <QStringList>
+
 #include <algorithm>
 #include <filesystem>
-#include <fstream>
-#include <glib.h>
-#include <sstream>
 
 namespace dmidi {
 namespace {
-std::string g_portableFile;
-bool g_portable{};
 
+std::string s_portableFile;
+bool s_portable{};
+
+// Top-level QSettings keys land in the INI file's [General] section, which is
+// exactly where the previous key-file based configuration wrote them, so an
+// existing ~/.config/dmidiplayer/dmidiplayer.conf keeps working untouched.
 std::string defaultConfigPath()
 {
-    if (g_portable) {
-        if (!g_portableFile.empty())
-            return g_portableFile;
-        return std::filesystem::current_path() / "dmidiplayer.conf";
+    if (s_portable) {
+        if (!s_portableFile.empty())
+            return s_portableFile;
+        return (std::filesystem::current_path() / "dmidiplayer.conf").string();
     }
-    auto* dir = g_get_user_config_dir();
-    std::filesystem::path p = std::filesystem::path(dir) / "dmidiplayer";
-    std::error_code ec;
-    std::filesystem::create_directories(p, ec);
-    return (p / "dmidiplayer.conf").string();
+    const QString base = QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation);
+    QDir().mkpath(base + QStringLiteral("/dmidiplayer"));
+    return (base + QStringLiteral("/dmidiplayer/dmidiplayer.conf")).toStdString();
 }
 
-std::string colorOr(const char* v, const char* fallback)
+QSettings openSettings()
 {
-    return (v && *v) ? v : fallback;
+    return QSettings(QString::fromStdString(defaultConfigPath()), QSettings::IniFormat);
 }
+
 } // namespace
 
 AppSettings& AppSettings::instance()
@@ -43,20 +49,18 @@ AppSettings& AppSettings::instance()
 
 void AppSettings::setPortable(const std::string& file)
 {
-    g_portable = true;
-    g_portableFile = file;
+    s_portable = true;
+    s_portableFile = file;
 }
 
 std::string AppSettings::configDir()
 {
-    if (g_portable)
-        return std::filesystem::path(defaultConfigPath()).parent_path().string();
-    return (std::filesystem::path(g_get_user_config_dir()) / "dmidiplayer").string();
+    return std::filesystem::path(defaultConfigPath()).parent_path().string();
 }
 
 std::string AppSettings::dataDir()
 {
-    auto p = std::filesystem::path(g_get_home_dir()) / ".dmidiplayer";
+    auto p = std::filesystem::path(QDir::homePath().toStdString()) / ".dmidiplayer";
     std::error_code ec;
     std::filesystem::create_directories(p, ec);
     return p.string();
@@ -74,43 +78,25 @@ void AppSettings::resetDefaults()
 
 void AppSettings::load()
 {
-    GKeyFile* kf = g_key_file_new();
-    GError* err = nullptr;
-    if (!g_key_file_load_from_file(kf, defaultConfigPath().c_str(), G_KEY_FILE_NONE, &err)) {
-        if (err)
-            g_error_free(err);
-        g_key_file_free(kf);
-        return;
-    }
-    auto str = [&](const char* k, const std::string& def) {
-        GError* e = nullptr;
-        char* v = g_key_file_get_string(kf, "General", k, &e);
-        if (e) {
-            g_error_free(e);
+    QSettings s = openSettings();
+
+    auto str = [&](const char* key, const std::string& def) {
+        const QVariant v = s.value(QString::fromLatin1(key));
+        if (!v.isValid())
             return def;
-        }
-        std::string s = v ? v : def;
-        g_free(v);
-        return s;
+        const QString text = v.toString();
+        return text.isEmpty() ? def : text.toStdString();
     };
-    auto num = [&](const char* k, int def) {
-        GError* e = nullptr;
-        int v = g_key_file_get_integer(kf, "General", k, &e);
-        if (e) {
-            g_error_free(e);
-            return def;
-        }
-        return v;
+    auto num = [&](const char* key, int def) {
+        bool ok = false;
+        const int v = s.value(QString::fromLatin1(key)).toInt(&ok);
+        return ok ? v : def;
     };
-    auto flag = [&](const char* k, bool def) {
-        GError* e = nullptr;
-        gboolean v = g_key_file_get_boolean(kf, "General", k, &e);
-        if (e) {
-            g_error_free(e);
-            return def;
-        }
-        return bool(v);
+    auto flag = [&](const char* key, bool def) {
+        const QVariant v = s.value(QString::fromLatin1(key));
+        return v.isValid() ? v.toBool() : def;
     };
+
     lastDirectory = str("lastDirectory", lastDirectory);
     lastOutputBackend = str("lastOutputBackend", lastOutputBackend);
     lastOutputConnection = str("lastOutputConnection", lastOutputConnection);
@@ -131,7 +117,7 @@ void AppSettings::load()
     namesVisibility = num("namesVisibility", namesVisibility);
     lyricsFont = str("lyricsFont", lyricsFont);
     notesFont = str("notesFont", notesFont);
-    futureColor = colorOr(str("futureColor", futureColor).c_str(), "#888888");
+    futureColor = str("futureColor", futureColor);
     pastColor = str("pastColor", pastColor);
     singleColor = str("singleColor", singleColor);
     highlightColor = str("highlightColor", highlightColor);
@@ -140,63 +126,59 @@ void AppSettings::load()
     windowHeight = num("windowHeight", windowHeight);
     playlistVisible = flag("playlistVisible", playlistVisible);
     repeatMode = num("repeatMode", repeatMode);
-    gsize n = 0;
-    char** rec = g_key_file_get_string_list(kf, "General", "recentFiles", &n, nullptr);
+
+    // Semicolon-separated, matching the list syntax the previous releases wrote.
     recentFiles.clear();
-    if (rec) {
-        for (gsize i = 0; i < n; ++i)
-            recentFiles.emplace_back(rec[i]);
-        g_strfreev(rec);
-    }
-    g_key_file_free(kf);
+    const QStringList recent =
+        s.value(QStringLiteral("recentFiles")).toString().split(QLatin1Char(';'), Qt::SkipEmptyParts);
+    for (const QString& r : recent)
+        recentFiles.push_back(r.toStdString());
 }
 
 void AppSettings::save() const
 {
-    GKeyFile* kf = g_key_file_new();
-    g_key_file_set_string(kf, "General", "lastDirectory", lastDirectory.c_str());
-    g_key_file_set_string(kf, "General", "lastOutputBackend", lastOutputBackend.c_str());
-    g_key_file_set_string(kf, "General", "lastOutputConnection", lastOutputConnection.c_str());
-    g_key_file_set_string(kf, "General", "lastPlayList", lastPlayList.c_str());
-    g_key_file_set_string(kf, "General", "soundFont", soundFont.c_str());
-    g_key_file_set_string(kf, "General", "language", language.c_str());
-    g_key_file_set_integer(kf, "General", "drumsChannel", drumsChannel);
-    g_key_file_set_integer(kf, "General", "soloVolumeReduction", soloVolumeReduction);
-    g_key_file_set_boolean(kf, "General", "autoPlay", autoPlay);
-    g_key_file_set_boolean(kf, "General", "autoAdvance", autoAdvance);
-    g_key_file_set_boolean(kf, "General", "autoSongSettings", autoSongSettings);
-    g_key_file_set_boolean(kf, "General", "advancedPorts", advancedPorts);
-    g_key_file_set_integer(kf, "General", "sysexReset", sysexReset);
-    g_key_file_set_integer(kf, "General", "instrumentMap", instrumentMap);
-    g_key_file_set_integer(kf, "General", "highlightPalette", highlightPalette);
-    g_key_file_set_boolean(kf, "General", "velocityColor", velocityColor);
-    g_key_file_set_boolean(kf, "General", "octaveSubscript", octaveSubscript);
-    g_key_file_set_integer(kf, "General", "namesVisibility", namesVisibility);
-    g_key_file_set_string(kf, "General", "lyricsFont", lyricsFont.c_str());
-    g_key_file_set_string(kf, "General", "notesFont", notesFont.c_str());
-    g_key_file_set_string(kf, "General", "futureColor", futureColor.c_str());
-    g_key_file_set_string(kf, "General", "pastColor", pastColor.c_str());
-    g_key_file_set_string(kf, "General", "singleColor", singleColor.c_str());
-    g_key_file_set_string(kf, "General", "highlightColor", highlightColor.c_str());
-    g_key_file_set_integer(kf, "General", "textAlignment", textAlignment);
-    g_key_file_set_integer(kf, "General", "windowWidth", windowWidth);
-    g_key_file_set_integer(kf, "General", "windowHeight", windowHeight);
-    g_key_file_set_boolean(kf, "General", "playlistVisible", playlistVisible);
-    g_key_file_set_integer(kf, "General", "repeatMode", repeatMode);
-    std::vector<char*> rec;
-    rec.reserve(recentFiles.size());
-    for (auto& s : recentFiles)
-        rec.push_back(const_cast<char*>(s.c_str()));
-    if (!rec.empty())
-        g_key_file_set_string_list(kf, "General", "recentFiles", rec.data(), rec.size());
-    gsize len = 0;
-    char* data = g_key_file_to_data(kf, &len, nullptr);
-    GError* err = nullptr;
-    g_file_set_contents(defaultConfigPath().c_str(), data, static_cast<gssize>(len), &err);
-    if (err)
-        g_error_free(err);
-    g_free(data);
-    g_key_file_free(kf);
+    QSettings s = openSettings();
+    auto set = [&](const char* key, const QVariant& value) {
+        s.setValue(QString::fromLatin1(key), value);
+    };
+
+    set("lastDirectory", QString::fromStdString(lastDirectory));
+    set("lastOutputBackend", QString::fromStdString(lastOutputBackend));
+    set("lastOutputConnection", QString::fromStdString(lastOutputConnection));
+    set("lastPlayList", QString::fromStdString(lastPlayList));
+    set("soundFont", QString::fromStdString(soundFont));
+    set("language", QString::fromStdString(language));
+    set("drumsChannel", drumsChannel);
+    set("soloVolumeReduction", soloVolumeReduction);
+    set("autoPlay", autoPlay);
+    set("autoAdvance", autoAdvance);
+    set("autoSongSettings", autoSongSettings);
+    set("advancedPorts", advancedPorts);
+    set("sysexReset", sysexReset);
+    set("instrumentMap", instrumentMap);
+    set("highlightPalette", highlightPalette);
+    set("velocityColor", velocityColor);
+    set("octaveSubscript", octaveSubscript);
+    set("namesVisibility", namesVisibility);
+    set("lyricsFont", QString::fromStdString(lyricsFont));
+    set("notesFont", QString::fromStdString(notesFont));
+    set("futureColor", QString::fromStdString(futureColor));
+    set("pastColor", QString::fromStdString(pastColor));
+    set("singleColor", QString::fromStdString(singleColor));
+    set("highlightColor", QString::fromStdString(highlightColor));
+    set("textAlignment", textAlignment);
+    set("windowWidth", windowWidth);
+    set("windowHeight", windowHeight);
+    set("playlistVisible", playlistVisible);
+    set("repeatMode", repeatMode);
+
+    QStringList recent;
+    recent.reserve(static_cast<qsizetype>(recentFiles.size()));
+    for (const auto& r : recentFiles)
+        recent << QString::fromStdString(r);
+    set("recentFiles", recent.join(QLatin1Char(';')));
+
+    s.sync();
 }
 
 void AppSettings::addRecent(const std::string& path)
