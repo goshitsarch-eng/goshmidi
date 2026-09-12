@@ -165,7 +165,7 @@ lead = PLAN/DECISIONS/REPORT + glue.
       track offsets), chardetng/encoding_rs + normalization spec (A10),
       14 codecs, KAR headers, off-list dropdown rule; goldens + lyric-decode
       goldens across fixtures/charsets.
-- [ ] T5 SysEx/instruments/output-trait (arch): resets/pacing, `.syx` parse,
+- [x] T5 SysEx/instruments/output-trait (arch): resets/pacing, `.syx` parse, — DONE (36 tests, suite 113/113, 3015-vector differential fuzz clean, devil SIGN-OFF; 2 doc nits carried to T6)
       companion lookup, patch tables, `inferDeviceProfile`, `MidiOutput`
       trait (failable `open`, A15) + Dummy + Manager (close-previous-first,
       unknown→ALSA — A6c); unit tests.

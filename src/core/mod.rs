@@ -10,10 +10,16 @@
 #[allow(dead_code)]
 pub mod event;
 #[allow(dead_code)]
+pub mod instruments;
+#[allow(dead_code)]
+pub mod output;
+#[allow(dead_code)]
+pub(crate) mod rmi;
+#[allow(dead_code)]
 pub mod sequence;
 #[allow(dead_code)]
 pub(crate) mod smf;
 #[allow(dead_code)]
-pub(crate) mod rmi;
+pub mod sysex;
 #[allow(dead_code)]
 pub(crate) mod wrk;
