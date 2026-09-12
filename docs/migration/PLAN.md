@@ -157,7 +157,7 @@ lead = PLAN/DECISIONS/REPORT + glue.
       (vendored generator, P4c), CI `cosmic` job with fixed triggers +
       full system deps (P4). Binary name `dmidiplayer` (P3/D3). Full DoD
       from here on.
-- [ ] T2 `core::event` (arch): MidiEvent/Kind/TextType/constants/factories,
+- [x] T2 `core::event` (arch): MidiEvent/Kind/TextType/constants/factories, — DONE (18 tests, suite 27/27, devil differential SIGN-OFF 90/90 paths + byte-identical semantics)
       extension filter; unit tests incl. case-insensitive ext matrix.
 - [ ] T3 SMF decode + `Sequence` store/timing/nav (arch): `smf.rs`, ticks↔µs,
       beats, bar nav, tempo reject (A7), `div==0→96`; golden tests vs C++.
