@@ -184,7 +184,13 @@ spawning). Audio risks: see §5.
   `DBusActivatable=true` (**landed T14c** — the only desktop delta vs the
   C++-shipped file); the app owns the well-known bus name
   `com.goshapps.GoshMIDI` (which matches the desktop basename, as required
-  for activatability) via `run_single_instance` (DECISIONS D12). A second
+  for activatability) via `run_single_instance` (DECISIONS D12). The
+  manifest installs the matching service file
+  `com.goshapps.GoshMIDI.service` (`[D-BUS Service] Name=… Exec=/app/bin/dmidiplayer`)
+  to `/app/share/dbus-1/services/` (**landed S5** — without it
+  `flatpak build-export` fails with "service file not exported" and the
+  app can be neither installed, bundled, nor activated; flatpak rewrites
+  `Exec` to the `flatpak run` wrapper at install). A second
   launch — including `flatpak run com.goshapps.GoshMIDI file.mid` while the
   app is already running — forwards its paths over D-Bus and presents the
   running window. Verification: integration test for forward + present, plus
@@ -435,7 +441,12 @@ T15 additions: the retirement gate + Rust count pins above, the metainfo
 bundled-SoundFont manifest pin (code-side `BUNDLED_SOUNDFONT_NAME` installed
 from sha256-pinned sources — font + MIT license, both pinned in `verify.sh`
 and `desktop_integration.rs`), and the in-sandbox SoundFont presence/magic
-assertion in `smoke.sh`.
+assertion in `smoke.sh`. S5 additions: the `--fast` D-Bus-service + man-page
+install pins (service `Name`/`Exec` pinned in `verify.sh` and
+`desktop_integration.rs`), the in-sandbox service/man assertions in
+`smoke.sh`, and the full-gate `flatpak build-export` installability step
+(the `flatpak build`-only gate never validated the service file — the S4
+RC failure).
 
 ## 3. CI
 

@@ -115,8 +115,22 @@ if [ -d /app/share/applications ]; then
     [ -f "$LIC" ] || fail "bundled SoundFont license missing: $LIC"
     grep -q 'MIT license' "$LIC" \
         || fail "bundled SoundFont license lacks the MIT grant: $LIC"
+    # S5: the D-Bus service file the `DBusActivatable=true` desktop entry
+    # needs (REPORT §4 blocker — without it `flatpak build-export` fails
+    # and the app can be neither installed, bundled, nor activated).
+    SVC=/app/share/dbus-1/services/com.goshapps.GoshMIDI.service
+    [ -f "$SVC" ] || fail "D-Bus service file missing: $SVC"
+    grep -q '^Name=com.goshapps.GoshMIDI$' "$SVC" \
+        || fail "service file has the wrong bus name: $SVC"
+    grep -q '^Exec=/app/bin/dmidiplayer$' "$SVC" \
+        || fail "service file has the wrong Exec: $SVC"
+    # S5: the man page the retired docs/CMakeLists.txt installed to man1.
+    MAN=/app/share/man/man1/dmidiplayer.1
+    [ -f "$MAN" ] || fail "man page missing: $MAN"
+    grep -q 'DMIDIPLAYER' "$MAN" || fail "man page lacks its header: $MAN"
     pass "installed desktop/metainfo/app-icons/fallback inventory"
     pass "bundled SoundFont ($size bytes, sfbk magic, MIT license)"
+    pass "D-Bus service file + man page"
 fi
 
 # Collect .mid/.kar fixtures (sh has no nullglob; filter non-matches).

@@ -1,11 +1,11 @@
 # Migration REPORT — Gosh MIDI Player 1.8.0 (libcosmic/Rust)
 
-Status: **S4 sign-off recorded (2026-09-12)** — CONDITIONAL: the automated
-gates are green and the live forward/synth probes pass, but the release is
-**not shippable** until the §4 blocker slice lands (`flatpak build-export`
-fails: no D-Bus service file for the `DBusActivatable=true` desktop entry —
-no install, no bundle, no activation). X11 needs real-DE adjudication (§3
-S4), and the §4 manual steps (human-audible, on-console DE runs) remain.
+Status: **S5 blocker slice (2026-09-12)** — the S4 §4 blocker is FIXED and
+export-verified (install/bundle/activation unblocked); W1 window title +
+man page fixed. Still CONDITIONAL: X11 needs real-DE adjudication (§3 S4,
+environment re-observed S5 — no verdict possible here), and the §4 manual
+steps (human-audible, on-console DE runs) remain. (S4 sign-off below stands
+as the prior record.)
 
 ## 0. Release + environment
 
@@ -52,6 +52,21 @@ T15 retired the C++ greps; the Rust successors above are enforced by both
   forward): **PARTIAL — see §3 S4** (live Wayland launch + forward +
   in-sandbox synth render pass; install/activation blocked on the §4
   service-file slice; GNOME/KDE + human-audible remain manual).
+- `sh scripts/verify.sh --fast`: **PASS** (S5, 2026-09-12 — 560 lib +
+  10 bin + 105 integration-file tests, 0 failed, +1 ignored doctest;
+  retirement gate, all 4 count pins, identity/desktop/icon/soundfont
+  contracts ok, new S5 service+man pins ok; `desktop-file-validate` +
+  `appstreamcli validate` strict-ok, sole note the grandfathered
+  `cid-contains-uppercase-letter`).
+- `sh scripts/verify.sh` (full: vendoring freshness + flatpak-builder +
+  in-sandbox smoke + build-export): **PASS** (S5, 2026-09-12 — exactly
+  one full run on the final tree; freshness diff clean, builder exit 0,
+  smoke adds `D-Bus service file + man page` green, build-export commits
+  clean — `Exporting share/dbus-1/services/com.goshapps.GoshMIDI.service`;
+  final-tree full run, plus one earlier full run on the same code).
+- S5 release gate: **PARTIAL** (install/bundle/activation UNBLOCKED —
+  export-verified; X11 still needs real-DE adjudication and the §4 manual
+  steps remain).
 
 ## 3. Slice inputs
 
@@ -159,20 +174,60 @@ both sandboxes, the receiver thread ran
 receive is pinned by the green integration suite (incl. the portal-path
 replacement test); window-present is not headless-observable → manual.
 
+### S5 — Phase-3 blocker slice (this slice)
+
+- [pack BLOCKER] D-Bus service file lands: new
+  `com.goshapps.GoshMIDI.service` (`[D-BUS Service]
+  Name=com.goshapps.GoshMIDI Exec=/app/bin/dmidiplayer`) installed by the
+  manifest to `/app/share/dbus-1/services/`. Pre-fix repro on the S4 tree:
+  `flatpak build-export` fails with the exact §4 error; post-fix the
+  export commits clean
+  (`Exporting share/dbus-1/services/com.goshapps.GoshMIDI.service`).
+  Regression pins: `desktop_integration::dbus_service_file_-
+  installed_for_activatable_desktop` (observed failing first), `verify.sh`
+  `--fast` service pins, `smoke.sh` in-sandbox asserts, and a new
+  full-gate `build-export` installability step. (Export logs "Not
+  exporting … non-allowed export filename" for the T14c symbolic
+  fallbacks — pre-existing and intended: they serve in-sandbox lookup
+  only, asserted by smoke in `/app`.)
+- [ux minor] W1 title fixed: `init` + `on_opened` now call
+  `set_window_title` alongside `set_header_title` (`src/app.rs`;
+  `on_opened` returns the title `Task`, propagated at the
+  `PlayerEvent::Opened` arm). Pinned by
+  `app::tests::opened_song_sets_header_and_window_title_with_file`
+  (observed failing first: `""` vs expected) and protocol-verified live
+  on nested headless weston (offscreen, fresh profile, song arg):
+  `xdg_toplevel.set_title("Gosh MIDI Player")` at boot then
+  `set_title("Gosh MIDI Player — test.mid")` on song load, zero panics.
+- [pack minor] Man page ships: the manifest installs `docs/dmidiplayer.1`
+  to `/app/share/man/man1/` (the retired `docs/CMakeLists.txt` installed
+  it in both branches). Pinned by
+  `desktop_integration::man_page_installed_to_man1` (observed failing
+  first) + `verify.sh --fast` pin + `smoke.sh` in-sandbox assert.
+- [release/lead carried] X11: still no verdict possible here —
+  re-observed `gnome-shell`/`plasmashell`/`kwin`/`mutter` absent,
+  `/usr/share/wayland-sessions` = `sway.desktop` only,
+  `/usr/share/xsessions` empty. The nested-Xwayland softbuffer panic (§3
+  S4) still awaits real-DE adjudication per §4 step 2.
+- Suite delta S4→S5: 559+10+103 → 560+10+105, 0 failed.
+
 ## 4. Blockers + remaining manual steps
 
-**Blocker (own slice + full gate, NOT fixed in S4 — code freeze held).**
-`flatpak build-export` on the RC fails: `error: Desktop file D-Bus
-activatable, but service file not exported:
-…/build-dir/export/share/dbus-1/services/com.goshapps.GoshMIDI.service`.
-The desktop file claims `DBusActivatable=true` (P8, T14c) but nothing
-ships the D-Bus service file — so the app can neither be installed nor
-bundled nor D-Bus-activated. First caught by S4 because `verify.sh`
-exercises `flatpak build` only, never export/install. Fix shape: the
-manifest installs `share/dbus-1/services/com.goshapps.GoshMIDI.service`
-(`[D-BUS Service] Name=… Exec=/app/bin/dmidiplayer`), plus an
-export/install assertion (smoke or a `build-export` step in the full
-gate) so this can never regress silently.
+**Blocker — FIXED in S5 (was: S4 RC `flatpak build-export` fails: `error:
+Desktop file D-Bus activatable, but service file not exported:
+…/build-dir/export/share/dbus-1/services/com.goshapps.GoshMIDI.service`).**
+Root cause as diagnosed in S4: the desktop file claims
+`DBusActivatable=true` (P8, T14c) but nothing shipped the D-Bus service
+file, and `verify.sh` exercised `flatpak build` only, never export. Fix
+(§3 S5): the manifest installs
+`share/dbus-1/services/com.goshapps.GoshMIDI.service`
+(`[D-BUS Service] Name=com.goshapps.GoshMIDI Exec=/app/bin/dmidiplayer`,
+flatpak rewrites `Exec` to the `flatpak run` wrapper at install) plus
+three regression pins — `desktop_integration.rs` bond tests, `verify.sh`
+`--fast` pins, `smoke.sh` in-sandbox asserts — and a `flatpak
+build-export` installability step in the full gate so this can never
+regress silently. Install/bundle/activation are unblocked (export commits
+clean, §2 S5).
 
 Remaining manual steps (recipes in packaging.md §3.2 + §14-phase-3 notes;
 all need a human on consoles S4 could not reach):
@@ -188,7 +243,7 @@ all need a human on consoles S4 could not reach):
    + `COSMIC_SINGLE_INSTANCE=false` escape). The X11 rows also adjudicate
    the nested-Xwayland softbuffer panic (§3 S4).
 3. `.flatpak` bundle build + install from bundle on the §3.2 provider
-   matrix (blocked on the service-file slice above).
+   matrix (UNBLOCKED in S5 — still a manual run, now export-verified).
 4. Stale-path re-prompt click-through (packaging §6): config with a dead
    absolute `soundFont` → toast + bundled fallback + D3 warning + D11
    re-locate; dead playlist/`.cfg` paths → re-prompt offers, nothing

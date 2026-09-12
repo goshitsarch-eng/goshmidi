@@ -171,6 +171,28 @@ grep -q 'sha256: c21ed6be2fea862673953977c616befc28d1b20dfa60349e4461b97c759db6c
     || fail "manifest soundfont license sha256 drifted (re-verify the pinned file)"
 echo "soundfont ok: manifest installs $SF_NAME (font + license sha256-pinned)"
 
+# D-Bus service + man page install pins (S5, REPORT §4 blocker + pack minor):
+# the manifest must install the service file the `DBusActivatable=true`
+# desktop entry needs and the man page the retired docs/CMakeLists.txt
+# shipped to man1. (Bonds also pinned by
+# `desktop_integration::dbus_service_file_installed_for_activatable_desktop`
+# + `...::man_page_installed_to_man1`; presence in-sandbox by smoke.sh.)
+step "dbus service + man page pins"
+grep -q '/app/share/dbus-1/services/com.goshapps.GoshMIDI.service' \
+    flatpak/com.goshapps.GoshMIDI.yml \
+    || fail "manifest does not install the D-Bus service file"
+grep -q '^\[D-BUS Service\]$' com.goshapps.GoshMIDI.service \
+    || fail "service file lost its [D-BUS Service] header"
+grep -q '^Name=com.goshapps.GoshMIDI$' com.goshapps.GoshMIDI.service \
+    || fail "service file bus name drifted"
+grep -q '^Exec=/app/bin/dmidiplayer$' com.goshapps.GoshMIDI.service \
+    || fail "service file Exec drifted"
+grep -q '/app/share/man/man1/dmidiplayer.1' \
+    flatpak/com.goshapps.GoshMIDI.yml \
+    || fail "manifest does not install the man page to man1"
+[ -f docs/dmidiplayer.1 ] || fail "man page source missing: docs/dmidiplayer.1"
+echo "service+man ok: manifest installs both, service Name/Exec pinned"
+
 # Freedesktop validators when installed (strict; CI images without them
 # rely on the committed desktop_integration test + T15 matrix instead).
 if command -v desktop-file-validate >/dev/null 2>&1; then
@@ -221,6 +243,19 @@ step "in-sandbox smoke"
 # host-relative script path; --bind-mount delivers smoke.sh into the same
 # app sandbox (same pattern as the sibling GamesHandler gate).
 flatpak build --bind-mount=/repo="$ROOT" build-dir sh /repo/scripts/smoke.sh
+
+step "flatpak build-export (installability gate)"
+# S5 (REPORT §4): `flatpak build` alone never caught the missing service
+# file — only export validates it ("Desktop file D-Bus activatable, but
+# service file not exported" failed the S4 RC here). Export to a throwaway
+# repo; success means the build is installable, bundlable, activatable.
+EXPORT_REPO="$(mktemp -d)"
+if ! flatpak build-export "$EXPORT_REPO" build-dir; then
+    rm -rf "$EXPORT_REPO"
+    fail "flatpak build-export failed (see above)"
+fi
+rm -rf "$EXPORT_REPO"
+echo "export ok: build-export accepts the build dir"
 
 echo
 echo "verify FULL PASS"

@@ -104,6 +104,16 @@ modules:
       - install -Dm755 target/release/dmidiplayer /app/bin/dmidiplayer
       - install -Dm644 com.goshapps.GoshMIDI.desktop /app/share/applications/com.goshapps.GoshMIDI.desktop
       - install -Dm644 com.goshapps.GoshMIDI.metainfo.xml /app/share/metainfo/com.goshapps.GoshMIDI.metainfo.xml
+      # S5 (REPORT §4 blocker): the desktop file claims DBusActivatable=true
+      # (P8), so this service file must be installed — without it
+      # `flatpak build-export` fails ("service file not exported") and the
+      # app can neither be installed, bundled, nor D-Bus-activated.
+      # (Flatpak rewrites Exec to the `flatpak run` wrapper at install;
+      # the staged export keeps the /app path verbatim.)
+      - install -Dm644 com.goshapps.GoshMIDI.service /app/share/dbus-1/services/com.goshapps.GoshMIDI.service
+      # S5 (pack minor): the retired docs/CMakeLists.txt installed the man
+      # page to man1 in both branches; the Flatpak module does the same.
+      - install -Dm644 docs/dmidiplayer.1 /app/share/man/man1/dmidiplayer.1
       - for s in 24x24 32x32 48x48 64x64 128x128; do install -Dm644 icons/dmidiplayer_$s.png /app/share/icons/hicolor/$s/apps/com.goshapps.GoshMIDI.png; done
       - install -Dm644 icons/dmidiplayer.svgz /app/share/icons/hicolor/scalable/apps/com.goshapps.GoshMIDI.svgz
       # T14c: hicolor fallback for every symbolic icon the app + libcosmic

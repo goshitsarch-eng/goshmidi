@@ -456,3 +456,54 @@ fn bundled_soundfont_manifest_matches_code() {
         "T15: manifest soundfont license sha256 drifted (re-verify the pinned file)"
     );
 }
+
+/// S5 (REPORT §4 blocker): the desktop file claims `DBusActivatable=true`,
+/// so the Flatpak must install the matching D-Bus service file — otherwise
+/// `flatpak build-export` fails ("service file not exported") and the app
+/// can neither be installed, bundled, nor D-Bus-activated.
+#[test]
+fn dbus_service_file_installed_for_activatable_desktop() {
+    let desktop = repo_file("com.goshapps.GoshMIDI.desktop");
+    assert!(
+        desktop.contains("DBusActivatable=true"),
+        "S5: desktop lost DBusActivatable=true"
+    );
+    // Service source: Name is the app ID (== desktop basename, P8), Exec is
+    // the /app binary (flatpak rewrites it to the `flatpak run` wrapper at
+    // install; the staged export keeps the /app path verbatim).
+    let rel = "com.goshapps.GoshMIDI.service";
+    let service = repo_file(rel);
+    assert_lines(
+        &service,
+        rel,
+        &[
+            "[D-BUS Service]",
+            "Name=com.goshapps.GoshMIDI",
+            "Exec=/app/bin/dmidiplayer",
+        ],
+    );
+    // Manifest installs it to the exported services dir.
+    let yml = repo_file("flatpak/com.goshapps.GoshMIDI.yml");
+    assert!(
+        yml.contains("/app/share/dbus-1/services/com.goshapps.GoshMIDI.service"),
+        "S5: manifest does not install the D-Bus service file"
+    );
+}
+
+/// S5 (pack minor): the retired `docs/CMakeLists.txt` installed the man page
+/// to man1 in both branches (`BUILD_DOCS` on/off); the Flatpak module must
+/// do the same or the page ships nowhere.
+#[test]
+fn man_page_installed_to_man1() {
+    let rel = "docs/dmidiplayer.1";
+    let man = repo_file(rel);
+    assert!(
+        man.contains(".TH \"DMIDIPLAYER\" \"1\""),
+        "S5: {rel} lost its man(1) header"
+    );
+    let yml = repo_file("flatpak/com.goshapps.GoshMIDI.yml");
+    assert!(
+        yml.contains("/app/share/man/man1/dmidiplayer.1"),
+        "S5: manifest does not install the man page to man1"
+    );
+}

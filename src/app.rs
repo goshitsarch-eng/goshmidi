@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use cosmic::app::{ContextDrawer, Core, CosmicFlags, Task};
 use cosmic::iced::Subscription;
-use cosmic::{Action, Application, Element};
+use cosmic::{Action, Application, ApplicationExt, Element};
 
 use url::Url;
 
@@ -639,8 +639,10 @@ impl App {
     /// `load_song` already reset mix + loop + position; the C++ UI kept
     /// stale mix widgets here), record recent + directory (persisted by the
     /// next save, never here), auto-load song settings, then autoplay or
-    /// stop.
-    fn on_opened(&mut self, song: LoadedSong) {
+    /// stop. Returns the window-title task: the xdg/WM title is set
+    /// alongside the CSD header title (W1 — header-only left taskbars
+    /// showing ""), or `Task::none()` with no main window yet (tests).
+    fn on_opened(&mut self, song: LoadedSong) -> Task<Message> {
         let autoplay = self.pending_autoplay;
         self.pending_autoplay = false;
         let last_bar = song.last_bar();
@@ -656,8 +658,8 @@ impl App {
                 self.settings.last_directory = parent.to_string_lossy().into_owned();
             }
         }
-        self.core
-            .set_header_title(format!("Gosh MIDI Player — {}", song.title));
+        let title = format!("Gosh MIDI Player — {}", song.title);
+        self.core.set_header_title(title.clone());
         self.song = Some(song);
         if self.settings.auto_song_settings {
             self.load_song_settings();
@@ -667,6 +669,10 @@ impl App {
         } else {
             self.playback.status = Status::Stopped;
         }
+        self.core
+            .main_window_id()
+            .map(|id| self.set_window_title(title, id))
+            .unwrap_or_else(Task::none)
     }
 
     // -- transport ----------------------------------------------------------
@@ -1676,7 +1682,9 @@ impl App {
     /// `autoscroll`), `Task::none()` everywhere else.
     fn on_player_event(&mut self, event: PlayerEvent) -> Task<Message> {
         match event {
-            PlayerEvent::Opened(snapshot) => self.on_opened(LoadedSong::from(*snapshot)),
+            PlayerEvent::Opened(snapshot) => {
+                return self.on_opened(LoadedSong::from(*snapshot));
+            }
             PlayerEvent::LoadFailed { file, errors } => {
                 self.pending_autoplay = false;
                 let name = Path::new(&file)
@@ -1946,7 +1954,15 @@ impl Application for App {
         } else {
             app.open_files(flags.files, true);
         }
-        (app, Task::none())
+        // W1 (S5): the xdg/WM title rides with the CSD header title (the
+        // runtime has the main window id by now — `BootData::boot` sets
+        // RESERVED before `init` — or this is `Task::none()`).
+        let window_title = app
+            .core
+            .main_window_id()
+            .map(|id| app.set_window_title("Gosh MIDI Player".to_owned(), id))
+            .unwrap_or_else(Task::none);
+        (app, window_title)
     }
 
     fn context_drawer(&self) -> Option<ContextDrawer<'_, Self::Message>> {
@@ -2728,7 +2744,8 @@ impl Application for App {
 
 // NOTE: `cosmic::ApplicationExt` (title, view_main, …) is blanket-implemented
 // for all `Application`s — no manual impl. The header bar shows the title set
-// via `set_header_title` in `init`/`on_opened` above.
+// via `set_header_title` in `init`/`on_opened` above, and the xdg/WM title
+// follows via `set_window_title` from the same two sites (W1).
 
 #[cfg(test)]
 mod tests {
@@ -5151,6 +5168,26 @@ mod tests {
         );
         assert_eq!(app.playback.status, Status::Playing);
         assert!(!app.pending_autoplay);
+    }
+
+    /// W1 (S5): a loaded song sets BOTH the CSD header title and the
+    /// xdg/WM window title (`Gosh MIDI Player — <file>`). Before S5 only
+    /// the header was set, so taskbars/pagers showed "" on song-loaded
+    /// windows (protocol-observed). (UFCS: `ApplicationExt` needs no
+    /// import at the call site.)
+    #[test]
+    fn opened_song_sets_header_and_window_title_with_file() {
+        let (mut app, _rx, _tmp) = test_app();
+        let id = cosmic::iced::window::Id::unique();
+        app.core.set_main_window_id(Some(id));
+        assert_eq!(<App as cosmic::ApplicationExt>::title(&app, id), "");
+        upd(
+            &mut app,
+            Message::Player(PlayerEvent::Opened(Box::new(test_song_into_snapshot()))),
+        );
+        let expect = "Gosh MIDI Player — song.mid";
+        assert_eq!(app.core.window.header_title, expect);
+        assert_eq!(<App as cosmic::ApplicationExt>::title(&app, id), expect);
     }
 
     /// Load-time mix sync vs `autoSongSettings`: auto mode overlays the song
