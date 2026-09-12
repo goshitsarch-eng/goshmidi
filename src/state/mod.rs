@@ -1,7 +1,8 @@
 //! UI state: playback, playlist, channels, lyrics, piano, MIDI (arch §2.1).
 //!
-//! T1 placeholder — `playlist.rs` lands in PLAN T8, the rest with T9/T11–T13.
+//! `playlist.rs` lands in PLAN T8, the rest with T9/T11–T13.
 
-/// T1 placeholder; replaced by `state::playlist` in PLAN T8.
+// T8 lands ahead of its T9/T10 call sites, so the bin build sees this module
+// as unused; drop the allow once the app shell wires it up.
 #[allow(dead_code)]
-pub(crate) struct Placeholder;
+pub mod playlist;

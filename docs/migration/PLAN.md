@@ -179,7 +179,7 @@ lead = PLAN/DECISIONS/REPORT + glue.
       command channel + `PlayerEvent` stream with per-variant backpressure
       (A13); deterministic scheduler tests (fake clock) + sparse-latency +
       flood tests.
-- [ ] T8 Config + playlist state (arch): GKeyFile-compat reader/writer
+- [x] T8 Config + playlist state (arch): GKeyFile-compat reader/writer — DONE (42 tests, suite 217/217, GLib bidirectional byte-identical, devil SIGN-OFF; ensure_data_dir obligation + 2 doc nits carried to T9)
       (escaping, corrupt→defaults, dir creation, unknown keys — A11), all
       30 keys + MRU-10 + portable mode, song-settings schema/apply,
       save-on-close-request (**fix**, U2) + save-point truth table, `.lst`
