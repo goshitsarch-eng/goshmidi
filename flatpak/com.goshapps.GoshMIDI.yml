@@ -18,6 +18,43 @@ finish-args:
   - --device=all
   # No --filesystem=host: file access goes through portals (packaging.md §1.5).
 modules:
+  # FluidSynth 2.6.0 — packaging.md §1.1 contingency: freedesktop SDK 25.08
+  # ships no fluidsynth (rust-lld failed on -lfluidsynth; alsa was fine).
+  # Pinned release tarballs (sha256 verified by two downloads, 2026-09-12):
+  #   fluidsynth v2.6.0 (latest stable; matches fluid_ffi.rs "2.6 headers"):
+  #     url https://github.com/FluidSynth/fluidsynth/archive/refs/tags/v2.6.0.tar.gz
+  #     sha256 6d17570ea2086dd6fbcac995465773a6f316e689089b7fb7ba0b34c2ec6f680d
+  #   gcem @012ae73c (REQUIRED header-only dep; FindGCEM.cmake would
+  #   net-download it at configure time, which the offline sandbox forbids):
+  #     url https://github.com/kthohr/gcem/archive/012ae73c6d0a2cb09ffe86475f5c6fba3926e200.tar.gz
+  #     sha256 34ab0ee87a9eb26d3087fa9b49c2572ea8ee03db0c9705b83648301a3a3fc172
+  # Configure: -Denable-signalsmith=OFF (its CMakeLists FetchContents 3 more
+  # git repos at configure time — unbuildable offline; limiter defaults off
+  # and the default Dattorro reverb is in-tree, so no audible difference),
+  # -DCMAKE_BUILD_TYPE=Release. All other options at defaults: SDK 25.08
+  # provides alsa/pulse/jack/pipewire/sdl3/dbus/readline/sndfile/ladspa/
+  # openmp/systemd (probed present; runtime ships the matching .so files),
+  # portaudio/midishare auto-off. Tests are EXCLUDE_FROM_ALL and
+  # doxygen/examples are non-ALL custom targets — no extra lean flags needed.
+  - name: fluidsynth
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -Denable-signalsmith=OFF
+    sources:
+      - type: archive
+        url: https://github.com/FluidSynth/fluidsynth/archive/refs/tags/v2.6.0.tar.gz
+        sha256: 6d17570ea2086dd6fbcac995465773a6f316e689089b7fb7ba0b34c2ec6f680d
+      - type: archive
+        url: https://github.com/kthohr/gcem/archive/012ae73c6d0a2cb09ffe86475f5c6fba3926e200.tar.gz
+        sha256: 34ab0ee87a9eb26d3087fa9b49c2572ea8ee03db0c9705b83648301a3a3fc172
+        dest: gcem
+    cleanup:
+      - /include
+      - /lib/pkgconfig
+      - /lib/cmake
+      - /share/doc
+      - /share/man
   - name: dmidiplayer
     buildsystem: simple
     build-options:
@@ -25,6 +62,10 @@ modules:
       env:
         CARGO_HOME: /run/build/dmidiplayer/cargo
         CARGO_NET_OFFLINE: "true"
+        # T6: flatpak-builder exports LDFLAGS (make-only) but no LIBRARY_PATH,
+        # and neither rustc nor cc reads LDFLAGS — plain -lfluidsynth would not
+        # find the fluidsynth module's /app/lib. Point rustc there explicitly.
+        RUSTFLAGS: "-L /app/lib"
     build-commands:
       - cargo --offline fetch --locked --manifest-path Cargo.toml
       - cargo --offline build --release --locked

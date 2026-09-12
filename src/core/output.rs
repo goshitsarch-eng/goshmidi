@@ -1,10 +1,9 @@
 //! MIDI output backends: trait, Dummy sink, manager — port of the
 //! backend-agnostic parts of `src/midi/output.{hpp,cpp}`.
 //!
-//! PLAN T5, arch §1.5 and §3.3. The ALSA/FluidSynth backends land in T6
-//! (`output_alsa.rs`/`output_fluid.rs`) behind the same [`MidiOutput`] trait;
-//! until then the manager registers only [`DummyOutput`]. One deliberate
-//! change from C++ (arch §3.3, A15): `open` returns
+//! PLAN T5 (trait + Dummy + manager) and T6 (ALSA/FluidSynth backends in
+//! `output_alsa.rs`/`output_fluid.rs`, same [`MidiOutput`] trait); arch §1.5
+//! and §3.3. One deliberate change from C++ (arch §3.3, A15): `open` returns
 //! `Result<(), OutputError>` carrying the former `lastError` text instead of
 //! `bool` + `lastError()`.
 //!
@@ -12,6 +11,9 @@
 
 use std::error::Error;
 use std::fmt::{self, Display};
+
+use super::output_alsa::AlsaOutput;
+use super::output_fluid::FluidOutput;
 
 /// An output port: `client:port` id plus the human-readable label shown in
 /// MIDI Setup (C++ `MidiPort`).
@@ -168,8 +170,12 @@ impl MidiOutput for DummyOutput {
 }
 
 /// Owns the backends and the current selection (C++ `MidiOutputManager`).
-/// T5 registers only Dummy; T6 pushes ALSA first and FluidSynth second so
-/// the unknown→front rule resolves to ALSA (output.cpp:449, A6c).
+///
+/// REQUIRED registration order in [`MidiOutputManager::new`]:
+/// `[ALSA, FluidSynth, Dummy]` (output.cpp:428-430). The unknown→front rule
+/// (`find`, A6c) resolves to index 0, so ALSA must be front for unknown
+/// backend names to select ALSA (output.cpp:449). Neither constructor
+/// touches hardware or audio, so `new` is infallible on bare CI.
 #[derive(Default)]
 pub struct MidiOutputManager {
     backends: Vec<Box<dyn MidiOutput>>,
@@ -182,11 +188,14 @@ impl MidiOutputManager {
             backends: Vec::new(),
             current: None,
         };
+        manager.add_backend(Box::new(AlsaOutput::new()));
+        manager.add_backend(Box::new(FluidOutput::new()));
         manager.add_backend(Box::new(DummyOutput::new()));
         manager
     }
 
-    /// Register another backend (T6 plugs ALSA/FluidSynth in here).
+    /// Register another backend (kept for tests; the shipped trio is fixed
+    /// in `new` above).
     pub fn add_backend(&mut self, backend: Box<dyn MidiOutput>) {
         self.backends.push(backend);
     }
@@ -402,18 +411,32 @@ mod tests {
     }
 
     #[test]
-    fn manager_registers_only_dummy() {
+    fn manager_registers_required_trio_in_order() {
+        // REQUIRED order [ALSA, FluidSynth, Dummy] (output.cpp:428-430);
+        // construction touches no hardware, so this is bare-CI safe.
         let manager = MidiOutputManager::new();
-        assert_eq!(manager.backend_names(), vec!["Dummy".to_string()]);
+        assert_eq!(
+            manager.backend_names(),
+            vec![
+                "ALSA".to_string(),
+                "FluidSynth".to_string(),
+                "Dummy".to_string()
+            ]
+        );
         assert!(manager.current().is_none());
     }
 
     #[test]
     fn manager_find_unknown_resolves_to_front() {
         let manager = MidiOutputManager::new();
+        assert_eq!(manager.find("ALSA").unwrap().backend_name(), "ALSA");
+        assert_eq!(
+            manager.find("FluidSynth").unwrap().backend_name(),
+            "FluidSynth"
+        );
         assert_eq!(manager.find("Dummy").unwrap().backend_name(), "Dummy");
-        // Unknown → front backend (Dummy until T6 registers ALSA first).
-        assert_eq!(manager.find("Nope").unwrap().backend_name(), "Dummy");
+        // Unknown → front backend = ALSA (output.cpp:449, A6c).
+        assert_eq!(manager.find("Nope").unwrap().backend_name(), "ALSA");
         assert_eq!(manager.find_index("Nope"), Some(0));
     }
 
@@ -424,8 +447,20 @@ mod tests {
         let current = manager.current().unwrap();
         assert_eq!(current.backend_name(), "Dummy");
         assert_eq!(current.current_port(), "dummy");
-        // Unknown backend still selects the front backend.
-        assert!(manager.select("Nope", "dummy").is_ok());
+        // Unknown backend still selects the front backend (ALSA since T6).
+        // `open` may fail without hardware, but the selection sticks either
+        // way (C++ assigns m_current before open, output.cpp:457-460).
+        let _ = manager.select("Nope", "14:0");
+        assert_eq!(manager.current().unwrap().backend_name(), "ALSA");
+    }
+
+    #[test]
+    fn manager_falls_back_to_dummy_without_hardware() {
+        // Arch §3.3: no SoundFont + no ALSA sequencer → Dummy still selects
+        // cleanly (bare-CI safe: Dummy never touches hardware or audio).
+        let mut manager = MidiOutputManager::new();
+        manager.set_sound_font("/nonexistent/t6-probe-missing.sf2");
+        assert!(manager.select("Dummy", "dummy").is_ok());
         assert_eq!(manager.current().unwrap().backend_name(), "Dummy");
     }
 

@@ -169,7 +169,7 @@ lead = PLAN/DECISIONS/REPORT + glue.
       companion lookup, patch tables, `inferDeviceProfile`, `MidiOutput`
       trait (failable `open`, A15) + Dummy + Manager (close-previous-first,
       unknown→ALSA — A6c); unit tests.
-- [ ] T6 ALSA + FluidSynth backends (arch): port enum + exact filter (A6a),
+- [x] T6 ALSA + FluidSynth backends (arch): port enum + exact filter (A6a), — DONE (21 tests, suite 134/134, live-hardware + FFI-header verified, fluidsynth 2.6.0 manifest module, FULL PASS, devil SIGN-OFF ×2; port-parse + sdl2-string nits carried)
       advanced-list fallback (A6b), subscribe, driver fallback order, gain
       0.6, bend remap, sandbox-aware SF search paths + bundled-SF selection
       (license/size evidence, P7), `lastError`; hardware tests gated,
