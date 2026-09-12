@@ -2,9 +2,9 @@ name: Build on Linux
 
 on:
   push:
-    branches: [ "devel", "master" ]
+    branches: [ "devel", "master", "cosmic-migration" ]
   pull_request:
-    branches: [ "devel", "master" ]
+    branches: [ "devel", "master", "cosmic-migration" ]
   workflow_dispatch:
 
 env:

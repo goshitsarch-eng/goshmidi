@@ -1,0 +1,67 @@
+name: Cosmic (Rust) build
+
+on:
+  push:
+    branches: [ "devel", "master", "cosmic-migration" ]
+  pull_request:
+    branches: [ "devel", "master", "cosmic-migration" ]
+  workflow_dispatch:
+
+jobs:
+  cosmic:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: System dependencies
+      run: sudo apt-get update && sudo apt-get install -yq
+        pkg-config cmake g++ libasound2-dev libfluidsynth-dev libwayland-dev
+        libxkbcommon-dev libfontconfig-dev libfreetype-dev libexpat1-dev
+        python3 python3-aiohttp python3-tomlkit
+
+    - name: Rust 1.98.1 + clippy
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: 1.98.1
+        components: clippy
+
+    - name: Cache cargo
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: cargo-1.98.1-${{ hashFiles('Cargo.lock') }}
+
+    - name: Verify (fast tier)
+      run: sh scripts/verify.sh --fast
+
+    - name: cargo-sources freshness
+      run: |
+        python3 flatpak/flatpak-cargo-generator.py Cargo.lock -o /tmp/cargo-sources.check.json
+        diff -u flatpak/cargo-sources.json /tmp/cargo-sources.check.json
+
+  flatpak:
+    runs-on: ubuntu-latest
+    needs: cosmic
+
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Install flatpak + SDK
+      run: |
+        sudo apt-get update && sudo apt-get install -yq flatpak flatpak-builder
+        flatpak remote-add --user --if-not-exists flathub \
+          https://dl.flathub.org/repo/flathub.flatpakrepo
+        flatpak install --user -y flathub \
+          org.freedesktop.Sdk//25.08 \
+          org.freedesktop.Platform//25.08 \
+          org.freedesktop.Sdk.Extension.rust-stable//25.08
+
+    - name: Build flatpak
+      run: flatpak-builder --force-clean --user build-dir flatpak/com.goshapps.GoshMIDI.yml
+
+    - name: In-sandbox smoke
+      run: flatpak build --bind-mount=/repo=$PWD build-dir sh /repo/scripts/smoke.sh

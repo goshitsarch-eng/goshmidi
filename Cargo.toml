@@ -1,0 +1,33 @@
+[package]
+name = "dmidiplayer"
+version = "1.7.5"
+edition = "2024"
+rust-version = "1.93"
+
+[workspace]
+
+[[bin]]
+name = "dmidiplayer"
+path = "src/main.rs"
+
+[dependencies]
+libcosmic = { git = "https://github.com/pop-os/libcosmic.git", rev = "7e82198ab1aba712640b0167e58ad37bf03012ca", features = ["about", "single-instance", "xdg-portal"] }
+alsa = "0.12"
+chardetng = "1"
+encoding_rs = "0.8"
+url = "2.5"
+
+[dev-dependencies]
+tempfile = "3"
+
+# Unblock vendoring: libcosmic pins this repo at 32283d7 while its iced
+# workspace pins c0cff4d, and neither flatpak-cargo-generator nor
+# `cargo vendor` can stage two revs of one git repo as a single source.
+# Patch both dependents onto one rev (c0cff4d: 5 iced dependents vs
+# libcosmic's 1). The `git@` userinfo makes this a distinct source ID from
+# the dependents' plain URL (same repo, same commit); cargo rejects
+# same-source patches, and crates.io 0.2.0 matches neither rev (both git
+# revs are newer). cosmic-protocols follows via cctk's path dep, so only
+# cctk is patched. Revisit when upstreams align.
+[patch."https://github.com/pop-os/cosmic-protocols"]
+cosmic-client-toolkit = { git = "https://git@github.com/pop-os/cosmic-protocols", rev = "c0cff4db14c37ed954983158e4055aa94c7741d9" }

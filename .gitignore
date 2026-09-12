@@ -1,5 +1,8 @@
 # Build artifacts
 build/
+target/
+build-dir/
+.flatpak-builder/
 *.o
 *.a
 *.so

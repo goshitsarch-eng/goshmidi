@@ -146,7 +146,7 @@ lead = PLAN/DECISIONS/REPORT + glue.
       PathBuf + cancel (A5/P12); `dnd_*` OS file-drop verdict (U9); color
       parser + font parser specs (U5/U6). Output: pinned pins + verdicts in
       DECISIONS; owner docs corrected (§5).
-- [ ] T1 Walking skeleton (arch+pack, lead commits): Rust workspace per arch
+- [x] T1 Walking skeleton (arch+pack, lead commits): Rust workspace per arch — DONE (trio 9/9, flatpak-builder exit 0, in-sandbox smoke PASS, full verify.sh PASS, devil SIGN-OFF)
       §5 (stubs), CLI incl. headless `--dry-run/--dump-info` exiting before
       GUI (P10c) + `-p/-f/-d/-c` (both-or-neither, A6d), app shell window,
       `run_single_instance` wiring, `scripts/verify.sh` (+`--fast`, incl.

@@ -176,3 +176,13 @@ simplicity/maintainability > COSMIC conventions.
 - Choice: (a), with fallback to (b) if T11 integration misbehaves.
 - Why: COSMIC-idiomatic picker with a parity-safe text path; the probe
   compiled `ColorPickerModel::new`, so (a) is worth attempting first.
+
+## D18. Rust workspace location during migration
+
+- Options: (a) repo root (`Cargo.toml` + `src/*.rs` alongside C++ until T15);
+  (b) `rust/` subdirectory, moved at T15.
+- Choice: (a).
+- Why: end-state layout from day one, no heroic move at T15. No interference:
+  CMakeLists lists C++ sources explicitly (ignores `.rs`), cargo ignores
+  `.cpp`/`.cmake`, `tests/` and `examples/` coexist the same way. T15 deletes
+  the C++ files; Rust paths never move.

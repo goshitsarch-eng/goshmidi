@@ -1,0 +1,45 @@
+# Gosh MIDI Player (Rust/libcosmic port) — Flatpak manifest (packaging.md §1).
+# Runtime 25.08: 24.08's rustc 1.89 is below the libcosmic MSRV 1.93 (D16);
+# the 25.08 rust-stable extension ships rustc 1.98.1, matching rust-toolchain.toml.
+app-id: com.goshapps.GoshMIDI
+runtime: org.freedesktop.Platform
+runtime-version: "25.08"
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: dmidiplayer
+finish-args:
+  - --share=ipc
+  - --socket=fallback-x11
+  - --socket=wayland
+  - --device=dri
+  - --socket=pulseaudio
+  # ALSA sequencer (/dev/snd/seq) for external synths; no seq-only rule exists.
+  - --device=all
+  # No --filesystem=host: file access goes through portals (packaging.md §1.5).
+modules:
+  - name: dmidiplayer
+    buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/rust-stable/bin
+      env:
+        CARGO_HOME: /run/build/dmidiplayer/cargo
+        CARGO_NET_OFFLINE: "true"
+    build-commands:
+      - cargo --offline fetch --locked --manifest-path Cargo.toml
+      - cargo --offline build --release --locked
+      - install -Dm755 target/release/dmidiplayer /app/bin/dmidiplayer
+      - install -Dm644 com.goshapps.GoshMIDI.desktop /app/share/applications/com.goshapps.GoshMIDI.desktop
+      - install -Dm644 com.goshapps.GoshMIDI.metainfo.xml /app/share/metainfo/com.goshapps.GoshMIDI.metainfo.xml
+      - for s in 24x24 32x32 48x48 64x64 128x128; do install -Dm644 icons/dmidiplayer_$s.png /app/share/icons/hicolor/$s/apps/com.goshapps.GoshMIDI.png; done
+      - install -Dm644 icons/dmidiplayer.svgz /app/share/icons/hicolor/scalable/apps/com.goshapps.GoshMIDI.svgz
+      # P6: replicate examples/CMakeLists.txt — generate examples.lst (*.kar
+      # then *.mid basenames, sorted) and install it with the example files.
+      - mkdir -p /app/share/dmidiplayer && (cd examples && for f in *.kar *.mid; do [ -e "$f" ] || continue; printf '%s\n' "$f"; done > /app/share/dmidiplayer/examples.lst) && for f in examples/*.mid examples/*.kar; do [ -e "$f" ] || continue; install -m644 "$f" /app/share/dmidiplayer/; done
+    sources:
+      - type: dir
+        path: ..
+        skip: [target, build, build-dir, .flatpak-builder, .git]
+      # Vendored + pinned generator output (P4c/P5); regenerate with:
+      # python3 flatpak/flatpak-cargo-generator.py Cargo.lock -o flatpak/cargo-sources.json
+      - cargo-sources.json

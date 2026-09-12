@@ -334,7 +334,7 @@ python3 flatpak/flatpak-cargo-generator.py Cargo.lock -o /tmp/cargo-sources.chec
 diff -u flatpak/cargo-sources.json /tmp/cargo-sources.check.json
 # Flatpak build + in-sandbox smoke (pre-commit gate per user DoD, P1):
 flatpak-builder --force-clean --user build-dir flatpak/com.goshapps.GoshMIDI.yml
-flatpak-builder --run build-dir flatpak/com.goshapps.GoshMIDI.yml sh scripts/smoke.sh
+flatpak build --bind-mount=/repo=$PWD build-dir sh /repo/scripts/smoke.sh
 ```
 
 `check_single_instance_open.cmake` keeps running in the CMake tier until T10
