@@ -8,6 +8,7 @@
 //! engine.
 
 use crate::core::event::MIDI_CHANNELS;
+use crate::core::instruments;
 
 /// Channel volume slider range (`GtkScale` 0..200, `window.cpp:1890`).
 pub const LEVEL_MIN_PCT: u32 = 0;
@@ -32,7 +33,6 @@ pub struct ChannelState {
     pub level_pct: u32,
     /// Decaying meter `0.0..=1.0` (peak set on NoteOn, `*= METER_DECAY`
     /// every 50 ms). Rendered by the channels page (T12).
-    #[allow(dead_code)]
     pub level: f32,
 }
 
@@ -89,11 +89,85 @@ pub fn any_solo(channels: &[ChannelState; MIDI_CHANNELS]) -> bool {
     channels.iter().any(|c| c.soloed)
 }
 
+/// Engine-bound sync values for one row: the per-row half of
+/// `applyChannelSoloMute` (`window.cpp:486-493`). The app sends each as a
+/// `SetMuted` + `SetChannelVolume` pair, in channel order.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ChannelSync {
+    /// Straight to `SetMuted`: mute silences the whole channel engine-side
+    /// (the muted check runs before pitch/drums dispatch), drums included —
+    /// there is no drums exception anywhere in the mix path. The ONLY drums
+    /// special-case is pitch-shift exclusion at note dispatch.
+    pub muted: bool,
+    /// Straight to `SetChannelVolume`: solo reduction × slider, EXACT
+    /// `applyChannelSoloMute` math — see [`engine_factor`].
+    pub factor: f64,
+}
+
+/// Per-row sync values for `row` (`applyChannelSoloMute` row half).
+pub fn sync_row(row: &ChannelState, any_solo: bool, solo_reduction: i32) -> ChannelSync {
+    ChannelSync {
+        muted: row.muted,
+        factor: row.factor(any_solo, solo_reduction),
+    }
+}
+
+/// Whole-mix sync values (the full `applyChannelSoloMute` loop): `any_solo`
+/// scanned once, then one [`ChannelSync`] per row. Used after solo flips
+/// (which change every row's factor), song-settings loads, and prefs commits
+/// (solo% — U14).
+pub fn sync_all(
+    channels: &[ChannelState; MIDI_CHANNELS],
+    solo_reduction: i32,
+) -> [ChannelSync; MIDI_CHANNELS] {
+    let any = any_solo(channels);
+    std::array::from_fn(|ch| sync_row(&channels[ch], any, solo_reduction))
+}
+
+/// Meter peak on NoteOn (`m_chLevel[ch] = max(m_chLevel[ch], vel / 127.0)`,
+/// `window.cpp:149`). NoteOff leaves the meter alone (C++ parity: `onNoteOff`
+/// never touches `m_chLevel`, `window.cpp:152-156`); decay is [`decay_meters`].
+pub fn note_peak(level: f32, vel: u8) -> f32 {
+    level.max(f32::from(vel) / 127.0)
+}
+
 /// Decay every meter one tick (`*= 0.82`, `window.cpp:220`).
 pub fn decay_meters(channels: &mut [ChannelState; MIDI_CHANNELS]) {
     for c in channels.iter_mut() {
         c.level *= METER_DECAY;
     }
+}
+
+/// A8 load sync: fresh default rows, then `used` + `label` from the opened
+/// song snapshot (`refreshChannels` label/visibility half, `window.cpp:537-546`,
+/// PLUS the mix reset the C++ UI skipped — the engine's `load_song` already
+/// reset its own mix, so stale mute/solo/lock/patch/level here would lie).
+pub fn reset_for_song(
+    channels: &mut [ChannelState; MIDI_CHANNELS],
+    used: &[bool; MIDI_CHANNELS],
+    labels: &[String; MIDI_CHANNELS],
+) {
+    for (ch, slot) in channels.iter_mut().enumerate() {
+        *slot = ChannelState::new();
+        slot.used = used[ch];
+        slot.label = labels[ch].clone();
+    }
+}
+
+/// Patch dropdown label for one patch under `map` (`patchName(map, p)`:
+/// MT-32 has its own table, every other map reads GM capital tones).
+pub fn patch_label(map: i32, patch: u8) -> &'static str {
+    instruments::patch_name(map, i32::from(patch))
+}
+
+/// Shared 128-entry patch model (`applyInstrumentMap`, `window.cpp:518-531`):
+/// all `patchName(map, p)` labels in program order. Zero-alloc (`&'static`
+/// table entries): the channels view-model builder calls this per frame and
+/// the labels only change when the instrument map does (prefs close / MIDI
+/// apply / profile inference). Live `Program` events only reselect
+/// (`ChannelState::patch`), never rebuild.
+pub fn patch_options(map: i32) -> [&'static str; 128] {
+    std::array::from_fn(|p| patch_label(map, p as u8))
 }
 
 /// Default 16-channel mix (fresh engine state, A8 sync target).
@@ -183,5 +257,140 @@ mod tests {
         c.set_level_pct(120);
         c.soloed = true;
         assert!((c.factor(true, 75) - engine_factor(120, true, true, 75)).abs() < f64::EPSILON);
+    }
+
+    /// `sync_row`: muted passes straight through, factor is the exact
+    /// `applyChannelSoloMute` row (`window.cpp:486-493`), incl. the reduction
+    /// edges 0/100 and raw passthrough of out-of-range reductions (C++ reads
+    /// `soloVolumeReduction` raw into the formula — a corrupt config value
+    /// yields a negative factor the engine's `bounded_floor` clamps to 0).
+    #[test]
+    fn sync_row_matrix_is_exact() {
+        let mut row = ChannelState::new();
+        row.set_level_pct(150);
+        // No solo anywhere: slider only, mute flag straight through.
+        assert_eq!(
+            sync_row(&row, false, 50),
+            ChannelSync {
+                muted: false,
+                factor: 1.5
+            }
+        );
+        row.muted = true;
+        assert!(sync_row(&row, false, 50).muted);
+        row.muted = false;
+        // Reduction edges on a non-soloed row under a solo.
+        assert!((sync_row(&row, true, 0).factor - 1.5).abs() < 1e-9);
+        assert!((sync_row(&row, true, 100).factor - 0.0).abs() < 1e-9);
+        // Out-of-range reductions pass through raw (C++ parity, unclamped).
+        assert!((sync_row(&row, true, 150).factor - -0.75).abs() < 1e-9);
+        assert!((sync_row(&row, true, -20).factor - 1.8).abs() < 1e-9);
+        // A soloed row keeps its slider whatever the reduction.
+        row.soloed = true;
+        assert!((sync_row(&row, true, 100).factor - 1.5).abs() < 1e-9);
+    }
+
+    /// `sync_all`: `any_solo` scanned once across all 16; a solo on the last
+    /// row attenuates every other row while each row keeps its own mute flag.
+    #[test]
+    fn sync_all_reduces_every_non_solo_row() {
+        let mut mix = default_mix();
+        mix[0].set_level_pct(200);
+        mix[3].muted = true;
+        mix[15].soloed = true;
+        let sync = sync_all(&mix, 50);
+        // Soloed row: slider untouched.
+        assert!((sync[15].factor - 1.0).abs() < 1e-9);
+        assert!(!sync[15].muted);
+        // Every other row: (100 - 50)% × slider; mute flags per-row.
+        assert!((sync[0].factor - 1.0).abs() < 1e-9);
+        assert!(!sync[0].muted);
+        assert!((sync[3].factor - 0.5).abs() < 1e-9);
+        assert!(sync[3].muted);
+        // No solo anywhere: every factor is just its slider.
+        mix[15].soloed = false;
+        let sync = sync_all(&mix, 50);
+        assert!((sync[0].factor - 2.0).abs() < 1e-9);
+        assert!((sync[3].factor - 1.0).abs() < 1e-9);
+    }
+
+    /// Drums interplay: the drums row (index 9 = channel 10, the default
+    /// `drumsChannel`) syncs IDENTICALLY to any other row under the same
+    /// inputs — `applyChannelSoloMute` has no drums branch, and engine-side
+    /// mute silences drums like every channel (the muted check precedes
+    /// pitch dispatch). The only drums special-case anywhere is pitch-shift
+    /// exclusion at note dispatch (engine, T7-tested).
+    #[test]
+    fn drums_row_has_no_mix_exception() {
+        let mut mix = default_mix();
+        mix[0].set_level_pct(140);
+        mix[9].set_level_pct(140);
+        mix[9].muted = true;
+        mix[5].soloed = true;
+        let sync = sync_all(&mix, 60);
+        assert_eq!(sync[0].factor, sync[9].factor);
+        assert!((sync[9].factor - 0.56).abs() < 1e-9);
+        assert!(!sync[0].muted);
+        assert!(sync[9].muted);
+        // And a soloed drums row keeps its slider like any soloed row.
+        mix[9].muted = false;
+        mix[9].soloed = true;
+        let sync = sync_all(&mix, 60);
+        assert!((sync[9].factor - 1.4).abs() < 1e-9);
+    }
+
+    /// Meter peak (`window.cpp:149`): max wins, vel 0 never lowers the peak.
+    #[test]
+    fn note_peak_keeps_max() {
+        assert!((note_peak(0.0, 100) - 100.0 / 127.0).abs() < 1e-6);
+        assert!((note_peak(0.9, 10) - 0.9).abs() < f32::EPSILON);
+        assert!((note_peak(0.5, 0) - 0.5).abs() < f32::EPSILON);
+        assert!((note_peak(0.0, 127) - 1.0).abs() < f32::EPSILON);
+    }
+
+    /// A8 load sync: stale mix state is replaced by fresh rows carrying the
+    /// snapshot's used flags + labels.
+    #[test]
+    fn reset_for_song_replaces_mix_with_snapshot_rows() {
+        let mut mix = default_mix();
+        mix[0].muted = true;
+        mix[0].soloed = true;
+        mix[0].locked = true;
+        mix[0].patch = 40;
+        mix[0].set_level_pct(20);
+        mix[0].label = "Stale".to_string();
+        mix[0].level = 0.7;
+        let used: [bool; MIDI_CHANNELS] = std::array::from_fn(|ch| ch < 2);
+        let labels: [String; MIDI_CHANNELS] = std::array::from_fn(|ch| format!("Track{ch}"));
+        reset_for_song(&mut mix, &used, &labels);
+        assert!(!mix[0].muted && !mix[0].soloed && !mix[0].locked);
+        assert_eq!(mix[0].patch, 0);
+        assert_eq!(mix[0].level_pct, 100);
+        assert_eq!(mix[0].level, 0.0);
+        assert!(mix[0].used);
+        assert_eq!(mix[0].label, "Track0");
+        assert!(mix[1].used);
+        assert!(!mix[2].used);
+        // Unused rows still carry their snapshot label (hidden, not rendered).
+        assert_eq!(mix[2].label, "Track2");
+    }
+
+    /// Patch model relabel per map (`applyInstrumentMap` twin): MT-32 reads
+    /// its own table, GM/GS/unknown read GM capital tones, 128 entries.
+    #[test]
+    fn patch_options_relabel_per_map() {
+        let gm = patch_options(0);
+        let gs = patch_options(1);
+        let mt32 = patch_options(2);
+        let unknown = patch_options(99);
+        assert_eq!(gm.len(), 128);
+        assert_eq!(gm[0], "Acoustic Grand Piano");
+        assert_eq!(gm[127], "Gunshot");
+        assert_eq!(gs, gm);
+        assert_eq!(unknown, gm);
+        assert_eq!(mt32[0], "Acou Piano 1");
+        assert_eq!(mt32[127], "Hollow");
+        assert_eq!(patch_label(0, 40), "Violin");
+        assert_eq!(patch_label(2, 40), "Echo Bell");
     }
 }

@@ -14,6 +14,8 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
+use cosmic::widget::color_picker::ColorPickerUpdate;
+
 use crate::core::event::MIDI_CHANNELS;
 pub use crate::core::output::MidiPort;
 pub use crate::core::player::{EngineCommand, PlayerEvent, SongSnapshot};
@@ -140,6 +142,18 @@ pub enum Message {
     // --- preferences (commit-on-close scratch state, applied + saved by
     // `App::apply_prefs`, incl. solo% per U14) ---
     PrefsChanged(SettingsState),
+    /// Whole-scratch prefs edit (T12b shell): adopted scratch-only via
+    /// `adopt_prefs_scratch` — never applied, never saved. Per-edit
+    /// `PrefsChanged` would be commit-on-change and is banned; the single
+    /// `PrefsChanged(scratch)` fires once at dialog close.
+    PrefsScratchEdited(SettingsState),
+    /// D17 picker updates for the three D2 Lyrics color rows (T12b shell):
+    /// one constructor per row — the picker builder takes `fn` pointers, so
+    /// the row rides the variant, not a payload. Routed to
+    /// `apply_picker_update` (scratch-only like any edit).
+    PrefsPickerFuture(ColorPickerUpdate),
+    PrefsPickerPast(ColorPickerUpdate),
+    PrefsPickerHighlight(ColorPickerUpdate),
 
     // --- song settings ---
     SongSettingsSave,
@@ -313,8 +327,10 @@ pub struct LoadedPlaylist {
 }
 
 /// Preferences scratch state: the full [`Settings`][crate::config::settings::Settings]
-/// (all 30 keys), edited by the prefs dialog and committed wholesale by
-/// `App::apply_prefs` at close (commit-on-close, U14). A type alias — not a
+/// (all 30 keys), edited by the prefs dialog; at close the 17 D2-owned keys
+/// commit over live settings ([`Settings::commit_prefs_dialog`][crate::config::settings::Settings::commit_prefs_dialog],
+/// T12 devil-BLOCKING FIX) and the merged commit goes through ONE
+/// `App::apply_prefs` (commit-on-close, U14). A type alias — not a
 /// parallel struct — so the dialog can never drift from the persisted schema.
 pub type SettingsState = crate::config::settings::Settings;
 

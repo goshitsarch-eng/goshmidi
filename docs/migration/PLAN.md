@@ -197,7 +197,7 @@ lead = PLAN/DECISIONS/REPORT + glue.
 - [x] T11 Lyrics (ux): page + filters + live tail (U10 concatenation — DONE (suite 405/405, D12/D13, D17 binding, snap-back FIX ruled+amended, devil SIGN-OFF; 3 test/doc follow-ups → T12)
       preserved), copy/save/print routing, D12/D13, prefs Lyrics page
       (color picker per T0, font spec U6); integration tests.
-- [ ] T12 Channels + prefs (ux): 16 rows + solo/mute formula + meters +
+- [x] T12 Channels + prefs (ux): 16 rows + solo/mute formula + meters + — DONE (suite 460/460, 16 integration tests, modal FIX T12f ruled+fixed, devil SIGN-OFF; 3 follow-ups → T13)
       patch relabel, prefs General/Piano pages (`spin_button`s, U4);
       integration tests.
 - [ ] T13 Piano + remaining dialogs (ux): canvas program + drawn-range clicks

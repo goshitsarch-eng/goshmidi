@@ -120,7 +120,7 @@ fn clamp_selected(selected: usize, len: usize) -> Option<usize> {
 
 /// One lyrics toolbar icon button: freedesktop symbolic icon + tooltip +
 /// a11y name/description. Tooltips are the exact C++ strings
-/// (`window.cpp:1771-1773`); names match them (transport/sidebar precedent).
+/// (`window.cpp:1772-1774`); names match them (transport/sidebar precedent).
 fn lyric_tool_button(
     icon_name: &'static str,
     name: &'static str,
@@ -617,7 +617,8 @@ fn set_lyrics_font(scratch: &mut SettingsState, value: String) {
 /// the row's field (unconditionally — text is the source of truth), and
 /// emits `on_scratch`. Captures only owned data, so the closure is
 /// `'static` (dropdown-compatible) as well as `'a` (text-input-compatible).
-fn text_updater(
+/// Shared with the T12 prefs shell (the Piano `singleColor` row).
+pub(crate) fn text_updater(
     scratch: &SettingsState,
     on_scratch: fn(SettingsState) -> Message,
     set: fn(&mut SettingsState, String),
@@ -1043,6 +1044,16 @@ mod tests {
             &mut scratch,
             LyricsColorRow::Highlight,
             ColorPickerUpdate::AppliedColor,
+        );
+        assert_hex_near(&scratch.highlight_color, parse_gdk_rgba("#e01b24").unwrap());
+        // ActionFinished (slider/canvas release, picker-input submit) also
+        // commits active → applied in the model, so it writes canonical hex
+        // too (T11 follow-up 2: all three apply events proven here).
+        let _ = apply_picker_update(
+            &mut models,
+            &mut scratch,
+            LyricsColorRow::Highlight,
+            ColorPickerUpdate::ActionFinished,
         );
         assert_hex_near(&scratch.highlight_color, parse_gdk_rgba("#e01b24").unwrap());
         let committed = scratch.highlight_color.clone();

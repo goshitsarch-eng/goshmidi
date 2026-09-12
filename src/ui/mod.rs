@@ -2,16 +2,19 @@
 //!
 //! T9 landed the `transport` view + the path-hack-declared `theme` styles;
 //! T10b adds the real `sidebar` view and promotes `theme` to `ui::theme`;
-//! T11b adds the `lyrics` page view + D2 Lyrics prefs rows.
+//! T11b adds the `lyrics` page view + D2 Lyrics prefs rows;
+//! T12b adds the `channels` page view + the D2 `prefs` dialog shell.
 
+pub mod channels;
 pub mod lyrics;
+pub mod prefs;
 pub mod sidebar;
 pub mod theme;
 pub mod transport;
 
 use std::path::PathBuf;
 
-use crate::message::Status;
+use crate::message::{SettingsState, Status};
 use crate::state::lyrics::AppliedLyricsPrefs;
 
 /// View model for the transport/dashboard/sliders region (ux §3.2–3.4, §3.9).
@@ -102,7 +105,7 @@ pub struct PlaylistViewModel {
 /// Field contract (frozen for T11; additions need arch+ux sign-off):
 /// * dropdown options are owned labels; `*_selected` are option indices —
 ///   arch computes them per the T11a formulas (`track_filter.map_or(0)`,
-///   `type_filter`, `codec_option_index(&codec)`) and the view re-clamps
+///   `type_filter.max(0)`, `codec_option_index(&codec)`) and the view re-clamps
 ///   defensively (out-of-range → nearest valid, empty options → no
 ///   selection), so a stale index can never panic the dropdown;
 /// * `body`/`live_past`/`live_current` are the U10 segments verbatim
@@ -125,7 +128,7 @@ pub struct LyricsViewModel {
     pub track_selected: usize,
     /// Type dropdown labels (`TYPE_OPTION_NAMES`, 14 entries).
     pub type_options: Vec<String>,
-    /// Type dropdown selection (`type_filter` discriminant as index).
+    /// Type dropdown selection (`type_filter.max(0)` discriminant as index).
     pub type_selected: usize,
     /// Encoding dropdown labels (`Sequence::extra_codec_names()`, 14).
     pub codec_options: Vec<String>,
@@ -147,4 +150,102 @@ pub struct LyricsViewModel {
     pub applied: AppliedLyricsPrefs,
     /// Whether a song is loaded (empty-state switch).
     pub has_song: bool,
+}
+
+/// One channels-page row (ux §3.7, T12a contract): the 8 C++ fields —
+/// number label, name entry, M/S toggles, meter, volume slider, lock
+/// toggle, patch dropdown — for a single used channel.
+#[derive(Debug, Clone)]
+pub struct ChannelRowViewModel {
+    /// 0-based channel (`ChannelState` index); the view shows `channel + 1`.
+    pub channel: u8,
+    /// Name entry text (`ChannelState::label` verbatim).
+    pub name: String,
+    /// M toggle state.
+    pub muted: bool,
+    /// S toggle state.
+    pub soloed: bool,
+    /// Lock toggle state.
+    pub locked: bool,
+    /// Meter 0.0–1.0 (`ChannelState::level`; peak set on NoteOn, `*= 0.82`
+    /// decayed state-side every 50 ms — the view only renders).
+    pub meter: f32,
+    /// Volume slider 0–200 (`ChannelState::level_pct`).
+    pub level_pct: u32,
+    /// Patch dropdown selection (`ChannelState::patch`).
+    pub patch: u8,
+    /// Selected patch label (`patch_label(map, patch)` verbatim — shown as
+    /// the patch dropdown's tooltip).
+    pub patch_label: String,
+}
+
+/// View model for the channels page (ux §3.7). Built fresh by
+/// `App::channels_view_model` on every `view()` and passed BY VALUE to
+/// `ui::channels::view`; ux must not reach into `App` directly.
+///
+/// By value (not `&'a`) deliberately, same rationale as
+/// [`TransportViewModel`]: a `view(&model)` signature borrowing a fresh
+/// per-frame model cannot return its `Element` past the local, so the
+/// reference form is uncallable here — owned data moves into the widgets
+/// and the `Element` keeps the caller's lifetime.
+///
+/// Field contract (frozen for T12; additions need arch+ux sign-off):
+/// * `rows` holds used channels ONLY (`ChannelState::used`), in channel
+///   order (C++ `refreshChannels` visibility rule) — the view renders every
+///   row it is given and filters nothing itself;
+/// * `patch_options` is the shared 128-entry patch model
+///   (`channels::patch_options(map)` under the current instrument map):
+///   relabeled on map change (prefs close / MIDI apply / profile
+///   inference), while live `Program` events only reselect `patch`
+///   (state-side, like C++ `m_refreshingChannels`-guarded reselect — the
+///   model is never rebuilt for a reselect);
+/// * `has_song` selects the empty states (no-song placeholder vs rows);
+/// * toggles send the negated state (`ChannelMute(ch, !muted)` and
+///   likewise solo/lock, loop-toggle precedent); level/patch/name send
+///   verbatim (`ChannelLevel`/`ChannelPatch`/`ChannelName`); the meter is
+///   display-only (no message — decay + peak live state-side).
+#[derive(Debug, Clone)]
+pub struct ChannelsViewModel {
+    /// Used-only rows in channel order.
+    pub rows: Vec<ChannelRowViewModel>,
+    /// Shared 128-entry patch model for every row's dropdown.
+    pub patch_options: [&'static str; 128],
+    /// Whether a song is loaded (empty-state switch).
+    pub has_song: bool,
+}
+
+/// View model for the D2 preferences dialog shell (ux D2). Owned by the
+/// shell as whole-`Settings` dialog scratch (all 30 keys — the dialog edits
+/// a `SettingsState` clone, never live settings); borrowed (`&'a`) by
+/// `ui::prefs::view` together with the shell-owned [`LyricsPickerModels`]
+/// (the text inputs borrow the scratch strings, so — unlike the page views
+/// — the prefs view cannot take its model by value).
+///
+/// Field contract (frozen for T12; additions need arch+ux sign-off):
+/// * `scratch` is the whole `SettingsState`: every row edits it (spins,
+///   toggles, dropdowns, text fields), and dialog close commits it with ONE
+///   `PrefsChanged(scratch)` (commit-on-close is KEPT per the lead ruling —
+///   never commit-on-change); `solo_volume_reduction` is part of that same
+///   commit (U14 — arch's close path repushes the whole mix);
+/// * General section rows run in C++ order (`window.cpp:1198-1237`):
+///   drums spin 1–16, solo% spin 0–100, the 3 switches, SysEx reset
+///   dropdown 0–4, instrument-map dropdown 0–2;
+/// * the Lyrics section is exactly [`lyrics::lyrics_prefs_rows`] (the T11b 5
+///   rows — reused, never duplicated);
+/// * Piano section rows run in C++ order (`window.cpp:1274-1306`):
+///   palette dropdown 0–3, `singleColor` text field (`gdk_rgba_parse`
+///   parity — text stays source of truth, garbage commits verbatim, gray
+///   is render-only at the T13 canvas), velocity switch, names dropdown
+///   0–3, octave switch;
+/// * the shell carries the D3-owned keys (`lastOutputBackend`,
+///   `lastOutputConnection`, `soundFont`, `advancedPorts`) through the
+///   commit UNCHANGED (no D2 row writes them — arch's close path reseats
+///   the output only when they differ).
+///
+/// [`LyricsPickerModels`]: lyrics::LyricsPickerModels
+/// [`lyrics::lyrics_prefs_rows`]: lyrics::lyrics_prefs_rows
+#[derive(Debug, Clone)]
+pub struct PrefsViewModel {
+    /// Whole-`Settings` dialog scratch (all 30 keys).
+    pub scratch: SettingsState,
 }

@@ -201,3 +201,21 @@ simplicity/maintainability > COSMIC conventions.
   engine thread needs the types in `core`. Re-export kills drift with no
   bridge code. `PreviewNote/Off` stay app-only (A3 bypass); `NoteOff` gains
   `vel` (C++ parity) when message.rs adopts core's types in T9.
+
+## D20. Prefs overlay modality + close-commit shape (devil T12 OBJECT → T12f)
+
+- Question: the prefs overlay claimed "modal" but iced `Stack` propagates
+  events to lower layers (verified in pinned framework source); wholesale
+  live←scratch commit at close silently reverted live keys written while
+  prefs were open (resize, song load, playlist save).
+- Options: (a) capturing overlay only; (b) narrow 17-key close commit only;
+  (c) both.
+- Choice: (c).
+- Why: parity first — C++ `AdwPreferencesWindow` is modal, so (a) via a
+  full-bounds capturing `mouse_area` (+ dim scrim) restores the C++ behavior;
+  but (a) alone cannot stop OS-level `WindowResized` under the overlay, so
+  (b) `Settings::commit_prefs_dialog` (exactly the 17 D2 keys over live)
+  kills the whole race family including resize. Corollary ruled correct:
+  scratch D3 keys are dropped at prefs close (C++ prefs has no output
+  selection; D3/T13 owns it) — the old backend-switch test pinned an
+  unreachable path. T13 dialogs copy the (a) chrome pattern.

@@ -39,12 +39,18 @@ use crate::state::channels::{self, ChannelState};
 use crate::state::lyrics::{
     AppliedLyricsPrefs, LyricsState, TYPE_OPTION_NAMES, codec_option_index, track_options,
 };
-use crate::state::midi::MidiState;
+use crate::state::midi::{MidiState, OutputCommit};
 use crate::state::piano::PianoState;
 use crate::state::playback::{self, PlaybackState};
 use crate::state::playlist::PlaylistState;
 use crate::ui::{
-    LyricsViewModel, PlaylistViewModel, TransportViewModel, lyrics, sidebar, transport,
+    ChannelRowViewModel, ChannelsViewModel, LyricsViewModel, PlaylistViewModel, PrefsViewModel,
+    TransportViewModel, lyrics, prefs, sidebar, transport,
+};
+// Aliased: `channels` already names the mix-state module above.
+use crate::ui::channels as channels_view;
+use crate::ui::lyrics::{
+    LyricsColorRow, LyricsPickerModels, adopt_prefs_scratch, apply_picker_update,
 };
 
 /// Meter/clock ticker interval while playing (`m_meterTimer`, 50 ms).
@@ -366,6 +372,11 @@ pub struct App {
     settings: Settings,
     paths: Paths,
     dialog: Option<Dialog>,
+    /// D2 prefs dialog shell (T12b): `None` while shut; `Some` while open —
+    /// whole-`Settings` scratch + D17 picker models. Seeded on
+    /// `ShowDialog(Preferences)`, edited scratch-only, committed once +
+    /// cleared on close.
+    prefs: Option<(PrefsViewModel, LyricsPickerModels)>,
     view: View,
     toasts: Vec<String>,
     /// Autoplay flag for the in-flight `Load` (consumed by `Opened`).
@@ -521,11 +532,7 @@ impl App {
         let last_bar = song.last_bar();
         self.playback
             .reset_for_song(song.len_ticks, song.initial_tempo_us, last_bar);
-        for (ch, slot) in self.channels.iter_mut().enumerate() {
-            *slot = ChannelState::new();
-            slot.used = song.channel_used[ch];
-            slot.label = song.channel_labels[ch].clone();
-        }
+        channels::reset_for_song(&mut self.channels, &song.channel_used, &song.channel_labels);
         self.piano.reset_for_song();
         self.lyrics
             .reset_for_song(song.charset.clone(), &song.texts);
@@ -648,46 +655,102 @@ impl App {
         if idx >= MIDI_CHANNELS {
             return;
         }
-        let any = channels::any_solo(&self.channels);
-        let row = &self.channels[idx];
-        self.engine.send(EngineCommand::SetMuted(ch, row.muted));
-        self.engine.send(EngineCommand::SetChannelVolume(
-            ch,
-            row.factor(any, self.settings.solo_volume_reduction),
-        ));
+        let sync = channels::sync_row(
+            &self.channels[idx],
+            channels::any_solo(&self.channels),
+            self.settings.solo_volume_reduction,
+        );
+        self.engine.send(EngineCommand::SetMuted(ch, sync.muted));
+        self.engine
+            .send(EngineCommand::SetChannelVolume(ch, sync.factor));
     }
 
     /// Push the whole mix (the full `applyChannelSoloMute` loop): used after
     /// solo flips (which change every row's factor), song-settings loads,
     /// and prefs commits (solo% — U14).
     fn push_all_channels(&self) {
-        for ch in 0..MIDI_CHANNELS as u8 {
-            self.push_channel(ch);
+        for (ch, sync) in channels::sync_all(&self.channels, self.settings.solo_volume_reduction)
+            .iter()
+            .enumerate()
+        {
+            let ch = ch as u8;
+            self.engine.send(EngineCommand::SetMuted(ch, sync.muted));
+            self.engine
+                .send(EngineCommand::SetChannelVolume(ch, sync.factor));
         }
     }
 
     // -- prefs / MIDI setup apply --------------------------------------------
 
-    /// Commit-on-close prefs apply (U14 FIX, `window.cpp:1310-1340`): adopt
-    /// the dialog scratch state wholesale, push drums channel, SysEx reset,
-    /// and the full mix (solo% applies at close too) to the engine, apply
-    /// the Lyrics rows, then save the full config (save-point row 3). Piano
-    /// rows apply at render time from `self.settings` (T13); the instrument
-    /// map relabels the patch model (T12).
+    /// Commit-on-close prefs apply (U14, `window.cpp:1310-1340`): adopt the
+    /// merged commit wholesale (the close arm narrows the dialog scratch to
+    /// the 17 D2-owned keys over live settings first — T12 devil-BLOCKING
+    /// FIX), apply the General rows (drums, SysEx reset, instrument map,
+    /// full mix incl. solo% at close, output reseat on a D3 delta), the
+    /// Lyrics rows, and the Piano rows, then save the full config
+    /// (save-point row 3).
     fn apply_prefs(&mut self, prefs: SettingsState) {
-        self.settings = prefs;
+        let old = std::mem::replace(&mut self.settings, prefs);
+        self.apply_general_prefs(&old);
+        self.apply_lyrics_prefs();
+        self.apply_piano_prefs();
+        // C++ parity: `AppSettings::save()` is void — failures are silent.
+        if self.settings.save(&self.paths).is_err() {
+            // Silent, as in C++.
+        }
+    }
+
+    /// General page of the prefs apply (D2 General rows): drums channel →
+    /// engine (clamped 1–16, sent 0-based); SysEx reset → engine + mirror;
+    /// instrument map → mirror (the patch model relabels render-time via
+    /// [`channels::patch_options`], T12b); solo% → full mix repush (U14 FIX —
+    /// C++ never repushed here, so a changed solo% silently did nothing until
+    /// the next mix touch); `autoPlay` / `autoAdvance` / `autoSongSettings`
+    /// are behavior flags with no engine command (read at load/finish/next
+    /// time). `lastOutputBackend` / `lastOutputConnection` / `soundFont` /
+    /// `advancedPorts` are D3-owned keys that reach the commit from live
+    /// (the close arm narrows the scratch to the 17 D2 keys, so on the close
+    /// path the planner below always sees an empty delta and no-ops —
+    /// definitionally current, in particular a startup-fallback selection
+    /// survives); a `PrefsChanged` carrying a D3 change vs `old` still
+    /// reseats the output (`SetSoundFont` + `SelectOutput`, close+reopen
+    /// inside the manager) and announces like a user apply (contract,
+    /// unit-pinned — close is the only production producer and never
+    /// carries one). C++ twin: `window.cpp:1315-1321`, `:1332-1334`.
+    fn apply_general_prefs(&mut self, old: &SettingsState) {
         self.engine.send(EngineCommand::SetDrumsChannel(
             (self.settings.drums_channel.clamp(1, 16) - 1) as u8,
         ));
         let reset = self.settings.sysex_reset.clamp(0, 4) as u8;
         self.engine.send(EngineCommand::SetSysexReset(reset));
-        self.midi.instrument_map = self.settings.instrument_map.clamp(0, 2) as u8;
         self.midi.sysex_reset = reset;
+        self.midi.instrument_map = self.settings.instrument_map.clamp(0, 2) as u8;
         self.push_all_channels();
-        self.apply_lyrics_prefs();
-        // C++ parity: `AppSettings::save()` is void — failures are silent.
-        if self.settings.save(&self.paths).is_err() {
-            // Silent, as in C++.
+        let reseat = self.midi.plan_output_reseat(
+            OutputCommit {
+                backend: &old.last_output_backend,
+                port: &old.last_output_connection,
+                soundfont: &old.sound_font,
+                advanced: old.advanced_ports,
+            },
+            OutputCommit {
+                backend: &self.settings.last_output_backend,
+                port: &self.settings.last_output_connection,
+                soundfont: &self.settings.sound_font,
+                advanced: self.settings.advanced_ports,
+            },
+        );
+        if let Some(font) = reseat.sound_font {
+            self.engine.send(EngineCommand::SetSoundFont(font));
+        }
+        if reseat.select_output {
+            // User-initiated apply: announce the result (unlike the silent
+            // startup select).
+            self.midi.announce_applied = true;
+            let backend = self.midi.backend.clone();
+            let port = self.midi.port.clone();
+            self.engine
+                .send(EngineCommand::SelectOutput { backend, port });
         }
     }
 
@@ -708,6 +771,17 @@ impl App {
             self.settings.text_alignment,
         );
     }
+
+    /// Piano page of the prefs apply (D2 Piano rows, `window.cpp:1327-1331`):
+    /// `highlightPalette` / `singleColor` / `velocityColor` /
+    /// `namesVisibility` / `octaveSubscript` are adopted by the wholesale
+    /// settings replace and apply at render time from `self.settings` — the
+    /// T13 canvas reads them per draw, exactly like the C++ `draw_func`
+    /// (`singleColor` parses under `gdk_rgba_parse` parity at the renderer,
+    /// gray on garbage). Deliberately a documented step rather than a silent
+    /// gap: C++ close sends no engine command and derives no eager piano
+    /// state either.
+    fn apply_piano_prefs(&self) {}
 
     /// D3 Apply (`window.cpp:1150-1187` + `connectOutput`, `window.cpp:328-349`):
     /// commit soundFont/advanced/map/reset, push reset + SoundFont to the
@@ -1088,7 +1162,7 @@ impl App {
                 self.piano.note_on(ch, note, vel);
                 if (ch as usize) < MIDI_CHANNELS {
                     let meter = &mut self.channels[ch as usize].level;
-                    *meter = meter.max(f32::from(vel) / 127.0);
+                    *meter = channels::note_peak(*meter, vel);
                 }
             }
             PlayerEvent::NoteOff { ch, note, .. } => {
@@ -1226,6 +1300,39 @@ impl App {
             has_song: self.song.is_some(),
         }
     }
+
+    /// Build the channels page view model for `view()` (T12b contract):
+    /// used channels ONLY (`ChannelState::used`), in channel order (C++
+    /// `refreshChannels` visibility rule) — the view renders every row it is
+    /// given and filters nothing itself. Patch labels come from
+    /// `patch_label` under the current instrument map; the shared 128-entry
+    /// model relabels on map change (prefs close / MIDI apply), while live
+    /// `Program` reselects only move `patch` state-side.
+    fn channels_view_model(&self) -> ChannelsViewModel {
+        let map = self.settings.instrument_map;
+        let rows = self
+            .channels
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.used)
+            .map(|(ch, row)| ChannelRowViewModel {
+                channel: ch as u8,
+                name: row.label.clone(),
+                muted: row.muted,
+                soloed: row.soloed,
+                locked: row.locked,
+                meter: row.level,
+                level_pct: row.level_pct,
+                patch: row.patch,
+                patch_label: channels::patch_label(map, row.patch).to_string(),
+            })
+            .collect();
+        ChannelsViewModel {
+            rows,
+            patch_options: channels::patch_options(map),
+            has_song: self.song.is_some(),
+        }
+    }
 }
 
 impl Application for App {
@@ -1271,6 +1378,7 @@ impl Application for App {
             settings,
             paths,
             dialog: None,
+            prefs: None,
             view: View::Lyrics,
             toasts: Vec::new(),
             pending_autoplay: false,
@@ -1316,8 +1424,9 @@ impl Application for App {
     /// State transitions + engine commands (arch §2.3). Transport/mix/seek/
     /// loop messages update state optimistically and send the matching
     /// command; D1/D9/D10/D12 launch portal chooser `Task`s, copy/print
-    /// launch clipboard/export `Task`s (MIDI dialog/T13 still returns
-    /// `Task::none()`) — every arm is covered by a test below.
+    /// launch clipboard/export `Task`s, picker updates return the picker's
+    /// mapped task (MIDI dialog/T13 still returns `Task::none()`) — every
+    /// arm is covered by a test below.
     fn update(&mut self, message: Self::Message) -> Task<Self::Message> {
         match message {
             // --- transport ---
@@ -1517,7 +1626,12 @@ impl Application for App {
             // selections (snap-back FIX, see `state::lyrics`); empty codec
             // is ignored (`setCurrentCharset`, `sequence.cpp:362-366`).
             Message::LyricTrackFilter(track) => {
-                self.lyrics.track_filter = track;
+                // T11 follow-up 1: `Some(0)` normalizes to `None` (C++
+                // `m_lyricTrackFilter` is an int where only `> 0` filters —
+                // `window.cpp:158,594` — so 0 passes all, while `Some(0)`
+                // would match nothing. Unreachable via the UI: the dropdown
+                // maps index 0 to `None`).
+                self.lyrics.track_filter = track.filter(|&t| t != 0);
                 self.refresh_lyrics_body();
             }
             Message::LyricTypeFilter(typ) => {
@@ -1589,14 +1703,87 @@ impl Application for App {
 
             // --- preferences / song settings ---
             Message::PrefsChanged(prefs) => self.apply_prefs(prefs),
+            // Scratch-only edit: adopt + re-drive the picker models. Live
+            // settings, engine, disk untouched — the single commit happens
+            // at close. No shell (stale message) → silent no-op.
+            Message::PrefsScratchEdited(next) => {
+                if let Some((vm, pickers)) = self.prefs.as_mut() {
+                    adopt_prefs_scratch(pickers, &mut vm.scratch, next);
+                }
+            }
+            // One arm per color row (the picker builder takes `fn` pointers,
+            // so the row rides the variant): feed the dialog update into the
+            // model, write the canonical text on apply events. Returns the
+            // picker's mapped task (its copy-to-clipboard arm needs it).
+            Message::PrefsPickerFuture(update) => {
+                if let Some((vm, pickers)) = self.prefs.as_mut() {
+                    return apply_picker_update(
+                        pickers,
+                        &mut vm.scratch,
+                        LyricsColorRow::Future,
+                        update,
+                    );
+                }
+            }
+            Message::PrefsPickerPast(update) => {
+                if let Some((vm, pickers)) = self.prefs.as_mut() {
+                    return apply_picker_update(
+                        pickers,
+                        &mut vm.scratch,
+                        LyricsColorRow::Past,
+                        update,
+                    );
+                }
+            }
+            Message::PrefsPickerHighlight(update) => {
+                if let Some((vm, pickers)) = self.prefs.as_mut() {
+                    return apply_picker_update(
+                        pickers,
+                        &mut vm.scratch,
+                        LyricsColorRow::Highlight,
+                        update,
+                    );
+                }
+            }
             Message::SongSettingsSave => self.save_song_settings(),
             Message::SongSettingsLoad => self.load_song_settings(),
 
             // --- dialogs / navigation ---
-            Message::ShowDialog(dialog) => self.dialog = Some(dialog),
+            Message::ShowDialog(dialog) => {
+                // D2 shell open: clone live settings into the scratch and
+                // seed the picker models. Switching to any other dialog
+                // abandons an open scratch (no commit — commit rides close).
+                if dialog == Dialog::Preferences {
+                    self.prefs = Some((
+                        PrefsViewModel {
+                            scratch: self.settings.clone(),
+                        },
+                        LyricsPickerModels::from_settings(&self.settings),
+                    ));
+                } else {
+                    self.prefs = None;
+                }
+                self.dialog = Some(dialog);
+            }
             // D8 cancel rule falls out of the model: the loop toggle derives
             // from `loop_enabled`, so closing an unconfirmed dialog resets it.
-            Message::CloseDialog => self.dialog = None,
+            // D2 commit-on-close: narrow the scratch to exactly the 17
+            // D2-owned keys over live settings (T12 devil-BLOCKING FIX — a
+            // wholesale live←scratch replace would silently revert live
+            // writes that land while the dialog is open: `WindowResized`,
+            // `on_opened` recents, `PlaylistSaved`), then ONE `apply_prefs`
+            // of the merged commit (U14 mix repush + save), then clear the
+            // shell. Other dialogs just close.
+            Message::CloseDialog => {
+                if self.dialog == Some(Dialog::Preferences)
+                    && let Some((vm, _)) = self.prefs.take()
+                {
+                    let mut committed = self.settings.clone();
+                    committed.commit_prefs_dialog(&vm.scratch);
+                    self.apply_prefs(committed);
+                }
+                self.dialog = None;
+            }
             Message::ShowFileInfo => self.dialog = Some(Dialog::FileInfo),
             Message::ShowAbout => self.dialog = Some(Dialog::About),
             Message::ShowHelp => self.dialog = Some(Dialog::Help),
@@ -1625,7 +1812,8 @@ impl Application for App {
     /// T10a2 layout (ux W1/§3.1): playlist sidebar on the left at the C++
     /// `AdwOverlaySplitView` 0.28 width fraction (`FillPortion(28/72)`) + main
     /// column (transport region with THE status line, view-switcher page
-    /// — Lyrics composed, Channels/Piano placeholder —, toasts). The sidebar
+    /// — Lyrics + Channels composed (T12b), Piano placeholder —, toasts),
+    /// with the D2 prefs dialog stacked over it while open (T12b). The sidebar
     /// honors `playlistVisible`
     /// (`settings.playlist_visible`, default true); there is no runtime
     /// collapse toggle yet — any toggle needs a new `Message` + update arm
@@ -1636,6 +1824,7 @@ impl Application for App {
     fn view(&self) -> Element<'_, Self::Message> {
         let page: Element<'_, Self::Message> = match self.view {
             View::Lyrics => lyrics::view(self.lyrics_view_model()),
+            View::Channels => channels_view::view(self.channels_view_model()),
             other => cosmic::widget::text::body(format!(
                 "{other:?} view — switcher lands in T12+ (dialog={:?})",
                 self.dialog,
@@ -1671,9 +1860,76 @@ impl Application for App {
             ])
         }
         .height(cosmic::iced::Length::Fill);
-        cosmic::widget::dnd_destination(content, vec![DND_URI_LIST_MIME.into()])
-            .on_data_received(|mime, data| Message::DndDataReceived { mime, data })
-            .on_file_transfer(Message::DndFileTransfer)
+        let base: Element<'_, Self::Message> =
+            cosmic::widget::dnd_destination(content, vec![DND_URI_LIST_MIME.into()])
+                .on_data_received(|mime, data| Message::DndDataReceived { mime, data })
+                .on_file_transfer(Message::DndFileTransfer)
+                .into();
+        // D2 dialog chrome: `Stack` overlay whose top layer is an ACTUAL
+        // modal capture layer (T12 devil-BLOCKING FIX — the old "modal
+        // `widget::dialog`" comment lied: `Dialog` is a pure styled
+        // container with zero capture code, and `Stack::update` propagates
+        // every event to lower layers unless `shell.is_event_captured()`,
+        // pinned rev `7e82198` `iced/widget/src/stack.rs`). The mechanism:
+        // a full-bounds `mouse_area` wraps the centered sheet — iced offers
+        // the event to the dialog content first, and anything the dialog
+        // does not consume is swallowed by the area, which captures left
+        // press/release + touch unconditionally when the cursor is over its
+        // bounds (`mouse_area.rs` — no handler needed) and the wheel via
+        // `on_scroll` into `ChooserCancelled` (the silent no-op arm: no
+        // state change, no toast). Clicks therefore cannot reach the base
+        // (buttons/toggles/sliders/dropdowns/text inputs all arm on left
+        // press); right-press still propagates, but no base widget binds it.
+        // The wrap container also paints the dim scrim (C++ `AdwPrefsWindow`
+        // dims its parent). Keyboard: no keyboard subscription or shortcut
+        // handling exists yet (T14 owns shortcuts), so there is no key path
+        // to gate — the residual Enter-on-a-base-widget-focused-before-open
+        // cannot silently lose state anymore (narrow close commit). Async
+        // completions (engine events, resize, DnD drops) still apply under
+        // the dialog and now survive the close instead of being reverted.
+        // Close commits once (commit-on-close — no Cancel row, C++ parity).
+        // Any other dialog state renders the base alone (T13 owns the
+        // remaining dialogs).
+        let (Some(Dialog::Preferences), Some((vm, pickers))) = (&self.dialog, &self.prefs) else {
+            return base;
+        };
+        let sheet: Element<'_, Self::Message> = cosmic::iced::widget::mouse_area(
+            cosmic::widget::container(
+                cosmic::widget::dialog()
+                    .title("Preferences")
+                    .control(cosmic::widget::scrollable(prefs::view(
+                        vm,
+                        pickers,
+                        Message::PrefsScratchEdited,
+                        [
+                            Message::PrefsPickerFuture,
+                            Message::PrefsPickerPast,
+                            Message::PrefsPickerHighlight,
+                        ],
+                    )))
+                    .primary_action(
+                        cosmic::widget::button::standard("Close").on_press(Message::CloseDialog),
+                    ),
+            )
+            .style(|_theme| cosmic::iced::widget::container::Style {
+                background: Some(cosmic::iced::Background::Color(cosmic::iced::Color {
+                    r: 0.0,
+                    g: 0.0,
+                    b: 0.0,
+                    a: 0.45,
+                })),
+                ..Default::default()
+            })
+            .width(cosmic::iced::Length::Fill)
+            .height(cosmic::iced::Length::Fill)
+            .align_x(cosmic::iced::Alignment::Center)
+            .align_y(cosmic::iced::Alignment::Center),
+        )
+        .on_scroll(|_| Message::ChooserCancelled)
+        .into();
+        cosmic::iced::widget::Stack::with_children(vec![base, sheet])
+            .width(cosmic::iced::Length::Fill)
+            .height(cosmic::iced::Length::Fill)
             .into()
     }
 
@@ -1752,6 +2008,7 @@ mod tests {
             settings: Settings::new(),
             paths: Paths::with_env(env, None),
             dialog: None,
+            prefs: None,
             view: View::Lyrics,
             toasts: Vec::new(),
             pending_autoplay: false,
@@ -2605,6 +2862,111 @@ mod tests {
         assert!(!app.channels[15].muted);
     }
 
+    /// Mix arms end to end (state → engine sync values): the arms store, and
+    /// the pushed `SetMuted` + `SetChannelVolume` pairs are exactly
+    /// `sync_all` over the stored rows (the sends themselves are
+    /// fire-and-forget into the real engine — mix commands emit no events —
+    /// so the pure sync matrix in `state::channels` pins the values).
+    #[test]
+    fn channel_arms_drive_exact_engine_sync_values() {
+        let (mut app, _rx, _tmp) = test_app();
+        open_fake_song(&mut app);
+        // Drums-row mute (ch 9 = channel 10, the default drums channel):
+        // mute applies uniformly — no drums exception in the mix path.
+        upd(&mut app, Message::ChannelMute(9, true));
+        upd(&mut app, Message::ChannelLevel(0, 150));
+        upd(&mut app, Message::ChannelSolo(1, true));
+        app.settings.solo_volume_reduction = 75;
+        let sync = channels::sync_all(&app.channels, app.settings.solo_volume_reduction);
+        // Non-solo ch 0: (100-75)% × 150%.
+        assert!((sync[0].factor - 0.375).abs() < 1e-9);
+        assert!(!sync[0].muted);
+        // Soloed ch 1 keeps its 100% slider.
+        assert!((sync[1].factor - 1.0).abs() < 1e-9);
+        // Muted drums row still computes its reduced factor (mute silences
+        // engine-side, independent of the factor).
+        assert!(sync[9].muted);
+        assert!((sync[9].factor - 0.25).abs() < 1e-9);
+        // Clearing the solo restores every slider.
+        upd(&mut app, Message::ChannelSolo(1, false));
+        let sync = channels::sync_all(&app.channels, app.settings.solo_volume_reduction);
+        assert!((sync[0].factor - 1.5).abs() < 1e-9);
+    }
+
+    /// Patch reselect: live `Program` events reselect the stored patch
+    /// (clamped, OOR channels ignored) and relabel under the current
+    /// instrument map; user patch changes store likewise.
+    #[test]
+    fn program_reselect_clamps_and_relabels_per_map() {
+        let (mut app, _rx, _tmp) = test_app();
+        open_fake_song(&mut app);
+        upd(
+            &mut app,
+            Message::Player(PlayerEvent::Program { ch: 0, patch: 200 }),
+        );
+        assert_eq!(app.channels[0].patch, 127);
+        // Reselect relabels under the current instrument map (GM default).
+        assert_eq!(channels::patch_label(0, app.channels[0].patch), "Gunshot");
+        // Out-of-range channels never reselect.
+        upd(
+            &mut app,
+            Message::Player(PlayerEvent::Program { ch: 16, patch: 5 }),
+        );
+        assert_eq!(app.channels[15].patch, 0);
+        // User patch change stores (clamped) + relabels.
+        upd(&mut app, Message::ChannelPatch(2, 40));
+        assert_eq!(app.channels[2].patch, 40);
+        assert_eq!(channels::patch_label(0, 40), "Violin");
+        // MT-32 map relabels the same patch number differently.
+        app.settings.instrument_map = 2;
+        assert_eq!(
+            channels::patch_label(app.settings.instrument_map, 40),
+            "Echo Bell"
+        );
+    }
+
+    /// Meter wiring: NoteOn peaks (`max`), a quieter NoteOn never lowers the
+    /// peak, NoteOff leaves the meter alone (C++ parity — only the piano key
+    /// clears), and the 50 ms tick decays the peak.
+    #[test]
+    fn note_on_peaks_meter_note_off_leaves_it() {
+        let (mut app, _rx, _tmp) = test_app();
+        open_fake_song(&mut app);
+        let on = |vel| {
+            Message::Player(PlayerEvent::NoteOn {
+                ch: 0,
+                note: 60,
+                vel,
+            })
+        };
+        upd(&mut app, on(100));
+        assert!((app.channels[0].level - 100.0 / 127.0).abs() < 1e-6);
+        upd(&mut app, on(10));
+        assert!((app.channels[0].level - 100.0 / 127.0).abs() < 1e-6);
+        upd(
+            &mut app,
+            Message::Player(PlayerEvent::NoteOff {
+                ch: 0,
+                note: 60,
+                vel: 64,
+            }),
+        );
+        assert!(!app.piano.notes_on[0][60]);
+        assert!((app.channels[0].level - 100.0 / 127.0).abs() < 1e-6);
+        upd(&mut app, Message::Tick(std::time::Instant::now()));
+        assert!((app.channels[0].level - 100.0 / 127.0 * 0.82).abs() < 1e-6);
+        // Out-of-range channels never touch meters.
+        upd(
+            &mut app,
+            Message::Player(PlayerEvent::NoteOn {
+                ch: 16,
+                note: 60,
+                vel: 127,
+            }),
+        );
+        assert!((app.channels[15].level - 0.0).abs() < f32::EPSILON);
+    }
+
     // -- lyrics -----------------------------------------------------------------
 
     /// Texts for the filter-recompute tests: two lyric tracks + a text note.
@@ -2667,6 +3029,19 @@ mod tests {
         assert_eq!(app.lyrics.codec, "UTF-8");
         upd(&mut app, Message::LyricCodec("SHIFT_JIS".to_string()));
         assert_eq!(app.lyrics.codec, "SHIFT_JIS");
+    }
+
+    #[test]
+    fn lyric_track_filter_some_zero_normalizes_to_none() {
+        let (mut app, _rx, _tmp) = test_app();
+        open_lyric_song(&mut app);
+        // T11 follow-up 1: `Some(0)` behaves as all-tracks (C++ `> 0` rule),
+        // not as a filter matching nothing.
+        upd(&mut app, Message::LyricTrackFilter(Some(0)));
+        assert_eq!(app.lyrics.track_filter, None);
+        assert_eq!(app.lyrics.body, "la lu");
+        // Live filtering agrees: every track passes.
+        assert!(app.lyrics.passes_filter(7, 5));
     }
 
     #[test]
@@ -2911,6 +3286,112 @@ mod tests {
         assert!(disk.contains("drumsChannel=9\n"));
     }
 
+    /// General rows end to end through the close path: wholesale adoption +
+    /// persistence, clamped mirrors, solo% mix repush (U14), and no output
+    /// touch when the D3-owned keys are unchanged.
+    #[test]
+    fn prefs_general_rows_apply_per_row() {
+        let (mut app, _rx, _tmp) = test_app();
+        open_fake_song(&mut app);
+        upd(&mut app, Message::ChannelSolo(1, true));
+        upd(&mut app, Message::ChannelLevel(0, 200));
+        let mut prefs = Settings::new();
+        prefs.drums_channel = 99; // adopted raw; engine send clamps to ch 15
+        prefs.sysex_reset = 9; // mirror clamps to 4
+        prefs.instrument_map = 9; // mirror clamps to 2
+        prefs.solo_volume_reduction = 75;
+        prefs.auto_play = false;
+        prefs.auto_advance = false;
+        prefs.auto_song_settings = true;
+        upd(&mut app, Message::PrefsChanged(prefs));
+        assert_eq!(app.settings.drums_channel, 99);
+        assert!(!app.settings.auto_play);
+        assert!(!app.settings.auto_advance);
+        assert!(app.settings.auto_song_settings);
+        assert_eq!(app.midi.sysex_reset, 4);
+        assert_eq!(app.midi.instrument_map, 2);
+        // Solo% repushes the mix at close: non-solo ch 0 reads 25% × 200%.
+        let sync = channels::sync_all(&app.channels, app.settings.solo_volume_reduction);
+        assert!((sync[0].factor - 0.5).abs() < 1e-9);
+        assert!((sync[1].factor - 1.0).abs() < 1e-9);
+        // Output keys unchanged → no reseat, no announce, mirrors untouched.
+        assert!(!app.midi.announce_applied);
+        assert_eq!(app.midi.backend, "FluidSynth");
+        let disk = std::fs::read_to_string(app.paths.config_file()).unwrap();
+        assert!(disk.contains("soloVolumeReduction=75\n"));
+        assert!(disk.contains("autoSongSettings=true\n"));
+    }
+
+    /// A prefs commit carrying a new backend reseats the output end to end:
+    /// mirrors follow, the engine answers, the close-path apply announces.
+    #[test]
+    fn prefs_backend_switch_reseats_and_announces_e2e() {
+        let (mut app, rx, _tmp) = test_app();
+        let mut prefs = Settings::new();
+        prefs.last_output_backend = "Dummy".to_string();
+        prefs.last_output_connection = "dummy".to_string();
+        prefs.sound_font = "/sf/gm.sf2".to_string();
+        upd(&mut app, Message::PrefsChanged(prefs));
+        assert_eq!(app.midi.backend, "Dummy");
+        assert_eq!(app.midi.port, "dummy");
+        assert_eq!(app.midi.soundfont, "/sf/gm.sf2");
+        pump_until(&mut app, &rx, Duration::from_secs(5), |ev| {
+            matches!(ev, PlayerEvent::OutputChanged { .. })
+        });
+        assert!(app.midi.output_ok_once);
+        assert_eq!(app.toasts, vec!["MIDI output: Dummy dummy".to_string()]);
+        let disk = std::fs::read_to_string(app.paths.config_file()).unwrap();
+        assert!(disk.contains("lastOutputBackend=Dummy\n"));
+    }
+
+    /// SoundFont/advanced commits adopt into the mirrors without reselecting:
+    /// no `SelectOutput`, no announce. Clearing the SoundFont clears the
+    /// mirror (the engine keeps its font — no send — per the reseat plan).
+    #[test]
+    fn prefs_soundfont_and_advanced_adopt_without_reselect() {
+        let (mut app, _rx, _tmp) = test_app();
+        let mut prefs = Settings::new();
+        prefs.sound_font = "/sf/new.sf2".to_string();
+        prefs.advanced_ports = true;
+        upd(&mut app, Message::PrefsChanged(prefs));
+        assert_eq!(app.midi.soundfont, "/sf/new.sf2");
+        assert!(app.midi.advanced);
+        assert!(!app.midi.announce_applied);
+        assert_eq!(app.midi.backend, "FluidSynth");
+        let mut prefs = app.settings.clone();
+        prefs.sound_font = String::new();
+        upd(&mut app, Message::PrefsChanged(prefs));
+        assert!(app.midi.soundfont.is_empty());
+        assert!(!app.midi.announce_applied);
+    }
+
+    /// Piano rows end to end through the close path: adopted wholesale and
+    /// persisted (render-time rows — the T13 canvas reads settings per draw).
+    #[test]
+    fn prefs_piano_rows_adopt_and_persist() {
+        let (mut app, _rx, _tmp) = test_app();
+        let mut prefs = Settings::new();
+        prefs.highlight_palette = 0;
+        prefs.single_color = "red".to_string();
+        prefs.velocity_color = false;
+        prefs.names_visibility = 3;
+        prefs.octave_subscript = true;
+        upd(&mut app, Message::PrefsChanged(prefs));
+        assert_eq!(app.settings.highlight_palette, 0);
+        assert_eq!(app.settings.single_color, "red");
+        assert!(!app.settings.velocity_color);
+        assert_eq!(app.settings.names_visibility, 3);
+        assert!(app.settings.octave_subscript);
+        // The renderer parses `singleColor` under gdk_rgba parity (gray on
+        // garbage — `None` here).
+        assert!(crate::state::lyrics::parse_gdk_rgba(&app.settings.single_color).is_some());
+        assert!(crate::state::lyrics::parse_gdk_rgba("garbage").is_none());
+        let disk = std::fs::read_to_string(app.paths.config_file()).unwrap();
+        assert!(disk.contains("highlightPalette=0\n"));
+        assert!(disk.contains("singleColor=red\n"));
+        assert!(disk.contains("namesVisibility=3\n"));
+    }
+
     #[test]
     fn song_settings_save_writes_used_channels_only() {
         let (mut app, _rx, _tmp) = test_app();
@@ -3125,6 +3606,54 @@ mod tests {
         );
         assert_eq!(app.playback.status, Status::Playing);
         assert!(!app.pending_autoplay);
+    }
+
+    /// Load-time mix sync vs `autoSongSettings`: auto mode overlays the song
+    /// mix on the reset rows at load; auto OFF ignores the cfg (pure reset).
+    #[test]
+    fn opened_with_auto_song_settings_overlays_mix() {
+        let (mut app, _rx, _tmp) = test_app();
+        app.paths.ensure_data_dir().unwrap();
+        std::fs::write(
+            app.paths.song_settings_path("song.mid"),
+            "[Global]\nvolume=150\npitch=-2\n\n\
+             [MIDI Channel  1]\nname=Keys\nmuted=true\nsolo=true\nlocked=true\n\
+             patch=5\nlevel=80\n",
+        )
+        .unwrap();
+        app.settings.auto_song_settings = true;
+        upd(
+            &mut app,
+            Message::Player(PlayerEvent::Opened(Box::new(test_song_into_snapshot()))),
+        );
+        assert_eq!(app.channels[0].label, "Keys");
+        assert!(app.channels[0].muted);
+        assert!(app.channels[0].soloed);
+        assert!(app.channels[0].locked);
+        assert_eq!(app.channels[0].patch, 5);
+        assert_eq!(app.channels[0].level_pct, 80);
+        assert_eq!(app.playback.volume_pct, 150);
+        assert_eq!(app.playback.pitch_semitones, -2);
+        // Untouched rows stay fresh-reset.
+        assert!(!app.channels[1].muted);
+        assert_eq!(app.channels[1].level_pct, 100);
+        assert_eq!(app.channels[1].label, "Track1");
+
+        // Auto OFF with the same cfg present: pure reset, cfg ignored.
+        let (mut app, _rx, _tmp) = test_app();
+        app.paths.ensure_data_dir().unwrap();
+        std::fs::write(
+            app.paths.song_settings_path("song.mid"),
+            "[Global]\nvolume=150\n\n[MIDI Channel  1]\nmuted=true\n",
+        )
+        .unwrap();
+        assert!(!app.settings.auto_song_settings);
+        upd(
+            &mut app,
+            Message::Player(PlayerEvent::Opened(Box::new(test_song_into_snapshot()))),
+        );
+        assert!(!app.channels[0].muted);
+        assert_eq!(app.playback.volume_pct, 100);
     }
 
     #[test]
@@ -3646,5 +4175,334 @@ mod tests {
         assert!(app.midi.output_ok_once);
         // Startup select stays silent (no announce flag).
         assert!(app.toasts.is_empty());
+    }
+
+    // -- T12b composition: channels page + prefs shell --------------------------
+
+    #[test]
+    fn channels_view_model_contract() {
+        let (mut app, _rx, _tmp) = test_app();
+        // No song: no rows, no-song switch off, model still 128 wide.
+        let vm = app.channels_view_model();
+        assert!(vm.rows.is_empty());
+        assert!(!vm.has_song);
+        assert_eq!(vm.patch_options.len(), 128);
+
+        open_fake_song(&mut app); // ch 0..2 used, labels `Track{ch}`.
+        app.channels[0].muted = true;
+        app.channels[0].soloed = true;
+        app.channels[0].locked = true;
+        app.channels[0].level = 0.5;
+        app.channels[0].set_level_pct(150);
+        app.channels[0].patch = 40;
+        app.channels[1].patch = 127;
+        let vm = app.channels_view_model();
+        assert!(vm.has_song);
+        // Used-only, in channel order.
+        let chans: Vec<u8> = vm.rows.iter().map(|r| r.channel).collect();
+        assert_eq!(chans, vec![0, 1]);
+        let row = &vm.rows[0];
+        assert_eq!(row.name, "Track0");
+        assert!(row.muted && row.soloed && row.locked);
+        assert_eq!(row.meter, 0.5);
+        assert_eq!(row.level_pct, 150);
+        assert_eq!(row.patch, 40);
+        assert_eq!(row.patch_label, "Violin"); // GM map default.
+        assert_eq!(vm.rows[1].patch_label, "Gunshot");
+        assert_eq!(vm.patch_options[0], "Acoustic Grand Piano");
+        // Map change relabels rows + model (MT-32).
+        app.settings.instrument_map = 2;
+        let vm = app.channels_view_model();
+        assert_eq!(vm.rows[0].patch_label, "Echo Bell");
+        assert_eq!(vm.patch_options[0], "Acou Piano 1");
+    }
+
+    #[test]
+    fn prefs_open_seeds_scratch_and_pickers() {
+        let (mut app, _rx, _tmp) = test_app();
+        assert!(app.prefs.is_none());
+        app.settings.drums_channel = 9;
+        app.settings.future_color = "red".to_string();
+        app.settings.past_color = "notacolor".to_string();
+        upd(&mut app, Message::ShowDialog(Dialog::Preferences));
+        assert_eq!(app.dialog, Some(Dialog::Preferences));
+        let (vm, pickers) = app.prefs.as_ref().expect("shell seeded on open");
+        // Scratch is a clone of live settings (all 30 keys).
+        assert_eq!(vm.scratch, app.settings);
+        assert_eq!(vm.scratch.drums_channel, 9);
+        // Pickers seeded from the scratch texts: valid parses, garbage seeds
+        // nothing (gray stays render-only), all dialogs shut.
+        assert!(pickers.future.get_applied_color().is_some());
+        assert!(pickers.past.get_applied_color().is_none());
+        assert!(pickers.highlight.get_applied_color().is_some());
+        assert!(!pickers.future.get_is_active());
+        assert!(!pickers.past.get_is_active());
+        assert!(!pickers.highlight.get_is_active());
+    }
+
+    #[test]
+    fn prefs_scratch_edits_are_isolated_until_close() {
+        let (mut app, _rx, _tmp) = test_app();
+        upd(&mut app, Message::ShowDialog(Dialog::Preferences));
+        let live_before = app.settings.clone();
+        let mut next = live_before.clone();
+        next.drums_channel = 3;
+        next.solo_volume_reduction = 75;
+        next.auto_play = false;
+        next.future_color = "blue".to_string();
+        next.single_color = "notacolor".to_string();
+        upd(&mut app, Message::PrefsScratchEdited(next));
+        // Live settings untouched, nothing saved.
+        assert_eq!(app.settings, live_before);
+        assert!(!app.paths.config_file().exists());
+        // Scratch holds the edits.
+        let (vm, _) = app.prefs.as_ref().unwrap();
+        assert_eq!(vm.scratch.drums_channel, 3);
+        assert_eq!(vm.scratch.solo_volume_reduction, 75);
+        assert!(!vm.scratch.auto_play);
+        assert_eq!(vm.scratch.future_color, "blue");
+        // A scratch color edit re-drives its picker model (adopt hook).
+        let (_, pickers) = app.prefs.as_ref().unwrap();
+        assert!(pickers.future.get_applied_color().is_some());
+        // Close commits ONCE: narrow adoption (== wholesale here — live is
+        // otherwise untouched) + save + shell cleared.
+        upd(&mut app, Message::CloseDialog);
+        assert_eq!(app.dialog, None);
+        assert!(app.prefs.is_none());
+        assert_eq!(app.settings.drums_channel, 3);
+        assert_eq!(app.settings.solo_volume_reduction, 75);
+        assert!(!app.settings.auto_play);
+        assert_eq!(app.settings.single_color, "notacolor"); // verbatim, like C++.
+        let disk = std::fs::read_to_string(app.paths.config_file()).unwrap();
+        assert!(disk.contains("drumsChannel=3\n"));
+        assert!(disk.contains("soloVolumeReduction=75\n"));
+    }
+
+    /// Picker-active flags for one row triple (routing probe).
+    fn picker_active(app: &App) -> (bool, bool, bool) {
+        let (_, pickers) = app.prefs.as_ref().unwrap();
+        (
+            pickers.future.get_is_active(),
+            pickers.past.get_is_active(),
+            pickers.highlight.get_is_active(),
+        )
+    }
+
+    #[test]
+    fn prefs_picker_updates_route_per_row() {
+        use crate::state::lyrics::parse_gdk_rgba;
+        use cosmic::widget::color_picker::ColorPickerUpdate;
+
+        let (mut app, _rx, _tmp) = test_app();
+        upd(&mut app, Message::ShowDialog(Dialog::Preferences));
+        // Each toggle routes to its own model only.
+        upd(
+            &mut app,
+            Message::PrefsPickerFuture(ColorPickerUpdate::ToggleColorPicker),
+        );
+        assert_eq!(picker_active(&app), (true, false, false));
+        upd(
+            &mut app,
+            Message::PrefsPickerFuture(ColorPickerUpdate::ToggleColorPicker),
+        );
+        upd(
+            &mut app,
+            Message::PrefsPickerPast(ColorPickerUpdate::ToggleColorPicker),
+        );
+        assert_eq!(picker_active(&app), (false, true, false));
+        upd(
+            &mut app,
+            Message::PrefsPickerPast(ColorPickerUpdate::ToggleColorPicker),
+        );
+        upd(
+            &mut app,
+            Message::PrefsPickerHighlight(ColorPickerUpdate::ToggleColorPicker),
+        );
+        assert_eq!(picker_active(&app), (false, false, true));
+        upd(
+            &mut app,
+            Message::PrefsPickerHighlight(ColorPickerUpdate::ToggleColorPicker),
+        );
+        // Reset restores the seeded fallback exactly, on its row only.
+        upd(&mut app, Message::PrefsPickerPast(ColorPickerUpdate::Reset));
+        let (vm, _) = app.prefs.as_ref().unwrap();
+        assert_eq!(vm.scratch.past_color, "#1c71d8");
+        assert_eq!(vm.scratch.future_color, "#888888");
+        assert_eq!(vm.scratch.highlight_color, "#e01b24");
+        upd(
+            &mut app,
+            Message::PrefsPickerHighlight(ColorPickerUpdate::Reset),
+        );
+        let (vm, _) = app.prefs.as_ref().unwrap();
+        assert_eq!(vm.scratch.highlight_color, "#e01b24");
+        assert_eq!(vm.scratch.past_color, "#1c71d8");
+        // Save commits the model's applied color as canonical hex-ish text
+        // (HSV round trip — one 8-bit step of slack per channel), on its row
+        // only.
+        upd(
+            &mut app,
+            Message::PrefsPickerFuture(ColorPickerUpdate::AppliedColor),
+        );
+        let (vm, _) = app.prefs.as_ref().unwrap();
+        let got = parse_gdk_rgba(&vm.scratch.future_color).expect("canonical hex");
+        let want = parse_gdk_rgba("#888888").unwrap();
+        for (got, want) in [
+            (got.r, want.r),
+            (got.g, want.g),
+            (got.b, want.b),
+            (got.a, want.a),
+        ] {
+            assert!(
+                (got - want).abs() < 2.0 / 255.0,
+                "{}",
+                vm.scratch.future_color
+            );
+        }
+        assert_eq!(vm.scratch.past_color, "#1c71d8");
+        // Picker edits are scratch-only too: live settings untouched, unsaved.
+        assert_eq!(app.settings, Settings::new());
+        assert!(!app.paths.config_file().exists());
+    }
+
+    #[test]
+    fn prefs_close_commits_once_with_solo_repush() {
+        let (mut app, _rx, _tmp) = test_app();
+        open_fake_song(&mut app);
+        upd(&mut app, Message::ChannelSolo(1, true));
+        upd(&mut app, Message::ChannelLevel(0, 200));
+        upd(&mut app, Message::ShowDialog(Dialog::Preferences));
+        let mut next = app.settings.clone();
+        next.solo_volume_reduction = 75;
+        upd(&mut app, Message::PrefsScratchEdited(next));
+        // Pre-close: live solo% untouched (no premature repush).
+        assert_eq!(app.settings.solo_volume_reduction, 50);
+        // Close: one commit — adoption + full mix repush (U14) + save + clear.
+        upd(&mut app, Message::CloseDialog);
+        assert_eq!(app.settings.solo_volume_reduction, 75);
+        assert!(app.prefs.is_none());
+        let sync = channels::sync_all(&app.channels, app.settings.solo_volume_reduction);
+        assert!((sync[0].factor - 0.5).abs() < 1e-9); // 25% × 200%.
+        assert!((sync[1].factor - 1.0).abs() < 1e-9); // soloed keeps slider.
+        let disk = std::fs::read_to_string(app.paths.config_file()).unwrap();
+        assert!(disk.contains("soloVolumeReduction=75\n"));
+    }
+
+    /// Race family DEAD (T12 devil-BLOCKING FIX): live writes that land
+    /// while prefs are open — a resize (OS-level, needs no click), a
+    /// playlist-save completion, a song load recording recents — survive the
+    /// close, while the scratch D2 edits still commit and scratch D3 edits
+    /// (no D2 row writes them) are dropped in favor of live.
+    #[test]
+    fn prefs_close_keeps_live_writes_and_drops_scratch_d3() {
+        let (mut app, _rx, _tmp) = test_app();
+        app.settings.last_output_backend = "ALSA".to_string();
+        app.settings.last_output_connection = "128:0".to_string();
+        app.playlist.set_items(vec![PathBuf::from("/m/race.mid")]);
+        upd(&mut app, Message::ShowDialog(Dialog::Preferences));
+        // Scratch: D2 edits plus synthetic D3 edits (unreachable via rows).
+        let mut next = app.settings.clone();
+        next.drums_channel = 3;
+        next.solo_volume_reduction = 75;
+        next.last_output_backend = "Dummy".to_string();
+        next.last_output_connection = "dummy".to_string();
+        next.sound_font = "/sf/scratch.sf2".to_string();
+        upd(&mut app, Message::PrefsScratchEdited(next));
+        // Live writes while the dialog is open …
+        upd(&mut app, Message::WindowResized(800, 600));
+        upd(
+            &mut app,
+            Message::PlaylistSaved(Ok(PathBuf::from("/m/race.lst"))),
+        );
+        open_fake_song(&mut app); // on_opened records recent + directory.
+        upd(&mut app, Message::CloseDialog);
+        // … the D2 edits committed …
+        assert_eq!(app.settings.drums_channel, 3);
+        assert_eq!(app.settings.solo_volume_reduction, 75);
+        // … the live writes survived (wholesale would have reverted all) …
+        assert_eq!(app.settings.window_width, 800);
+        assert_eq!(app.settings.window_height, 600);
+        assert_eq!(app.settings.last_play_list, "/m/race.lst");
+        assert_eq!(app.settings.recent_files, vec!["/m/race.mid".to_string()]);
+        assert_eq!(app.settings.last_directory, "/m");
+        // … and the D3 keys come from live (scratch D3 dropped, no reseat).
+        assert_eq!(app.settings.last_output_backend, "ALSA");
+        assert_eq!(app.settings.last_output_connection, "128:0");
+        assert!(app.settings.sound_font.is_empty());
+        assert!(!app.midi.announce_applied);
+        let disk = std::fs::read_to_string(app.paths.config_file()).unwrap();
+        assert!(disk.contains("windowWidth=800\n"));
+        assert!(disk.contains("lastPlayList=/m/race.lst\n"));
+        assert!(disk.contains("lastOutputBackend=ALSA\n"));
+    }
+
+    #[test]
+    fn prefs_arms_without_shell_are_silent_noops() {
+        use cosmic::widget::color_picker::ColorPickerUpdate;
+
+        let (mut app, _rx, _tmp) = test_app();
+        let live = app.settings.clone();
+        // Scratch/picker with no shell: no panic, no live change, no save.
+        let mut next = live.clone();
+        next.drums_channel = 1;
+        upd(&mut app, Message::PrefsScratchEdited(next));
+        upd(
+            &mut app,
+            Message::PrefsPickerFuture(ColorPickerUpdate::Reset),
+        );
+        upd(
+            &mut app,
+            Message::PrefsPickerPast(ColorPickerUpdate::Cancel),
+        );
+        upd(
+            &mut app,
+            Message::PrefsPickerHighlight(ColorPickerUpdate::ToggleColorPicker),
+        );
+        assert_eq!(app.settings, live);
+        assert!(app.prefs.is_none());
+        assert!(!app.paths.config_file().exists());
+        // Close with no prefs dialog: just closes, commits nothing.
+        app.dialog = Some(Dialog::Loop);
+        upd(&mut app, Message::CloseDialog);
+        assert_eq!(app.dialog, None);
+        assert_eq!(app.settings, live);
+        // Dialog switch abandons an open scratch without committing.
+        upd(&mut app, Message::ShowDialog(Dialog::Preferences));
+        let mut next = app.settings.clone();
+        next.drums_channel = 1;
+        upd(&mut app, Message::PrefsScratchEdited(next));
+        upd(&mut app, Message::ShowDialog(Dialog::About));
+        assert!(app.prefs.is_none());
+        upd(&mut app, Message::CloseDialog);
+        assert_eq!(app.settings, live);
+        assert!(!app.paths.config_file().exists());
+    }
+
+    #[test]
+    fn view_builds_channels_page_and_prefs_dialog() {
+        use cosmic::widget::color_picker::ColorPickerUpdate;
+
+        let (mut app, _rx, _tmp) = test_app();
+        // Channels page, both empty states.
+        app.view = View::Channels;
+        let _ = app.view();
+        open_fake_song(&mut app);
+        app.channels[0].level = 0.75;
+        let _ = app.view();
+        // Prefs overlay over the channels page, picker open + odd scratch.
+        upd(&mut app, Message::ShowDialog(Dialog::Preferences));
+        upd(
+            &mut app,
+            Message::PrefsPickerFuture(ColorPickerUpdate::ToggleColorPicker),
+        );
+        let mut next = app.settings.clone();
+        next.single_color = "notacolor".to_string();
+        next.drums_channel = 99;
+        upd(&mut app, Message::PrefsScratchEdited(next));
+        let _ = app.view();
+        // Overlay over the lyrics page too, then close.
+        app.view = View::Lyrics;
+        let _ = app.view();
+        upd(&mut app, Message::CloseDialog);
+        let _ = app.view();
     }
 }

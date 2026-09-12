@@ -667,6 +667,50 @@ impl Settings {
         *self = Self::new();
     }
 
+    /// D2 prefs-dialog close commit (T12 devil-BLOCKING FIX): adopt exactly
+    /// the 17 D2-owned keys from `scratch` over `self` (live); every other
+    /// key stays live — the D3-carried keys (`lastOutputBackend`,
+    /// `lastOutputConnection`, `soundFont`, `advancedPorts`), the
+    /// headless/session keys (`language`, `notesFont`, `lastDirectory`,
+    /// `lastPlayList`, `recentFiles`, `windowWidth`/`windowHeight`,
+    /// `playlistVisible`, `repeatMode`), and the unknown tail. The 17, in C++
+    /// page order (General `window.cpp:1198-1237`, Piano `:1274-1306`;
+    /// Lyrics rows per the T11b `lyrics_prefs_rows` contract):
+    /// General 7 — `drumsChannel`, `soloVolumeReduction`, `autoPlay`,
+    /// `autoAdvance`, `autoSongSettings`, `sysexReset`, `instrumentMap`;
+    /// Lyrics 5 — `futureColor`, `pastColor`, `highlightColor`, `lyricsFont`,
+    /// `textAlignment`; Piano 5 — `highlightPalette`, `singleColor`,
+    /// `velocityColor`, `namesVisibility`, `octaveSubscript`.
+    ///
+    /// Rationale: the scratch is seeded at dialog open, so a wholesale
+    /// live←scratch replace silently reverts any live write that lands while
+    /// the dialog is open (`WindowResized`, `on_opened` recents,
+    /// `PlaylistSaved`). The overlay captures pointer input, but OS-level and
+    /// async writers stay reachable, so the commit is narrowed instead —
+    /// D3-carry is then satisfied from live (definitionally current).
+    pub fn commit_prefs_dialog(&mut self, scratch: &Settings) {
+        // General 7.
+        self.drums_channel = scratch.drums_channel;
+        self.solo_volume_reduction = scratch.solo_volume_reduction;
+        self.auto_play = scratch.auto_play;
+        self.auto_advance = scratch.auto_advance;
+        self.auto_song_settings = scratch.auto_song_settings;
+        self.sysex_reset = scratch.sysex_reset;
+        self.instrument_map = scratch.instrument_map;
+        // Lyrics 5.
+        self.future_color.clone_from(&scratch.future_color);
+        self.past_color.clone_from(&scratch.past_color);
+        self.highlight_color.clone_from(&scratch.highlight_color);
+        self.lyrics_font.clone_from(&scratch.lyrics_font);
+        self.text_alignment = scratch.text_alignment;
+        // Piano 5.
+        self.highlight_palette = scratch.highlight_palette;
+        self.single_color.clone_from(&scratch.single_color);
+        self.velocity_color = scratch.velocity_color;
+        self.names_visibility = scratch.names_visibility;
+        self.octave_subscript = scratch.octave_subscript;
+    }
+
     /// Push `path` to the front of the MRU list, dropping any older
     /// duplicate and capping at 10 entries (`settings.cpp:202-208`).
     pub fn add_recent(&mut self, path: &str) {
@@ -1155,5 +1199,106 @@ mod tests {
         let mut s = Settings::new();
         s.add_recent("/only.mid");
         assert!(s.to_data().contains("recentFiles=/only.mid;\n"));
+    }
+
+    /// Distinctive live vs scratch on ALL 30 keys + the unknown tail: the
+    /// close commit adopts exactly the 17 D2-owned keys and keeps everything
+    /// else live (T12 devil-BLOCKING FIX — a wholesale replace would revert
+    /// live writes that land while the dialog is open).
+    #[test]
+    fn commit_prefs_dialog_adopts_exactly_17_keys() {
+        let mut live = Settings::new();
+        live.load_from_str(FIXTURE).unwrap();
+        let live_before = live.clone();
+        let mut scratch = Settings::new();
+        // Every D2 key differs from live; every non-D2 key differs too (so a
+        // wholesale replace or a missed key shows up on both sides).
+        scratch.drums_channel = 1;
+        scratch.solo_volume_reduction = 11;
+        scratch.auto_play = !live_before.auto_play;
+        scratch.auto_advance = !live_before.auto_advance;
+        scratch.auto_song_settings = !live_before.auto_song_settings;
+        scratch.sysex_reset = 4;
+        scratch.instrument_map = 2;
+        scratch.future_color = "scratch-future".to_string();
+        scratch.past_color = "scratch-past".to_string();
+        scratch.highlight_color = "scratch-highlight".to_string();
+        scratch.lyrics_font = "Scratch 1".to_string();
+        scratch.text_alignment = 2;
+        scratch.highlight_palette = 3;
+        scratch.single_color = "scratch-single".to_string();
+        scratch.velocity_color = !live_before.velocity_color;
+        scratch.names_visibility = 0;
+        scratch.octave_subscript = !live_before.octave_subscript;
+        scratch.last_output_backend = "SCRATCH".to_string();
+        scratch.last_output_connection = "scratch".to_string();
+        scratch.sound_font = "/scratch.sf2".to_string();
+        scratch.advanced_ports = !live_before.advanced_ports;
+        scratch.language = "scratch".to_string();
+        scratch.notes_font = "Scratch 2".to_string();
+        scratch.last_directory = "/scratch".to_string();
+        scratch.last_play_list = "scratch.lst".to_string();
+        scratch.recent_files = vec!["/scratch.mid".to_string()];
+        scratch.window_width = 111;
+        scratch.window_height = 222;
+        scratch.playlist_visible = !live_before.playlist_visible;
+        scratch.repeat_mode = 1;
+
+        live.commit_prefs_dialog(&scratch);
+
+        // The 17 D2-owned keys come from scratch …
+        assert_eq!(live.drums_channel, 1);
+        assert_eq!(live.solo_volume_reduction, 11);
+        assert_eq!(live.auto_play, scratch.auto_play);
+        assert_eq!(live.auto_advance, scratch.auto_advance);
+        assert_eq!(live.auto_song_settings, scratch.auto_song_settings);
+        assert_eq!(live.sysex_reset, 4);
+        assert_eq!(live.instrument_map, 2);
+        assert_eq!(live.future_color, "scratch-future");
+        assert_eq!(live.past_color, "scratch-past");
+        assert_eq!(live.highlight_color, "scratch-highlight");
+        assert_eq!(live.lyrics_font, "Scratch 1");
+        assert_eq!(live.text_alignment, 2);
+        assert_eq!(live.highlight_palette, 3);
+        assert_eq!(live.single_color, "scratch-single");
+        assert_eq!(live.velocity_color, scratch.velocity_color);
+        assert_eq!(live.names_visibility, 0);
+        assert_eq!(live.octave_subscript, scratch.octave_subscript);
+        // … and nothing else moves: D3-carried, headless/session, recents,
+        // window, repeat, and the unknown tail (FIXTURE carries `customKey`
+        // + `[Extra]`, asserted through the serialized form).
+        assert_eq!(live.last_output_backend, live_before.last_output_backend);
+        assert_eq!(
+            live.last_output_connection,
+            live_before.last_output_connection
+        );
+        assert_eq!(live.sound_font, live_before.sound_font);
+        assert_eq!(live.advanced_ports, live_before.advanced_ports);
+        assert_eq!(live.language, live_before.language);
+        assert_eq!(live.notes_font, live_before.notes_font);
+        assert_eq!(live.last_directory, live_before.last_directory);
+        assert_eq!(live.last_play_list, live_before.last_play_list);
+        assert_eq!(live.recent_files, live_before.recent_files);
+        assert_eq!(live.window_width, live_before.window_width);
+        assert_eq!(live.window_height, live_before.window_height);
+        assert_eq!(live.playlist_visible, live_before.playlist_visible);
+        assert_eq!(live.repeat_mode, live_before.repeat_mode);
+        assert!(live.to_data().contains("customKey=custom-value\n"));
+        assert!(live.to_data().contains("[Extra]\nkeepme=yes\n"));
+    }
+
+    /// Narrow commit equals wholesale replace when live is otherwise
+    /// untouched (the common close path — no behavior change there).
+    #[test]
+    fn commit_prefs_dialog_equals_wholesale_when_untouched() {
+        let live = Settings::new();
+        let mut scratch = live.clone();
+        scratch.drums_channel = 3;
+        scratch.solo_volume_reduction = 75;
+        scratch.future_color = "blue".to_string();
+        scratch.single_color = "notacolor".to_string();
+        let mut narrowed = live.clone();
+        narrowed.commit_prefs_dialog(&scratch);
+        assert_eq!(narrowed, scratch);
     }
 }
