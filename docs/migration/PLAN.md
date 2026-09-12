@@ -159,7 +159,7 @@ lead = PLAN/DECISIONS/REPORT + glue.
       from here on.
 - [x] T2 `core::event` (arch): MidiEvent/Kind/TextType/constants/factories, — DONE (18 tests, suite 27/27, devil differential SIGN-OFF 90/90 paths + byte-identical semantics)
       extension filter; unit tests incl. case-insensitive ext matrix.
-- [ ] T3 SMF decode + `Sequence` store/timing/nav (arch): `smf.rs`, ticks↔µs,
+- [x] T3 SMF decode + `Sequence` store/timing/nav (arch): `smf.rs`, ticks↔µs, — DONE (24+ tests, suite 51+, C++ differential goldens, raw-byte label fix, devil SIGN-OFF)
       beats, bar nav, tempo reject (A7), `div==0→96`; golden tests vs C++.
 - [ ] T4 RMI/WRK + text/charset (arch): `rmi.rs`, `wrk.rs` (banked SysEx,
       track offsets), chardetng/encoding_rs + normalization spec (A10),

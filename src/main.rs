@@ -7,7 +7,7 @@
 
 mod app;
 mod config;
-mod core;
+pub(crate) mod core;
 mod message;
 mod state;
 mod ui;

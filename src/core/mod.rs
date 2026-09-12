@@ -5,7 +5,11 @@
 //! in T6, `player.rs` in T7. Headless: no iced/libcosmic dependency allowed
 //! in this module.
 
-// T2 lands ahead of its T3+ call sites, so the bin build sees this module as
-// unused; drop the allow once the engine wires it up.
+// T2–T3 land ahead of their T7 engine call sites, so the bin build sees
+// these modules as unused; drop the allows once the engine wires them up.
 #[allow(dead_code)]
 pub mod event;
+#[allow(dead_code)]
+pub mod sequence;
+#[allow(dead_code)]
+pub(crate) mod smf;
