@@ -1,11 +1,13 @@
 # Migration REPORT — Gosh MIDI Player 1.8.0 (libcosmic/Rust)
 
-Status: **S5 blocker slice (2026-09-12)** — the S4 §4 blocker is FIXED and
-export-verified (install/bundle/activation unblocked); W1 window title +
-man page fixed. Still CONDITIONAL: X11 needs real-DE adjudication (§3 S4,
-environment re-observed S5 — no verdict possible here), and the §4 manual
-steps (human-audible, on-console DE runs) remain. (S4 sign-off below stands
-as the prior record.)
+Status: **FINAL (2026-09-12)** — automated project DoD HOLDS on HEAD
+`85dd3c3` (`verify.sh --fast` + full `verify.sh` re-run PASS in the final
+slice, install + bundle + bundle-install + installed-app headless run all
+executed and green). Release gate: every machine-verifiable half PASSES;
+the human-on-console rows (§7) remain — human-audible playback, on-console
+DE matrix (incl. X11 adjudication — still environment-impossible here),
+stale re-prompt click-through, literal second-`flatpak run` on a live
+desktop. Prior S4/S5 sign-off record is preserved in §5–§7.
 
 ## 0. Release + environment
 
@@ -14,15 +16,48 @@ as the prior record.)
 - Toolchain: rustc 1.98.1 (`rust-toolchain.toml`), libcosmic rev `7e82198`
   (D16), freedesktop runtime/SDK 25.08, FluidSynth 2.6.0 (flatpak module).
 - Bundled SoundFont: `FluidR3Mono_GM.sf3` v2.312, MIT, 14,563,174 bytes
-  (LibreScore/sf3 @ `3a6eda8`, sha256 `cfcd66d8…2794ec2` — S2 §3).
-- S4 probe host: NixOS + COSMIC (`cosmic-comp` live, `xdg-desktop-portal`
-  1.20.4 + `portal-cosmic` 1.2.0 + `portal-gtk` 1.15.3, pipewire 1.6.6 +
-  pipewire-pulse), flatpak 1.18.2 + flatpak-builder, freedesktop 25.08
-  runtime installed; probes ran from a distrobox container sharing the
-  session bus, with GUI clients on a nested `weston --backend=headless`
-  compositor (never on the live desktop).
+  (LibreScore/sf3 @ `3a6eda8`, sha256 `cfcd66d8…2794ec2` — S2 §6).
+- Final-slice probe host (re-observed S6): flatpak 1.18.2 +
+  flatpak-builder 1.4.10, freedesktop 25.08 runtime installed, rustc/cargo
+  1.98.1, ALSA 1.2.16.1, FluidSynth 2.6.0; `gnome-shell`/`plasmashell`/
+  `kwin`/`mutter`/`cosmic-comp` all absent, `/usr/share/wayland-sessions`
+  = `sway.desktop` only, `/usr/share/xsessions` empty. (S4 ran on NixOS +
+  COSMIC with a nested headless weston; that record stands in §6.)
+- Release bundle (S6-measured): single-file `.flatpak` = 20,916,376 bytes.
 
-## 1. Parity counts (PLAN §1/U1 — all pinned)
+## 1. What was built
+
+A clean-room Rust port of the Gosh MIDI Player (ex GTK4/C++17) on
+libcosmic, same app ID (`com.goshapps.GoshMIDI`) and command
+(`dmidiplayer`), same config paths (`~/.config/dmidiplayer`,
+`~/.dmidiplayer`), released as a freedesktop-25.08 Flatpak (1.8.0).
+
+- **Core engine** (`src/core/`): SMF/KAR/RMI/WRK decode, `Sequence`
+  store/timing/navigation, charset pipeline (chardetng/encoding_rs, 14
+  codecs), SysEx/instrument/device-profile tables, `MidiOutput` trait +
+  Dummy/Manager, ALSA + hand-written-FFI FluidSynth backends, threaded
+  player scheduler with per-variant backpressure (`EngineCommand` /
+  `PlayerEvent`), GKeyFile-compatible INI config (30 keys + MRU-10 +
+  portable mode), song-settings schema, `.lst` playlist state.
+- **App shell + views** (`src/app.rs`, `src/state/`, `src/ui/`): Elm
+  `Message`/`update`/`view`, header transport, dashboard, 3 sliders,
+  status line, toasts; sidebar playlist + 8 tools; lyrics/channels/piano
+  switcher pages; preferences, MIDI setup, file info, jump, loop, help,
+  about, lyrics save/print, SoundFont chooser, playlist open/save.
+- **Desktop integration**: desktop file (only delta vs C++ ship:
+  `DBusActivatable=true`, P8) + D-Bus service file, metainfo (toolkit
+  wording, rhythm-claim fix, 1.8.0 `<release>`), 6 hicolor app icons, 29
+  vendored symbolic-icon hicolor fallbacks (T14c §1.6), man page,
+  single-instance forward + present via `run_single_instance` with
+  `COSMIC_SINGLE_INSTANCE=false` escape.
+- **Packaging/QA**: `flatpak/com.goshapps.GoshMIDI.yml` (fluidsynth 2.6.0
+  + bundled-SF + cargo modules), vendored pinned cargo generator +
+  committed `cargo-sources.json`, `scripts/verify.sh` (tiered gate) +
+  `scripts/smoke.sh` (headless + in-sandbox), `cosmic-build.yml` CI
+  (CMake job retired, D14/P9), 10 shipped examples with generated
+  `examples.lst` (P6).
+
+### Parity counts (PLAN §1/U1 — all pinned)
 
 | Count | Value | Pins |
 |---|---|---|
@@ -33,42 +68,215 @@ as the prior record.)
 | Accelerators | 9 | `ACCELERATORS: [Accelerator; 9]` + unit + `keys_flows` |
 
 T15 retired the C++ greps; the Rust successors above are enforced by both
-`cargo test` and the `verify.sh` count-pins step (S2, re-verified S4).
+`cargo test` and the `verify.sh` count-pins step (S2, re-verified S6).
 
-## 2. Gates
+## 2. Deviations from the original app + why
 
-- `sh scripts/verify.sh --fast`: **PASS** (S4, 2026-09-12 — 559 lib +
-  10 bin + 103 integration-file tests, 0 failed, +1 ignored doctest;
-  retirement gate, all 4 count pins, identity/desktop/icon/soundfont
-  contracts ok; `desktop-file-validate` + `appstreamcli validate`
-  strict-ok, sole note the grandfathered `cid-contains-uppercase-letter`).
+Rule applied throughout (DECISIONS D11): preserve observable behavior,
+fix only data-loss/trap bugs whose contrary intent is evident in the
+code. Every item below is test-pinned.
+
+### Deliberate fixes (C++ behavior NOT kept)
+
+- Window size + repeatMode now save on close-request (U2 — C++ lost them).
+- Menu Loop forces the loop toggle ON, then opens the dialog (U3 — C++
+  silently no-op'd when the toggle was off; silent no-ops banned).
+- Piano clicks map in the drawn range (U12 — C++ mapped the wrong range).
+- Prefs close applies solo% like every other row (U14 — C++ dropped it).
+- UI re-syncs to engine mix state on song load (A8 — C++ left stale
+  channel/patch display).
+- Lyrics filter selections hold (T11 — C++ `refreshLyrics` reset both
+  filters on every user change, so the dropdowns could never hold a
+  selection).
+- `lyricsFont` default `Sans 16` is parsed and applied per the T0 font
+  spec (D15 — invalid GTK CSS the old provider dropped, so the setting
+  was a no-op by accident, not behavior).
+- MIDI Setup Apply stops the engine only when the reseat plan actually
+  sends something; end state identical (D21 — C++ stopped unconditionally,
+  interrupting playback for no-change Applies).
+- Out-of-range piano clicks emit silence (D21 — C++ auditioned a phantom
+  wrong note).
+- Window/WM title follows the header title on boot/song-load/forward
+  (S5 W1 fix — the title update existed only in the header).
+
+### Preserved quirks (kept 1:1, tests pin them)
+
+- Lyrics static+live concatenation incl. the duplication quirk (U10).
+- Piano audition bypassing mute/pitch, idle-only note-off (A3).
+- Playlist index semantics: remove/shuffle don't adjust the index, move
+  does; `.lst` load keeps nonexistent paths verbatim (A14).
+- Tempo setter rejects out-of-range (no clamp), `div==0 → 96` (A7);
+  `sendVolumeEvents` resets `m_volume[ch]=100` (A9).
+
+### Platform adaptations (no C++ equivalent possible)
+
+- Print lyrics = temp `.txt` export + `xdg-open` (D6/D13 — iced has no
+  print backend; in-sandbox this routes through the OpenURI portal; C++
+  print-dialog success was likewise silent). Ashpd `PrintProxy` rejected:
+  PDF-oriented flow, varies per DE, and the app ships no PDF writer.
+- Rhythm stays dashboard lamps, not a 4th switcher page (D5 — code truth;
+  metainfo + README wording fixed instead).
+- Single instance via `run_single_instance` (D7/D12 — same observable
+  contract: forward + present + replace, incl. the `flatpak run` case).
+- Freedesktop runtime 25.08, never COSMIC-only (D2 — shippable everywhere;
+  24.08's rustc 1.89 is below the 1.93 MSRV floor, D16).
+- Settings stay GKeyFile-compatible INI at the existing paths (D4/D9 —
+  no `cosmic-config` migration, no data-loss window; unknown keys kept).
+- Bundled `FluidR3Mono_GM.sf3` searched first + stale-path re-prompt UX
+  (P7/§6 — host `/usr/share` SoundFonts are invisible in the sandbox; a
+  dead absolute `soundFont` falls back to bundled with a toast naming
+  the stale path, D3 warning, D11 re-locate).
+- Exactly the 9 C++ accelerators, no invented bindings (D22 — 12/23
+  actions keyboard-reachable: 9 accels + Tab-Enter on the Rew/Fwd/Loop
+  button twins; the 11 menu-only actions are a tracked gap, like D13).
+- Dashboard `.dash-value` per-mode ink (D23 — theme accent in dark
+  (10.45:1 AAA), C++ `#62a0ea` in light (6.96:1 AA); the light accent
+  measured 2.12:1 and fails AA on the explicit dark card).
+- Symbolic icons: 29-name hicolor fallback vendored from pinned upstreams
+  (T14c — in-sandbox theme is always `Cosmic`, which the freedesktop
+  runtime doesn't ship; without the fallback, GNOME/KDE hosts render
+  empty buttons).
+- i18n explicitly deferred (D13 — baseline English-only, `language`
+  stays write-only); `notesFont` stays a headless carried key (U6/D13).
+
+## 3. Known limitations
+
+1. **Manual release rows outstanding** (§7): human-audible fresh-profile
+   playback, on-console COSMIC visual pass, GNOME/KDE Wayland+X11 runs,
+   stale re-prompt click-through, literal second-`flatpak run` on a live
+   desktop. All machine-verifiable halves pass (§5).
+2. **X11 needs real-DE adjudication**: the nested-Xwayland softbuffer
+   panic (`iced_tiny_skia`, `Visual 0x6d does not use softbuffer's pixel
+   format`) reproduces identically sandboxed and unsandboxed, with DRI
+   and `LIBGL_ALWAYS_SOFTWARE=1` — not sandbox-caused, but unresolved;
+   still environment-impossible here (no GNOME/KDE/Xorg, re-confirmed S6).
+3. 11/23 actions are pointer-only via the menu widget (D22 gap, tracked).
+4. English-only UI; `language` key write-only (D13).
+5. `notesFont` carried but unwired (D13/U6).
+6. ALSA sequencer needs the broad `--device=all` (no seq-only Flatpak
+   permission exists); re-check each runtime bump (risk 1).
+7. Print is temp-file + viewer-open, not an in-app print dialog (D6).
+8. No-portal hosts (minimal WM): new picks needing a portal show a
+   guidance error; bundled + already-granted paths keep working (P12).
+9. Open-dialog initial dir/file-name are dead upstream in the pinned
+   chooser (D16) — `lastDirectory` wiring blocked; save names work.
+10. CI (`cosmic-build.yml`) runs on merge — S6 gates are local runs.
+
+## 4. Build / run / install instructions (Flatpak)
+
+Prerequisites (packaging.md §3.1; present on the S6 probe host: ALSA
+1.2.16.1, FluidSynth 2.6.0, `aiohttp`+`tomlkit` for the generator):
+
+```
+$ sudo apt install pkg-config cmake g++ libasound2-dev libfluidsynth-dev \
+        libwayland-dev libxkbcommon-dev libfontconfig-dev libfreetype-dev \
+        libexpat1-dev python3 python3-aiohttp python3-tomlkit
+```
+
+(documented prereq, not re-run on the S6 host — deps were probed present
+via `pkg-config`/import instead. Rust 1.93+ via `rust-toolchain.toml`.)
+
+Inner loop — **ran S6, PASS**:
+
+```
+$ cargo build --locked
+$ sh scripts/verify.sh --fast     # build, clippy, fmt, tests, pins
+```
+
+Full gate — **ran S6, PASS** (freshness + builder + in-sandbox smoke +
+build-export, ending `verify FULL PASS`):
+
+```
+$ sh scripts/verify.sh
+```
+
+Headless checks against a local build — **ran S6, PASS** (10/10 files):
+
+```
+$ ./target/debug/dmidiplayer --help
+$ ./target/debug/dmidiplayer --dry-run examples/test.mid
+$ ./target/debug/dmidiplayer --dump-info examples/test.mid
+$ sh scripts/smoke.sh
+```
+
+Flatpak build + in-sandbox smoke (the full gate's core steps) — **ran S6
+inside `verify.sh`, PASS**:
+
+```
+$ flatpak-builder --force-clean --user --disable-rofiles-fuse build-dir \
+    flatpak/com.goshapps.GoshMIDI.yml
+$ flatpak build --bind-mount=/repo="$PWD" build-dir sh /repo/scripts/smoke.sh
+```
+
+Install from a local repo — **ran S6 end to end, PASS** (installed,
+headless `flatpak run --help` green, then uninstalled without trace):
+
+```
+$ flatpak build-export /tmp/goshmidi-repo build-dir
+$ flatpak --user remote-add --no-gpg-verify goshmidi-local /tmp/goshmidi-repo
+$ flatpak --user install -y goshmidi-local com.goshapps.GoshMIDI
+$ flatpak run com.goshapps.GoshMIDI [files...]          # GUI launch
+$ flatpak run com.goshapps.GoshMIDI --help              # headless check
+```
+
+Single-file bundle — **ran S6, PASS** (20,916,376-byte bundle built,
+installed FROM the bundle file, and `flatpak run --dry-run
+/app/share/dmidiplayer/test.mid` returned OK inside the installed app):
+
+```
+$ flatpak build-bundle /tmp/goshmidi-repo /tmp/goshmidi.flatpak com.goshapps.GoshMIDI
+$ flatpak --user install -y /tmp/goshmidi.flatpak
+```
+
+Second-instance forward on a live desktop (packaging.md §3.2 recipe —
+forward halves verified offscreen in S4/S5 on this exact tree; the
+literal form below stays a §7 manual on a real DE):
+
+```
+$ flatpak run --file-forwarding com.goshapps.GoshMIDI @@ /host/path/song.mid @@
+```
+
+Regenerate vendored sources after any dependency change (generator
+`--help` probed S6; freshness diff enforced by the full gate):
+
+```
+$ python3 flatpak/flatpak-cargo-generator.py Cargo.lock -o flatpak/cargo-sources.json
+```
+
+Note: S6 install cycles printed a `.../exports/share/icons/hicolor/
+index.theme: Permission denied` warning from `cp` — a pre-existing
+environment quirk of the shared exports dir; every install/uninstall
+still reported complete and the installed app ran correctly.
+
+## 5. Gates
+
+- `sh scripts/verify.sh --fast`: **PASS** (S6 final slice, 2026-09-12 —
+  560 lib + 10 bin + 105 integration-file tests, 0 failed, +1 ignored
+  doctest; retirement gate, all 4 count pins, identity/desktop/icon/
+  soundfont/service+man contracts ok; `desktop-file-validate` +
+  `appstreamcli validate` strict-ok).
 - `sh scripts/verify.sh` (full: vendoring freshness + flatpak-builder +
-  in-sandbox smoke): **PASS** (S4, 2026-09-12 — exactly one full run;
-  freshness diff clean, builder exit 0, smoke: P6 10/10 examples resolve,
-  bundled SoundFont 14,563,174 bytes + sfbk magic + MIT license,
-  `--help`/DE-marker/`--dry-run`(10)/`--dump-info`(10)/missing-file all
-  green, zero panics).
-- S4 release gate (DE matrix, fresh-profile audible playback, second-run
-  forward): **PARTIAL — see §3 S4** (live Wayland launch + forward +
-  in-sandbox synth render pass; install/activation blocked on the §4
-  service-file slice; GNOME/KDE + human-audible remain manual).
-- `sh scripts/verify.sh --fast`: **PASS** (S5, 2026-09-12 — 560 lib +
-  10 bin + 105 integration-file tests, 0 failed, +1 ignored doctest;
-  retirement gate, all 4 count pins, identity/desktop/icon/soundfont
-  contracts ok, new S5 service+man pins ok; `desktop-file-validate` +
-  `appstreamcli validate` strict-ok, sole note the grandfathered
-  `cid-contains-uppercase-letter`).
-- `sh scripts/verify.sh` (full: vendoring freshness + flatpak-builder +
-  in-sandbox smoke + build-export): **PASS** (S5, 2026-09-12 — exactly
-  one full run on the final tree; freshness diff clean, builder exit 0,
-  smoke adds `D-Bus service file + man page` green, build-export commits
-  clean — `Exporting share/dbus-1/services/com.goshapps.GoshMIDI.service`;
-  final-tree full run, plus one earlier full run on the same code).
-- S5 release gate: **PARTIAL** (install/bundle/activation UNBLOCKED —
-  export-verified; X11 still needs real-DE adjudication and the §4 manual
-  steps remain).
+  in-sandbox smoke + build-export): **PASS** (S6, 2026-09-12 — freshness
+  diff clean, builder exit 0, smoke: P6 10/10 examples resolve, bundled
+  SoundFont 14,563,174 bytes + sfbk magic + MIT license, D-Bus service
+  file + man page, `--help`/DE-markers/`--dry-run`(10)/`--dump-info`(10)/
+  missing-file all green, zero panics; build-export commit `86418847…`,
+  `verify FULL PASS`).
+- S6 install/bundle verification (new — closes the installability half
+  of old §4 step 3): build-export → user remote-add → install →
+  displayless `flatpak run --help` green → `build-bundle` (20,916,376
+  bytes) → uninstall → install FROM the bundle file → displayless
+  `flatpak run --dry-run /app/share/dmidiplayer/test.mid` OK → full
+  cleanup (no install, remote, or app data remains).
+- S6 release gate: **all machine-verifiable halves PASS** (offscreen
+  Wayland launch + forward + synth render per S4/S5 on this exact tree,
+  plus the S6 install/bundle/install-from-bundle runs above). Human rows
+  remain — see §7.
+- Prior runs (record): S4 `--fast` PASS (559+10+103) + full PASS (one
+  run); S5 `--fast` PASS (560+10+105) + full PASS (two runs, one on the
+  final tree). Detail in §6.
 
-## 3. Slice inputs
+## 6. Slice inputs
 
 ### S0 — drift triage (landed: `2cb6426`)
 
@@ -91,7 +299,7 @@ T15 retired the C++ greps; the Rust successors above are enforced by both
 - Out of scope, carried to S3 (S0 hold stands): `theme.rs` per-mode
   contrast + `warning_text` cite ux §15.1, which does not exist yet (ux.md
   ends at §14) — reverted from this slice; S3 lands them with §15.1.
-- Count pins replaced with Rust successors (table above); toast sites pin
+- Count pins replaced with Rust successors (§1 table); toast sites pin
   the `Message::Toast` funnel + named tests (no naive count exists in Rust).
 - Metainfo `<release version="1.8.0" date="2026-09-12">` (P11); T14c
   toolkit + rhythm wording re-verified by the same test file.
@@ -136,7 +344,7 @@ T15 retired the C++ greps; the Rust successors above are enforced by both
 - S4 verified the landmarks in-tree (`midi.rs:150-167`,
   `theme.rs:97-108,328`, `app.rs:502-525`, `midi_setup.rs:194,323`).
 
-### S4 — release sign-off (this slice; no repo code touched)
+### S4 — release sign-off (landed: `f738a9d`; no repo code touched)
 
 Parity final pass: the §1 pins re-verified in the S4 `--fast` run (all 4
 `check_pin` oks) over the green suite above — 23/23/30/6/toast-funnel
@@ -144,7 +352,8 @@ plus 9 accelerators hold at sign-off.
 
 DE matrix (packaging §3.2; GUI clients run offscreen on nested
 `weston --backend=headless`, socket `wayland-s4` — never on the live
-desktop; paired `flatpak build` sandboxes, since install is §4-blocked):
+desktop; paired `flatpak build` sandboxes, since install was §7-blocked
+at the time):
 
 | Row | Result |
 |---|---|
@@ -161,10 +370,10 @@ bundled bytes only. (2) Live routing: the offscreen RC boot initialized
 the in-sandbox PulseAudio driver against host pipewire-pulse
 (`pipewire-0` + `pulse/native` sockets present, `--socket=pulseaudio` in
 the manifest). No sound was emitted during S4 (shared machine, by design)
-— a human must confirm audible playback on the RC (§4 recipe).
+— a human must confirm audible playback on the RC (§7 recipe).
 
 Second-run single-instance forward: **PASS (build-shell pair; literal
-`flatpak run` form awaits the §4 slice).** With the RC owning the bus
+`flatpak run` form awaits the §7 slice).** With the RC owning the bus
 name, a second sandboxed instance launched **displayless**
 (`DISPLAY`/`WAYLAND_DISPLAY` unset) with a song arg exited 0 in 66 ms
 and 82 ms across two runs (empty stderr) — the forward landed and the
@@ -174,13 +383,13 @@ both sandboxes, the receiver thread ran
 receive is pinned by the green integration suite (incl. the portal-path
 replacement test); window-present is not headless-observable → manual.
 
-### S5 — Phase-3 blocker slice (this slice)
+### S5 — Phase-3 blocker slice (landed: `85dd3c3`)
 
 - [pack BLOCKER] D-Bus service file lands: new
   `com.goshapps.GoshMIDI.service` (`[D-BUS Service]
   Name=com.goshapps.GoshMIDI Exec=/app/bin/dmidiplayer`) installed by the
   manifest to `/app/share/dbus-1/services/`. Pre-fix repro on the S4 tree:
-  `flatpak build-export` fails with the exact §4 error; post-fix the
+  `flatpak build-export` fails with the exact §7 error; post-fix the
   export commits clean
   (`Exporting share/dbus-1/services/com.goshapps.GoshMIDI.service`).
   Regression pins: `desktop_integration::dbus_service_file_-
@@ -207,11 +416,19 @@ replacement test); window-present is not headless-observable → manual.
 - [release/lead carried] X11: still no verdict possible here —
   re-observed `gnome-shell`/`plasmashell`/`kwin`/`mutter` absent,
   `/usr/share/wayland-sessions` = `sway.desktop` only,
-  `/usr/share/xsessions` empty. The nested-Xwayland softbuffer panic (§3
-  S4) still awaits real-DE adjudication per §4 step 2.
+  `/usr/share/xsessions` empty. The nested-Xwayland softbuffer panic (§6
+  S4) still awaits real-DE adjudication per §7 step 2.
 - Suite delta S4→S5: 559+10+103 → 560+10+105, 0 failed.
 
-## 4. Blockers + remaining manual steps
+### S6 — final REPORT slice (this commit; REPORT.md only)
+
+- Re-ran both gates on the final tree (§5), executed the full
+  install/bundle/install-from-bundle cycle (§4 — all green, cleaned up
+  without trace), re-probed the DE environment (§0 — still no GNOME/KDE/
+  Xorg), and wrote the project-DoD REPORT sections (§1–§4). No repo code
+  touched; suite unchanged at 560+10+105, 0 failed.
+
+## 7. Blockers + remaining manual steps
 
 **Blocker — FIXED in S5 (was: S4 RC `flatpak build-export` fails: `error:
 Desktop file D-Bus activatable, but service file not exported:
@@ -219,7 +436,7 @@ Desktop file D-Bus activatable, but service file not exported:
 Root cause as diagnosed in S4: the desktop file claims
 `DBusActivatable=true` (P8, T14c) but nothing shipped the D-Bus service
 file, and `verify.sh` exercised `flatpak build` only, never export. Fix
-(§3 S5): the manifest installs
+(§6 S5): the manifest installs
 `share/dbus-1/services/com.goshapps.GoshMIDI.service`
 (`[D-BUS Service] Name=com.goshapps.GoshMIDI Exec=/app/bin/dmidiplayer`,
 flatpak rewrites `Exec` to the `flatpak run` wrapper at install) plus
@@ -227,24 +444,27 @@ three regression pins — `desktop_integration.rs` bond tests, `verify.sh`
 `--fast` pins, `smoke.sh` in-sandbox asserts — and a `flatpak
 build-export` installability step in the full gate so this can never
 regress silently. Install/bundle/activation are unblocked (export commits
-clean, §2 S5).
+clean, §5; install + bundle + install-from-bundle + installed-app
+headless run all executed green in S6).
 
 Remaining manual steps (recipes in packaging.md §3.2 + §14-phase-3 notes;
-all need a human on consoles S4 could not reach):
+all need a human on consoles S4–S6 could not reach):
 
 1. Fresh-profile **audible** playback on the installed RC: new user (or
    empty `~/.var/app/com.goshapps.GoshMIDI`), launch, press Play on a
    bundled example — expect GM audio with zero host setup. (Machine
-   halves already pass — §3 S4.)
+   halves already pass — §6 S4.)
 2. On-console DE runs: COSMIC visual pass (icons incl. `channel-secure`
    + CSD controls, §15.1 light/dark dash values per the ux §14 recipe),
    then GNOME Wayland+X11 and KDE Wayland+X11 (launch + render + chooser
    + MIME + clipboard paste-out + second-`flatpak run` replace + present
    + `COSMIC_SINGLE_INSTANCE=false` escape). The X11 rows also adjudicate
-   the nested-Xwayland softbuffer panic (§3 S4).
-3. `.flatpak` bundle build + install from bundle on the §3.2 provider
-   matrix (UNBLOCKED in S5 — still a manual run, now export-verified).
-4. Stale-path re-prompt click-through (packaging §6): config with a dead
+   the nested-Xwayland softbuffer panic (§6 S4).
+3. Stale-path re-prompt click-through (packaging §6): config with a dead
    absolute `soundFont` → toast + bundled fallback + D3 warning + D11
    re-locate; dead playlist/`.cfg` paths → re-prompt offers, nothing
    silently dropped.
+4. (Old step 3 install/bundle half — CLOSED in S6: export + install +
+   bundle + install-from-bundle + installed-app headless run all executed
+   green. Re-run on the RC host only if its flatpak/runtime versions
+   differ.)
