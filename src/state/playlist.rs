@@ -775,6 +775,37 @@ mod tests {
         assert!(raw.windows(7).any(|w| w == b"weird-\xff"));
     }
 
+    /// P10b portal-path entries (save/load half; replace/forward halves are
+    /// pinned at flow level by `portal_doc_paths_replace_like_normal` and
+    /// `second_open_forwards_replace_into_running_state`): never-created
+    /// `/run/…/doc/…` `.lst` lines (CRLF tolerated) load verbatim (A14, no
+    /// existence check), unsupported extensions still filter, and save → load
+    /// round-trips the kept entries.
+    #[test]
+    fn portal_doc_entries_save_load_round_trip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let list = tmp.path().join("portal.lst");
+        std::fs::write(
+            &list,
+            "/run/user/1000/doc/deadbeef/song.mid\r\n/run/user/1000/doc/deadbeef/notes.txt\n",
+        )
+        .unwrap();
+        let mut p = PlaylistState::new();
+        assert!(p.load(&list));
+        assert_eq!(p.len(), 1); // .txt filtered, portal .mid kept
+        assert!(p.items()[0].is_absolute());
+        assert!(p.items()[0].ends_with("doc/deadbeef/song.mid"));
+        let out = tmp.path().join("out.lst");
+        assert!(p.save(&out));
+        assert_eq!(
+            std::fs::read(&out).unwrap(),
+            format!("{}\n", p.items()[0].display()).into_bytes()
+        );
+        let mut re = PlaylistState::new();
+        assert!(re.load(&out));
+        assert_eq!(re.items(), p.items());
+    }
+
     #[test]
     fn close_save_sets_geometry_repeat_and_saves_full_config() {
         // Truth-table row 1 (U2 FIX): close-request persists geometry +

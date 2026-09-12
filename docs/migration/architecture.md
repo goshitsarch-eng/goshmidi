@@ -413,6 +413,11 @@ all sliders/spins/dropdowns/toggles have a message; file dialogs return
   - `Player(PlayerEvent::Finished)` encodes the current `onFinished` policy:
     repeat-song → engine reset+play; repeat-list → advance w/ wrap; else
     autoAdvance-next; autoSongSettings save before leaving the song.
+    Loop interplay (P10b parity note, not a decision — full matrix on
+    `state::playback::finish_action`): the loop leg lives entirely
+    engine-side, so a capturing loop re-jumps before `Finished` can fire and
+    this policy runs ungated — `Finished` arrival itself proves the loop did
+    not capture. Composition must NOT gate this policy on `loop_enabled`.
   - Dialog-launching messages return file-chooser `Task`s via
     `cosmic::dialog::file_chooser` (provider: `xdg-portal`/ashpd — T0-confirmed,
     pin the `xdg-portal` feature, not `rfd`; NEVER enable `rfd` + `xdg-portal`
