@@ -36,12 +36,16 @@ use crate::message::{
     SettingsState, Status, View,
 };
 use crate::state::channels::{self, ChannelState};
-use crate::state::lyrics::LyricsState;
+use crate::state::lyrics::{
+    AppliedLyricsPrefs, LyricsState, TYPE_OPTION_NAMES, codec_option_index, track_options,
+};
 use crate::state::midi::MidiState;
 use crate::state::piano::PianoState;
 use crate::state::playback::{self, PlaybackState};
 use crate::state::playlist::PlaylistState;
-use crate::ui::{PlaylistViewModel, TransportViewModel, sidebar, transport};
+use crate::ui::{
+    LyricsViewModel, PlaylistViewModel, TransportViewModel, lyrics, sidebar, transport,
+};
 
 /// Meter/clock ticker interval while playing (`m_meterTimer`, 50 ms).
 const TICK_INTERVAL: Duration = Duration::from_millis(50);
@@ -70,6 +74,13 @@ const PLAYLIST_FILTER_GLOB: &str = "*.lst";
 /// D10 dialog title + initial name (`window.cpp:1553-1554`).
 const PLAYLIST_SAVE_TITLE: &str = "Save playlist";
 const PLAYLIST_SAVE_INITIAL_NAME: &str = "playlist.lst";
+/// D12 initial name (`window.cpp:1825`). C++ sets no title and no filter on
+/// the lyrics save dialog — parity keeps both unset.
+const LYRICS_SAVE_INITIAL_NAME: &str = "lyrics.txt";
+/// D13 temp-export name shape: `<prefix><pid>.txt` under the system temp dir.
+const PRINT_TEMP_PREFIX: &str = "goshmidi-lyrics-";
+/// D13 opener command (DECISIONS D6 choice (a), ux D13 alternative (a)).
+const PRINT_OPENER: &str = "xdg-open";
 /// Wayland drop mime accepted by the `dnd_destination` wrapper (arch §2.3).
 const DND_URI_LIST_MIME: &str = "text/uri-list";
 
@@ -282,6 +293,38 @@ fn parse_uri_list(data: &[u8]) -> Vec<PathBuf> {
     out
 }
 
+/// D12 write half (`g_file_set_contents` twin, `window.cpp:1836`): full-text
+/// write. Errors toast (FIX — C++ ignores the result); success is silent
+/// (parity — C++ shows nothing on save).
+fn write_lyrics_file(path: &Path, text: &str) -> Result<(), String> {
+    std::fs::write(path, text)
+        .map_err(|why| format!("Could not save lyrics {}: {why}", path.display()))
+}
+
+/// D13 export half: write the full lyrics text to a per-process temp `.txt`
+/// (no cleanup — the OS reaps temp; a second print overwrites the same path)
+/// and hand it to the opener. Sync I/O + detached spawn, run inside the
+/// print `Task` like the other chooser-task blocking halves.
+fn print_lyrics_via_opener(text: &str) -> Result<(), String> {
+    let path = std::env::temp_dir().join(format!("{PRINT_TEMP_PREFIX}{}.txt", std::process::id()));
+    std::fs::write(&path, text)
+        .map_err(|why| format!("Could not print lyrics {}: {why}", path.display()))?;
+    spawn_opener(PRINT_OPENER, &path)
+}
+
+/// Detached opener spawn (stdout/stderr/stdin nulled, no wait): `Ok` once
+/// the child is spawned — the viewer owns everything after that.
+fn spawn_opener(cmd: &str, path: &Path) -> Result<(), String> {
+    std::process::Command::new(cmd)
+        .arg(path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|why| format!("Could not print lyrics: {why}"))
+}
+
 /// Pure half of `dbus_activation`: map a forwarded second launch to file
 /// paths. `Activate` (bare second launch) → no paths, present-only;
 /// `Open` → `Url`s with non-file entries skipped (C++ `g_file_get_path`
@@ -484,7 +527,8 @@ impl App {
             slot.label = song.channel_labels[ch].clone();
         }
         self.piano.reset_for_song();
-        self.lyrics.reset_for_song(song.charset.clone());
+        self.lyrics
+            .reset_for_song(song.charset.clone(), &song.texts);
         if let Some(current) = self.playlist.current() {
             self.settings.add_recent(&current.to_string_lossy());
             if let Some(parent) = current.parent() {
@@ -626,10 +670,10 @@ impl App {
 
     /// Commit-on-close prefs apply (U14 FIX, `window.cpp:1310-1340`): adopt
     /// the dialog scratch state wholesale, push drums channel, SysEx reset,
-    /// and the full mix (solo% applies at close too) to the engine, then
-    /// save the full config (save-point row 3). Lyrics/piano rows apply at
-    /// render time from `self.settings` (T11–T13); the instrument map
-    /// relabels the patch model (T12).
+    /// and the full mix (solo% applies at close too) to the engine, apply
+    /// the Lyrics rows, then save the full config (save-point row 3). Piano
+    /// rows apply at render time from `self.settings` (T13); the instrument
+    /// map relabels the patch model (T12).
     fn apply_prefs(&mut self, prefs: SettingsState) {
         self.settings = prefs;
         self.engine.send(EngineCommand::SetDrumsChannel(
@@ -640,10 +684,29 @@ impl App {
         self.midi.instrument_map = self.settings.instrument_map.clamp(0, 2) as u8;
         self.midi.sysex_reset = reset;
         self.push_all_channels();
+        self.apply_lyrics_prefs();
         // C++ parity: `AppSettings::save()` is void — failures are silent.
         if self.settings.save(&self.paths).is_err() {
             // Silent, as in C++.
         }
+    }
+
+    /// Lyrics rows of the prefs apply (U14 pathway, D2 Lyrics page): derive
+    /// the applied colors/font/alignment from the adopted settings
+    /// (lyrics colors/fonts/alignment ONLY — `singleColor` is a Piano row,
+    /// T12). Body and filters are UNTOUCHED: C++ `refreshLyrics` on
+    /// prefs-close resets both dropdowns to best-score as a side effect of
+    /// its rebuild (`window.cpp:1335` → `:566-573`, same snap-back family as
+    /// the filter handlers); the port keeps user filter selections (FIX,
+    /// lead-directed T11).
+    fn apply_lyrics_prefs(&mut self) {
+        self.lyrics.applied = AppliedLyricsPrefs::from_rows(
+            &self.settings.future_color,
+            &self.settings.past_color,
+            &self.settings.highlight_color,
+            &self.settings.lyrics_font,
+            self.settings.text_alignment,
+        );
     }
 
     /// D3 Apply (`window.cpp:1150-1187` + `connectOutput`, `window.cpp:328-349`):
@@ -797,7 +860,10 @@ impl App {
         self.push_all_channels();
         if let Some(encoding) = plan.encoding {
             self.lyrics.codec = encoding;
-            // T11 refreshes the body from `LoadedSong.texts` under the codec.
+            // Recompute the body under the restored codec. Filters are KEPT
+            // (C++ `refreshLyrics` here resets them to best-score —
+            // `window.cpp:675` → `:566-573` — same snap-back FIX as prefs).
+            self.refresh_lyrics_body();
         }
     }
 
@@ -866,6 +932,13 @@ impl App {
     /// D10 portal chooser `Task`: save dialog with initial `playlist.lst` +
     /// `.lst` filter. The write reuses `PlaylistState::save` verbatim on a
     /// snapshot of the current items (absolute paths, LF).
+    ///
+    /// Deviation window (T10 finding 3, negligible): C++ reads the live
+    /// playlist at dialog-finish (`window.cpp:1559-1564`), while this portal
+    /// `Task` moves a snapshot taken at launch — edits made while the dialog
+    /// is open would not be saved. Negligible: the window spans only the
+    /// seconds the save dialog is up, and the pre-dialog state is exactly
+    /// what the user chose to save.
     fn playlist_save_task(items: Vec<PathBuf>) -> Task<Message> {
         cosmic::task::future(async move {
             use cosmic::dialog::file_chooser::{FileFilter, save};
@@ -900,6 +973,71 @@ impl App {
         })
     }
 
+    /// Rebuild the lyrics body from the loaded song under the current
+    /// filters + codec (the recompute half of `refreshLyrics`, WITHOUT the
+    /// C++ dropdown/filter snap-back reset — FIX, see `state::lyrics`). No
+    /// song → empty texts → the body clears (matches C++ on an empty song).
+    fn refresh_lyrics_body(&mut self) {
+        if let Some(song) = self.song.as_ref() {
+            self.lyrics.refresh_body(&song.texts);
+        } else {
+            self.lyrics.refresh_body(&[]);
+        }
+    }
+
+    /// D12 portal save `Task` (`window.cpp:1822-1842`): initial `lyrics.txt`,
+    /// no title, no filter (C++ sets neither). Writes the full body+live
+    /// text snapshotted at launch; `Cancelled` is the silent
+    /// `ChooserCancelled`, write/portal failures toast via `LyricsSaved`.
+    ///
+    /// Same snapshot rule as D10 (T10 finding 3): C++ reads the live buffer
+    /// at dialog-finish (`window.cpp:1832-1836`); lines sung while the dialog
+    /// is open are not saved. Negligible (same seconds-long window).
+    fn lyrics_save_task(text: String) -> Task<Message> {
+        cosmic::task::future(async move {
+            use cosmic::dialog::file_chooser::save;
+            let dialog = save::Dialog::new().file_name(LYRICS_SAVE_INITIAL_NAME.to_string());
+            match dialog.save_file().await {
+                Ok(response) => match response.url().cloned() {
+                    Some(url) => match url.to_file_path() {
+                        Ok(path) => match write_lyrics_file(&path, &text) {
+                            Ok(()) => Message::LyricsSaved(Ok(path)),
+                            Err(why) => Message::LyricsSaved(Err(why)),
+                        },
+                        Err(()) => Message::LyricsSaved(Err(format!(
+                            "Cannot save to {url}: not a local file"
+                        ))),
+                    },
+                    None => Message::LyricsSaved(Err("Could not save lyrics".to_string())),
+                },
+                Err(cosmic::dialog::file_chooser::Error::Cancelled) => Message::ChooserCancelled,
+                Err(why) => Message::LyricsSaved(Err(format!("Could not save lyrics: {why}"))),
+            }
+        })
+    }
+
+    /// D13 print `Task`: temp-export the full body+live text and open it
+    /// with `xdg-open` (DECISIONS D6 choice (a), ux D13 alternative (a) —
+    /// listed first there, ahead of the ashpd print portal).
+    ///
+    /// Portal-vs-`xdg-open` evidence (recorded per T11a): ashpd 0.12.3 DOES
+    /// ship `desktop::print::PrintProxy`, reachable via
+    /// `cosmic::dialog::ashpd` — but its flow (`prepare_print` → token →
+    /// `print` over a document fd, `print.rs` doc example) is oriented at
+    /// print-ready documents (PDF): handing it plain `.txt` leans on
+    /// backend text-filter support that varies per DE (risk 10/P12), and we
+    /// ship no PDF writer. `xdg-open` instead routes the temp `.txt` to the
+    /// user's default viewer, which owns its own print path; in-sandbox it
+    /// stays correct (xdg-utils `open_flatpak` forwards file opens through
+    /// the OpenURI portal, `/usr/bin/xdg-open:872-885`), and the pinned
+    /// 25.08 Platform runtime ships both `xdg-open` and `gdbus` (verified in
+    /// the installed runtime `files/bin`), so no extra finish-args are
+    /// needed. Failures (temp write, missing/spawn-failing opener) toast via
+    /// `LyricsPrinted`; success is silent, like the C++ print dialog.
+    fn lyrics_print_task(text: String) -> Task<Message> {
+        cosmic::task::future(async move { Message::LyricsPrinted(print_lyrics_via_opener(&text)) })
+    }
+
     /// D9 result: replace items, record the source in both states, no
     /// autoplay (unlike D1). `Err` is a real I/O error — portal cancel maps
     /// to the silent `ChooserCancelled`, never here — so it gets a toast
@@ -918,8 +1056,10 @@ impl App {
     /// Engine event handling (arch §2.3): the 12 callback twins plus
     /// open/load/output results. `Time` is latest-wins coalescing (the
     /// forwarder already keeps only the newest per poll); notes/programs/
-    /// text/beat/transport arrive losslessly in order.
-    fn on_player_event(&mut self, event: PlayerEvent) {
+    /// text/beat/transport arrive losslessly in order. Returns the
+    /// lyrics-body snap task when a live text append is accepted (gated on
+    /// `autoscroll`), `Task::none()` everywhere else.
+    fn on_player_event(&mut self, event: PlayerEvent) -> Task<Message> {
         match event {
             PlayerEvent::Opened(snapshot) => self.on_opened(LoadedSong::from(*snapshot)),
             PlayerEvent::LoadFailed { file, errors } => {
@@ -961,7 +1101,9 @@ impl App {
                 bytes,
             } => {
                 let text = Sequence::decode_with_charset(&bytes, &self.lyrics.codec);
-                self.lyrics.append_live(track, text_type, &text);
+                if self.lyrics.append_live(track, text_type, &text) && self.lyrics.autoscroll {
+                    return lyrics::snap_to_end_task();
+                }
             }
             PlayerEvent::Program { ch, patch } => {
                 if (ch as usize) < MIDI_CHANNELS {
@@ -1014,6 +1156,7 @@ impl App {
                 }
             }
         }
+        Task::none()
     }
 
     // -- misc ---------------------------------------------------------------------
@@ -1056,6 +1199,31 @@ impl App {
         PlaylistViewModel {
             items: self.playlist.items().to_vec(),
             selected: usize::try_from(self.playlist.current_index()).ok(),
+        }
+    }
+
+    /// Build the lyrics page view model for `view()` (T11b contract): owned
+    /// dropdown labels + `*_selected` indices per the T11a formulas, the U10
+    /// body/live segments verbatim, the snap trigger + gate, the U14 applied
+    /// D2 rows, and the empty-state switch.
+    fn lyrics_view_model(&self) -> LyricsViewModel {
+        let texts: &[crate::core::sequence::TextRec] = self.song.as_ref().map_or(&[], |s| &s.texts);
+        let num_tracks = self.song.as_ref().map_or(0, |s| s.num_tracks);
+        LyricsViewModel {
+            track_options: track_options(texts, num_tracks, &self.lyrics.codec),
+            track_selected: self.lyrics.track_filter.map_or(0, |t| t as usize),
+            type_options: TYPE_OPTION_NAMES.iter().map(ToString::to_string).collect(),
+            type_selected: self.lyrics.type_filter.max(0) as usize,
+            codec_options: Sequence::extra_codec_names(),
+            codec_selected: codec_option_index(&self.lyrics.codec),
+            body: self.lyrics.body.clone(),
+            live_past: self.lyrics.live_past.clone(),
+            live_current: self.lyrics.live_current.clone(),
+            sung: self.lyrics.sung,
+            live_seq: self.lyrics.live_seq,
+            autoscroll: self.lyrics.autoscroll,
+            applied: self.lyrics.applied.clone(),
+            has_song: self.song.is_some(),
         }
     }
 }
@@ -1109,6 +1277,7 @@ impl Application for App {
         };
         app.core.set_header_title("Gosh MIDI Player".to_owned());
         app.playback.repeat = RepeatMode::from_i32(app.settings.repeat_mode);
+        app.apply_lyrics_prefs();
         app.startup_select_output(&flags);
         if flags.files.is_empty() {
             app.restore_playlist();
@@ -1146,9 +1315,9 @@ impl Application for App {
 
     /// State transitions + engine commands (arch §2.3). Transport/mix/seek/
     /// loop messages update state optimistically and send the matching
-    /// command; D1/D9/D10 launch portal chooser `Task`s (lyrics/T11 and MIDI
-    /// dialog/T13 still return `Task::none()`) — every arm is covered by a
-    /// test below.
+    /// command; D1/D9/D10/D12 launch portal chooser `Task`s, copy/print
+    /// launch clipboard/export `Task`s (MIDI dialog/T13 still returns
+    /// `Task::none()`) — every arm is covered by a test below.
     fn update(&mut self, message: Self::Message) -> Task<Self::Message> {
         match message {
             // --- transport ---
@@ -1344,12 +1513,37 @@ impl Application for App {
             }
 
             // --- lyrics ---
-            Message::LyricTrackFilter(track) => self.lyrics.track_filter = track,
-            Message::LyricTypeFilter(typ) => self.lyrics.type_filter = typ,
-            Message::LyricCodec(codec) => self.lyrics.codec = codec,
-            // T11: clipboard write / portal save+export / print routing.
-            Message::LyricsCopy | Message::LyricsSaveDialog | Message::LyricsPrint => {}
+            // Filter/codec changes recompute the body under the current
+            // selections (snap-back FIX, see `state::lyrics`); empty codec
+            // is ignored (`setCurrentCharset`, `sequence.cpp:362-366`).
+            Message::LyricTrackFilter(track) => {
+                self.lyrics.track_filter = track;
+                self.refresh_lyrics_body();
+            }
+            Message::LyricTypeFilter(typ) => {
+                self.lyrics.type_filter = typ;
+                self.refresh_lyrics_body();
+            }
+            Message::LyricCodec(codec) => {
+                if !codec.is_empty() {
+                    self.lyrics.codec = codec;
+                    self.refresh_lyrics_body();
+                }
+            }
+            // Copy writes the whole buffer text (`window.cpp:1811-1820`).
+            Message::LyricsCopy => return cosmic::iced::clipboard::write(self.lyrics.full_text()),
+            Message::LyricsSaveDialog => return Self::lyrics_save_task(self.lyrics.full_text()),
+            Message::LyricsPrint => return Self::lyrics_print_task(self.lyrics.full_text()),
+            // Save success is silent (C++ shows nothing); errors toast (FIX —
+            // C++ ignores the write result).
             Message::LyricsSaved(result) => {
+                if let Err(error) = result {
+                    self.toast(error);
+                }
+            }
+            // Print success is silent (C++ print dialog shows no toast);
+            // temp-write/opener failures toast.
+            Message::LyricsPrinted(result) => {
                 if let Err(error) = result {
                     self.toast(error);
                 }
@@ -1415,7 +1609,7 @@ impl Application for App {
             }
 
             // --- engine → UI / async ---
-            Message::Player(event) => self.on_player_event(event),
+            Message::Player(event) => return self.on_player_event(event),
             Message::Tick(_) => {
                 channels::decay_meters(&mut self.channels);
             }
@@ -1430,8 +1624,9 @@ impl Application for App {
 
     /// T10a2 layout (ux W1/§3.1): playlist sidebar on the left at the C++
     /// `AdwOverlaySplitView` 0.28 width fraction (`FillPortion(28/72)`) + main
-    /// column (transport region with THE status line, view-switcher
-    /// placeholder, toasts). The sidebar honors `playlistVisible`
+    /// column (transport region with THE status line, view-switcher page
+    /// — Lyrics composed, Channels/Piano placeholder —, toasts). The sidebar
+    /// honors `playlistVisible`
     /// (`settings.playlist_visible`, default true); there is no runtime
     /// collapse toggle yet — any toggle needs a new `Message` + update arm
     /// (arch decision, recorded gap), so a hidden sidebar reappears only via
@@ -1439,14 +1634,16 @@ impl Application for App {
     /// target (`dnd_destination`, arch §2.3, same mimes + callbacks); X11
     /// drops arrive via the `FileDropped` subscription instead.
     fn view(&self) -> Element<'_, Self::Message> {
-        let mut main: Vec<Element<'_, Self::Message>> = vec![
-            transport::view(self.transport_view_model()),
-            cosmic::widget::text::body(format!(
-                "{:?} view — switcher lands in T11+ (dialog={:?})",
-                self.view, self.dialog,
+        let page: Element<'_, Self::Message> = match self.view {
+            View::Lyrics => lyrics::view(self.lyrics_view_model()),
+            other => cosmic::widget::text::body(format!(
+                "{other:?} view — switcher lands in T12+ (dialog={:?})",
+                self.dialog,
             ))
             .into(),
-        ];
+        };
+        let mut main: Vec<Element<'_, Self::Message>> =
+            vec![transport::view(self.transport_view_model()), page];
         for toast in &self.toasts {
             main.push(cosmic::widget::text::body(toast.as_str()).into());
         }
@@ -1938,6 +2135,7 @@ mod tests {
         assert_eq!(app.playlist.source_path(), Some(Path::new("/m/gig.lst")));
         assert!(!app.playlist.dirty());
         assert!(app.song.is_none());
+        assert!(!app.pending_autoplay);
         upd(&mut app, Message::PlaylistLoaded(Err("boom".to_string())));
         assert_eq!(app.toasts, vec!["boom".to_string()]);
     }
@@ -2409,24 +2607,107 @@ mod tests {
 
     // -- lyrics -----------------------------------------------------------------
 
+    /// Texts for the filter-recompute tests: two lyric tracks + a text note.
+    fn lyric_test_texts() -> Vec<crate::core::sequence::TextRec> {
+        use crate::core::event::TextType;
+        use crate::core::sequence::TextRec;
+        vec![
+            TextRec {
+                tick: 0,
+                track: 1,
+                text_type: TextType::Lyric,
+                text: b"la ".to_vec(),
+            },
+            TextRec {
+                tick: 10,
+                track: 2,
+                text_type: TextType::Lyric,
+                text: b"lu".to_vec(),
+            },
+            TextRec {
+                tick: 20,
+                track: 2,
+                text_type: TextType::Text,
+                text: b"note".to_vec(),
+            },
+        ]
+    }
+
+    /// Fake song carrying lyric texts (filters preselect track 2 + Lyric).
+    fn open_lyric_song(app: &mut App) {
+        let mut snapshot = test_song_into_snapshot();
+        snapshot.texts = lyric_test_texts();
+        upd(
+            app,
+            Message::Player(PlayerEvent::Opened(Box::new(snapshot))),
+        );
+    }
+
     #[test]
-    fn lyric_filters_and_codec_stored() {
+    fn lyric_filters_and_codec_recompute_body() {
         let (mut app, _rx, _tmp) = test_app();
-        upd(&mut app, Message::LyricTrackFilter(Some(3)));
-        assert_eq!(app.lyrics.track_filter, Some(3));
-        upd(&mut app, Message::LyricTypeFilter(1));
-        assert_eq!(app.lyrics.type_filter, 1);
+        open_lyric_song(&mut app);
+        // Preselects: track 2 (2 hits), Lyric (2:1 over Text).
+        assert_eq!(app.lyrics.track_filter, Some(2));
+        assert_eq!(app.lyrics.type_filter, 5);
+        assert_eq!(app.lyrics.body, "lu");
+        // Track change recomputes under the new selection (snap-back FIX:
+        // the selection STAYS, `window.cpp:1788-1792` parity would revert).
+        upd(&mut app, Message::LyricTrackFilter(Some(1)));
+        assert_eq!(app.lyrics.track_filter, Some(1));
+        assert_eq!(app.lyrics.body, "la ");
+        // All-tracks + all-types shows everything with the newline rule.
+        upd(&mut app, Message::LyricTrackFilter(None));
+        upd(&mut app, Message::LyricTypeFilter(0));
+        assert_eq!(app.lyrics.body, "la lunote\n");
+        // Out-of-range type matches nothing; empty codec is ignored.
+        upd(&mut app, Message::LyricTypeFilter(99));
+        assert!(app.lyrics.body.is_empty());
+        upd(&mut app, Message::LyricCodec(String::new()));
+        assert_eq!(app.lyrics.codec, "UTF-8");
         upd(&mut app, Message::LyricCodec("SHIFT_JIS".to_string()));
         assert_eq!(app.lyrics.codec, "SHIFT_JIS");
     }
 
     #[test]
-    fn lyrics_actions_noop_and_saved_error_toasts() {
+    fn lyric_filter_change_clears_live_tail() {
         let (mut app, _rx, _tmp) = test_app();
+        open_lyric_song(&mut app);
+        upd(
+            &mut app,
+            Message::Player(PlayerEvent::Text {
+                track: 2,
+                text_type: 5,
+                ticks: 0,
+                bytes: b"live".to_vec(),
+            }),
+        );
+        assert_eq!(app.lyrics.live_tail(), "live");
+        // C++ `refreshLyrics` clears the whole buffer incl. live appends.
+        upd(&mut app, Message::LyricTrackFilter(None));
+        assert!(app.lyrics.live_tail().is_empty());
+        assert!(!app.lyrics.sung);
+    }
+
+    #[test]
+    fn lyrics_copy_save_print_launch_without_state_change() {
+        // The clipboard write / portal save / print export are runtime
+        // `Task`s (dropped here); results arrive as `LyricsSaved` /
+        // `LyricsPrinted`, cancel as the silent `ChooserCancelled`.
+        let (mut app, _rx, _tmp) = test_app();
+        open_lyric_song(&mut app);
         upd(&mut app, Message::LyricsCopy);
         upd(&mut app, Message::LyricsSaveDialog);
         upd(&mut app, Message::LyricsPrint);
+        assert_eq!(app.lyrics.body, "lu");
         assert!(app.toasts.is_empty());
+        upd(&mut app, Message::ChooserCancelled);
+        assert!(app.toasts.is_empty());
+    }
+
+    #[test]
+    fn lyrics_saved_and_printed_route_ok_silent_err_toast() {
+        let (mut app, _rx, _tmp) = test_app();
         upd(
             &mut app,
             Message::LyricsSaved(Ok(PathBuf::from("/t/x.txt"))),
@@ -2434,6 +2715,88 @@ mod tests {
         assert!(app.toasts.is_empty());
         upd(&mut app, Message::LyricsSaved(Err("ro".to_string())));
         assert_eq!(app.toasts, vec!["ro".to_string()]);
+        upd(&mut app, Message::LyricsPrinted(Ok(())));
+        assert_eq!(app.toasts.len(), 1);
+        upd(
+            &mut app,
+            Message::LyricsPrinted(Err("Could not print lyrics: boom".to_string())),
+        );
+        assert_eq!(
+            app.toasts,
+            vec!["ro".to_string(), "Could not print lyrics: boom".to_string()]
+        );
+    }
+
+    #[test]
+    fn write_lyrics_file_round_trips_and_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("lyrics.txt");
+        write_lyrics_file(&path, "la la\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "la la\n");
+        let missing = tmp.path().join("no-such-dir/lyrics.txt");
+        let err = write_lyrics_file(&missing, "x").unwrap_err();
+        assert!(err.starts_with("Could not save lyrics"), "{err}");
+    }
+
+    #[test]
+    fn spawn_opener_maps_spawn_errors() {
+        // `true` ignores its arg and spawns fine; a bogus command fails.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("print.txt");
+        std::fs::write(&path, "x").unwrap();
+        spawn_opener("true", &path).unwrap();
+        let err = spawn_opener("goshmidi-no-such-opener-xyz", &path).unwrap_err();
+        assert!(err.starts_with("Could not print lyrics"), "{err}");
+    }
+
+    #[test]
+    fn prefs_commit_applies_lyrics_rows_without_touching_filters() {
+        let (mut app, _rx, _tmp) = test_app();
+        open_lyric_song(&mut app);
+        upd(&mut app, Message::LyricTrackFilter(Some(1)));
+        let mut prefs = Settings::new();
+        prefs.future_color = "red".to_string();
+        prefs.past_color = "garbage".to_string();
+        prefs.highlight_color = "#1c71d8".to_string();
+        prefs.lyrics_font = "Monospace Bold 9".to_string();
+        prefs.text_alignment = 1;
+        upd(&mut app, Message::PrefsChanged(prefs));
+        let applied = &app.lyrics.applied;
+        assert_eq!(
+            applied.future,
+            crate::state::lyrics::Rgba {
+                r: 1.0,
+                g: 0.0,
+                b: 0.0,
+                a: 1.0
+            }
+        );
+        assert_eq!(applied.past, crate::state::lyrics::GRAY_FALLBACK);
+        assert_eq!(applied.font.family, "Monospace");
+        assert_eq!(applied.font.weight, 700);
+        assert_eq!(applied.alignment, crate::state::lyrics::LyricAlign::Center);
+        // Body + filters untouched (C++ resets both dropdowns here — FIX).
+        assert_eq!(app.lyrics.track_filter, Some(1));
+        assert_eq!(app.lyrics.body, "la ");
+    }
+
+    #[test]
+    fn song_settings_encoding_recomputes_body_keeping_filters() {
+        let (mut app, _rx, _tmp) = test_app();
+        open_lyric_song(&mut app);
+        upd(&mut app, Message::LyricTrackFilter(None));
+        upd(&mut app, Message::LyricTypeFilter(0));
+        assert_eq!(app.lyrics.body, "la lunote\n");
+        // A song-settings file carrying only an encoding: codec applies,
+        // body recomputes, filter selections survive (C++ resets them — FIX).
+        app.paths.ensure_data_dir().unwrap();
+        let cfg = "[Global]\nencoding=SHIFT_JIS\n";
+        std::fs::write(app.paths.song_settings_path("song.mid"), cfg).unwrap();
+        upd(&mut app, Message::SongSettingsLoad);
+        assert_eq!(app.lyrics.codec, "SHIFT_JIS");
+        assert_eq!(app.lyrics.track_filter, None);
+        assert_eq!(app.lyrics.type_filter, 0);
+        assert_eq!(app.lyrics.body, "la lunote\n");
     }
 
     // -- piano ------------------------------------------------------------------
@@ -2689,7 +3052,9 @@ mod tests {
         app.playback.position_ticks = 999;
         app.playback.seeking = true;
         app.lyrics.codec = "SHIFT_JIS".to_string();
-        app.lyrics.live_tail = "stale".to_string();
+        app.lyrics.live_past = "stale".to_string();
+        app.lyrics.live_current = "tail".to_string();
+        app.lyrics.sung = true;
         app.piano.note_on(0, 60, 100);
         let song_path = tmp.path().join("song.mid");
         std::fs::write(&song_path, b"fake").unwrap();
@@ -2718,7 +3083,8 @@ mod tests {
         assert_eq!(app.playback.song_len_ticks, 4800);
         // Lyrics codec reseeded, tail cleared; piano cleared.
         assert_eq!(app.lyrics.codec, "UTF-8");
-        assert!(app.lyrics.live_tail.is_empty());
+        assert!(app.lyrics.live_tail().is_empty());
+        assert!(!app.lyrics.sung);
         assert!(!app.piano.notes_on[0][60]);
         // No autoplay → Stopped; recent + directory recorded (unsaved).
         assert_eq!(app.playback.status, Status::Stopped);
@@ -2899,7 +3265,11 @@ mod tests {
                 bytes: b"skip".to_vec(),
             }),
         );
-        assert_eq!(app.lyrics.live_tail, "Hello ✓");
+        assert_eq!(app.lyrics.live_tail(), "Hello ✓");
+        // Exact `onText` segmentation: previous `current` is `past` now.
+        assert_eq!(app.lyrics.live_past, "Hel");
+        assert_eq!(app.lyrics.live_current, "lo ✓");
+        assert!(app.lyrics.sung);
         // Track filter set → other tracks filtered out.
         app.lyrics.track_filter = Some(2);
         upd(
@@ -2911,7 +3281,7 @@ mod tests {
                 bytes: b"skip".to_vec(),
             }),
         );
-        assert_eq!(app.lyrics.live_tail, "Hello ✓");
+        assert_eq!(app.lyrics.live_tail(), "Hello ✓");
     }
 
     #[test]
@@ -2961,6 +3331,19 @@ mod tests {
         assert_eq!(app.playlist.current_index(), 0);
         assert!(app.pending_autoplay);
         assert!(app.paths.song_settings_path("song.mid").is_file());
+    }
+
+    #[test]
+    fn flags_action_and_args_forward_files_to_running_instance() {
+        // Sending half of the contract CMakeLists pins to the retired
+        // `.cmake` successor (receiving half: `activation_files` tests):
+        // files → `open` + argv strings; no files → present-only.
+        let flags = Flags::new(vec![PathBuf::from("/m/a.mid")], None, None, false, None);
+        assert_eq!(flags.action(), Some(&"open"));
+        assert_eq!(flags.args(), vec!["/m/a.mid"]);
+        let idle = Flags::new(Vec::new(), None, None, false, None);
+        assert_eq!(idle.action(), None);
+        assert!(idle.args().is_empty());
     }
 
     #[test]

@@ -24,8 +24,8 @@
 //! 1. CLOSED in T10b: header Open now emits `Message::OpenFilesDialog`
 //!    (the T10a D1 portal-chooser trigger); results arrive as
 //!    `OpenFilesChosen` into the `OpenFiles(paths, true)` path.
-//! 2. The status line here duplicates the arch-owned `App::footer`, which
-//!    already renders `status.text()` — the T10+ layout keeps exactly one.
+//! 2. CLOSED (T10 finding 4): `App::footer` is gone — app.rs keeps no
+//!    `footer()` override — so this status line is the only one.
 //! 3. C++ parity (lead ruling): the 7 transport action buttons + loop
 //!    stay live with no song loaded — C++ never desensitizes (e.g. Play
 //!    with no song triggers `loadCurrent`). `has_song` remains in the

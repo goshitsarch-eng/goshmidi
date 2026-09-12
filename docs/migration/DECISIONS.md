@@ -91,7 +91,11 @@ simplicity/maintainability > COSMIC conventions.
 - FIX (clear contrary intent or correctness trap, small + tested): save window
   size + repeatMode on close-request (U2); menu Loop forces toggle ON then
   opens dialog (U3); piano clicks map in drawn range (U12); prefs close
-  applies solo% (U14); UI syncs to engine mix state on song load (A8).
+  applies solo% (U14); UI syncs to engine mix state on song load (A8);
+  lyrics filter selections kept instead of snapping back to best-score
+  (C++ refreshLyrics resets both filters on every user change,
+  window.cpp:566-573,1791-1798 — dropdowns that can't hold a selection
+  are a trap; devil-verified in T11).
 - PRESERVE (observable behavior, tests pin it): lyric static+live duplication
   (U10); audition bypassing mute/pitch + idle-only note-off (A3);
   remove/shuffle-not-adjusting-index + load-keeping-nonexistent (A14).

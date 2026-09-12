@@ -20,8 +20,8 @@
 //! silence is no state change (probe) plus no config write (`config_exists`).
 //! Toast TEXT, the `pending_autoplay` flag, the `dirty` flag, and the window
 //! "present" half of single-instance forward stay covered by the `app.rs`
-//! unit tests, which see the private state; each integration test names the
-//! unit test that pins its unobservable half.
+//! unit tests, which see the private state; tests name that unit test where
+//! one pins the half, and pin filesystem effects alone otherwise.
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;

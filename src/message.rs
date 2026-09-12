@@ -106,6 +106,13 @@ pub enum Message {
     LyricsSaveDialog,
     LyricsSaved(Result<PathBuf, String>),
     LyricsPrint,
+    /// D13 export result: `Ok` is silent (C++ shows the native print dialog
+    /// and toasts nothing on success); `Err` (temp-write or `xdg-open`
+    /// spawn failure) toasts. A dedicated variant — every `Task` must
+    /// resolve to a `Message`, and neither existing silent carrier fits:
+    /// `ChooserCancelled` is scoped to file-chooser cancel, and `Toast`
+    /// would add a success toast C++ never shows.
+    LyricsPrinted(Result<(), String>),
 
     // --- piano ---
     // NOTE: no per-channel visibility toggle — `m_pianoShow[]` is never
@@ -299,7 +306,6 @@ impl LoadedSong {
 
 /// Result of a playlist load: source path + items (T10 fills this in via the
 /// portal chooser; the `PlaylistLoaded` arm applies it).
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct LoadedPlaylist {
     pub source: Option<PathBuf>,

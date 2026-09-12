@@ -194,7 +194,7 @@ lead = PLAN/DECISIONS/REPORT + glue.
       escape (A4), portal paths incl. replace-asserting integration test
       (P2), DnD per T0 verdict; retire `check_single_instance_open.cmake`
       only after Rust successor is green (P1).
-- [ ] T11 Lyrics (ux): page + filters + live tail (U10 concatenation
+- [x] T11 Lyrics (ux): page + filters + live tail (U10 concatenation — DONE (suite 405/405, D12/D13, D17 binding, snap-back FIX ruled+amended, devil SIGN-OFF; 3 test/doc follow-ups → T12)
       preserved), copy/save/print routing, D12/D13, prefs Lyrics page
       (color picker per T0, font spec U6); integration tests.
 - [ ] T12 Channels + prefs (ux): 16 rows + solo/mute formula + meters +
