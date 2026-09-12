@@ -21,6 +21,7 @@ use std::path::PathBuf;
 use common::{Harness, fixture, hermetic_home};
 use dmidiplayer::config::settings::Settings;
 use dmidiplayer::config::song::SongSettings;
+use dmidiplayer::core::event::TextType;
 use dmidiplayer::core::sequence::Sequence;
 use dmidiplayer::message::{Message, PlayerEvent, SongSnapshot};
 use dmidiplayer::state::channels::{
@@ -55,6 +56,9 @@ fn snapshot(title: &str, seq: &Sequence) -> SongSnapshot {
         highest_note: seq.highest_note(),
         charset: seq.current_charset().to_string(),
         texts: seq.text_events().to_vec(),
+        // SMF fixtures carry no RIFF INFO map (engine-internal either way).
+        metadata: Vec::new(),
+        copyrights: seq.get_text(TextType::Copyright),
     }
 }
 

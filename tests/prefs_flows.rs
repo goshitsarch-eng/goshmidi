@@ -3,10 +3,12 @@
 //! Same hermetic harness as T10c/T11c (temp HOME, per-test portable config,
 //! headless engine — no fixtures needed: the prefs shell is song-free).
 //! `App` fields are private, so scratch/live halves pin behavior through the
-//! portable config: `MidiApply` persists the LIVE settings without touching
-//! `lastPlayList` (the live probe — valid while the D3 mirrors still equal
-//! the live D3 keys), while dialog close persists the narrowed commit (the
-//! 17 D2-owned keys over live — T12 devil-BLOCKING FIX).
+//! portable config: the harness `persist_live_settings` probe (open D3 +
+//! unchanged Apply) persists the LIVE settings without touching
+//! `lastPlayList`, while dialog close persists the narrowed commit (the
+//! 17 D2-owned keys over live — T12 devil-BLOCKING FIX). Mid-dialog probes
+//! reopen prefs + resend scratch afterwards (dialog switches abandon
+//! shells, T13c).
 //! Toast text, picker active flags, MIDI mirrors, and the engine reselect /
 //! announce / solo-repush sends stay unit-pinned in `app.rs` (named per
 //! test); this file pins the open/edit/close wiring plus the persisted bytes.
@@ -68,9 +70,9 @@ fn open_seeds_scratch_equal_to_live() {
 }
 
 /// Scratch edits stay isolated until close: open writes nothing, edits write
-/// nothing, the live probe (`MidiApply` persists live settings) still reads
-/// the pre-dialog live values — then one close commits the whole scratch
-/// verbatim (garbage colors included, C++ parity). (Unit-pinned by
+/// nothing, the live probe still reads the pre-dialog live values — then
+/// one close commits the whole scratch verbatim (garbage colors included,
+/// C++ parity). (Unit-pinned by
 /// `prefs_scratch_edits_are_isolated_until_close`.)
 #[test]
 fn scratch_edits_isolated_until_close() {
@@ -88,9 +90,12 @@ fn scratch_edits_isolated_until_close() {
     h.upd(Message::PrefsScratchEdited(next.clone()));
     assert!(!h.config_exists());
 
-    // Live probe: the scratch edits leaked nowhere.
-    h.upd(Message::MidiApply);
+    // Live probe: the scratch edits leaked nowhere. The probe abandons the
+    // prefs shell (dialog switch), so reopen + resend before the close.
+    h.persist_live_settings();
     assert_eq!(persisted_settings(&h, "prf-iso"), live);
+    h.upd(Message::ShowDialog(Dialog::Preferences));
+    h.upd(Message::PrefsScratchEdited(next.clone()));
 
     // Close commits once: narrow adoption (== wholesale here — live is
     // otherwise untouched) + save.
@@ -127,12 +132,15 @@ fn close_commits_once_with_solo_repush() {
     next.octave_subscript = true;
     h.upd(Message::PrefsScratchEdited(next.clone()));
 
-    // Pre-close: live solo% untouched (no premature repush).
-    h.upd(Message::MidiApply);
+    // Pre-close: live solo% untouched (no premature repush). The probe
+    // abandons the prefs shell (dialog switch), so reopen + resend.
+    h.persist_live_settings();
     assert_eq!(
         persisted_settings(&h, "prf-commit").solo_volume_reduction,
         50
     );
+    h.upd(Message::ShowDialog(Dialog::Preferences));
+    h.upd(Message::PrefsScratchEdited(next.clone()));
 
     h.upd(Message::CloseDialog);
     assert_eq!(persisted_settings(&h, "prf-commit"), next);
@@ -254,8 +262,8 @@ fn dialog_switch_abandons_scratch() {
     h.upd(Message::CloseDialog);
     assert!(!h.config_exists());
 
-    // Live probe: nothing leaked.
-    h.upd(Message::MidiApply);
+    // Live probe: nothing leaked (no shell to restore here).
+    h.persist_live_settings();
     assert_eq!(persisted_settings(&h, "prf-abandon"), Settings::new());
 }
 
@@ -362,6 +370,8 @@ fn live_recent_files_survive_prefs_close() {
             highest_note: 96,
             charset: "UTF-8".to_string(),
             texts: Vec::new(),
+            metadata: Vec::new(),
+            copyrights: Vec::new(),
         },
     ))));
     h.upd(Message::CloseDialog);

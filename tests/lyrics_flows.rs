@@ -19,6 +19,7 @@ use common::{Harness, canon, fixture, hermetic_home};
 use dmidiplayer::config::paths::{Env, Paths};
 use dmidiplayer::config::settings::Settings;
 use dmidiplayer::config::song::SongSettings;
+use dmidiplayer::core::event::TextType;
 use dmidiplayer::core::sequence::Sequence;
 use dmidiplayer::message::{Message, PlayerEvent, SongSnapshot};
 use dmidiplayer::state::lyrics::{LyricsState, codec_option_index, preselect_filters};
@@ -52,6 +53,9 @@ fn snapshot(title: &str, seq: &Sequence) -> SongSnapshot {
         highest_note: seq.highest_note(),
         charset: seq.current_charset().to_string(),
         texts: seq.text_events().to_vec(),
+        // SMF fixtures carry no RIFF INFO map (engine-internal either way).
+        metadata: Vec::new(),
+        copyrights: seq.get_text(TextType::Copyright),
     }
 }
 
@@ -81,7 +85,7 @@ fn cfg_encoding(title: &str) -> Option<String> {
 }
 
 /// Whole persisted portable config through the real reader (the
-/// `PrefsChanged`-commit probe; replicates the harness `MidiApply` shape).
+/// `PrefsChanged`-commit probe; replicates the harness live-probe shape).
 fn persisted_settings(h: &Harness, tag: &str) -> Settings {
     let home = hermetic_home();
     let env = Env::for_test(home, home, home, home);

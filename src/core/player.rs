@@ -10,13 +10,17 @@
 //! The engine defines its own [`EngineCommand`] / [`PlayerEvent`] shapes,
 //! mirroring `crate::message` field-for-field so T9 can bridge them
 //! mechanically. Deliberate deltas (message.rs is untouched in T7):
-//! * No `PreviewNote` / `PreviewOff` commands: audition **bypasses** the
-//!   player and talks to the outputs directly (A3 — bypasses mute/pitch,
-//!   idle-only note-off), so preview stays a T9/T13 direct-output call.
+//! * `PreviewNote` / `PreviewOff` ARE engine commands (T13c D19 refinement):
+//!   audition **bypasses** the player mix and talks to the outputs directly
+//!   (A3 — bypasses mute/pitch, idle-only note-off) — but the outputs live
+//!   in the engine thread, so "app-only" can only mean "bypasses player
+//!   mix", not "no engine command". The handlers write straight to the
+//!   current output and touch no mute/pitch/sequencing state.
 //! * `PlayerEvent::NoteOff` carries `vel`: the C++ `onNoteOff(ch, note, vel)`
 //!   callback has it; the message.rs T1 stub dropped it. T9 reconciles.
 //! * `Opened` carries the engine-side [`SongSnapshot`] (full UI fields since
-//!   T9; the app converts it to `message::LoadedSong` via `From`).
+//!   T9, + D6 metadata/copyrights since T13c; the app converts it to
+//!   `message::LoadedSong` via `From`).
 //!
 //! ## Threading and wakeup (A2)
 //!
@@ -95,7 +99,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use super::event::{
-    CC_ALL_NOTES_OFF, CC_ALL_SOUNDS_OFF, CC_RESET_CONTROLLERS, CC_VOLUME, MIDI_CHANNELS,
+    CC_ALL_NOTES_OFF, CC_ALL_SOUNDS_OFF, CC_RESET_CONTROLLERS, CC_VOLUME, MIDI_CHANNELS, TextType,
     clamp_midi, tempo_to_bpm,
 };
 use super::event::{Kind, MidiEvent};
@@ -143,6 +147,13 @@ pub struct SongSnapshot {
     pub charset: String,
     /// Raw text/meta records for the lyrics view (T11 decodes + filters).
     pub texts: Vec<TextRec>,
+    /// RIFF INFO `(key, value)` pairs in map order, for the D6 file-info
+    /// dialog (`Sequence::metadataInfo` source; `BTreeMap` iterates sorted
+    /// like the C++ `std::map`).
+    pub metadata: Vec<(String, String)>,
+    /// Decoded copyright records in event order, for D6 (`getText(Copyright)`
+    /// at load time — same bytes the view decodes from `texts` + `charset`).
+    pub copyrights: Vec<String>,
 }
 
 /// Engine → UI events: the 12 C++ player callbacks plus open/load/output
@@ -211,8 +222,9 @@ pub enum PlayerEvent {
 }
 
 /// UI → engine commands (arch §2.4). All data is owned: no shared `Sequence`
-/// (message passing only). No preview variants — audition bypasses the
-/// engine via direct output calls (A3, see module docs).
+/// (message passing only). The preview variants bypass the player MIX but
+/// still cross into the engine thread — the outputs live there (A3/D19, see
+/// module docs).
 #[derive(Debug, Clone, PartialEq)]
 pub enum EngineCommand {
     Load(PathBuf),
@@ -252,6 +264,21 @@ pub enum EngineCommand {
         port: String,
     },
     SetSoundFont(String),
+    /// Piano audition / MIDI-setup test note (A3/D19): raw NoteOn straight
+    /// to the current output — no mute, pitch-shift, or sequencing touch
+    /// (`window.cpp:2098-2102`, `:1147`). No-op when no output is live.
+    PreviewNote {
+        ch: u8,
+        note: u8,
+        vel: u8,
+    },
+    /// Preview/test release: raw NoteOffs straight to the current output,
+    /// same bypass (`window.cpp:2105-2116`, `:1148-1153`). The idle-only
+    /// gate lives app-side (`preview_off_targets`); the test-note off is
+    /// unconditional like C++ — the engine just sends what it is given.
+    PreviewOff {
+        notes: Vec<(u8, u8)>,
+    },
     Shutdown,
 }
 
@@ -882,6 +909,24 @@ impl<C: PlayerClock> Engine<C> {
                 self.outputs.set_sound_font(&path);
                 CommandEffect::Continue
             }
+            // A3 bypass (D19 refinement): straight to the output — no mute,
+            // pitch, lock, or sequencing state is read or written, exactly
+            // like the C++ direct `sendNoteOn/Off` calls. No output → no-op
+            // (C++ guards on `m_outputs.current()` too).
+            EngineCommand::PreviewNote { ch, note, vel } => {
+                if let Some(out) = self.outputs.current_mut() {
+                    out.send_note_on(i32::from(ch), i32::from(note), i32::from(vel));
+                }
+                CommandEffect::Continue
+            }
+            EngineCommand::PreviewOff { notes } => {
+                if let Some(out) = self.outputs.current_mut() {
+                    for (ch, note) in notes {
+                        out.send_note_off(i32::from(ch), i32::from(note), 0);
+                    }
+                }
+                CommandEffect::Continue
+            }
         }
     }
 
@@ -1167,6 +1212,13 @@ impl<C: PlayerClock> Engine<C> {
             highest_note: self.song.highest_note(),
             charset: self.song.current_charset().to_string(),
             texts: self.song.text_events().to_vec(),
+            metadata: self
+                .song
+                .info_map
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            copyrights: self.song.get_text(TextType::Copyright),
         }
     }
 
@@ -1648,6 +1700,105 @@ mod tests {
         let mut events = Vec::new();
         engine.handle_command(cmd, &mut events);
         events
+    }
+
+    // --- T13c preview commands (A3 bypass, D19 refinement) ---
+
+    #[test]
+    fn preview_note_writes_straight_to_output_bypassing_mix() {
+        let (mut engine, calls) = test_engine();
+        // Mute channel 0 and shift pitch: the bypass must ignore both.
+        run_cmd(&mut engine, EngineCommand::SetMuted(0, true));
+        run_cmd(&mut engine, EngineCommand::SetPitchShift(5));
+        calls.lock().unwrap().clear();
+        let events = run_cmd(
+            &mut engine,
+            EngineCommand::PreviewNote {
+                ch: 0,
+                note: 60,
+                vel: 80,
+            },
+        );
+        assert!(events.is_empty());
+        assert_eq!(
+            calls_of(&calls),
+            vec![DummyCall::NoteOn {
+                ch: 0,
+                note: 60,
+                vel: 80
+            }]
+        );
+        // Mix state untouched by the bypass (mute/pitch still hold).
+        assert!(engine.muted[0]);
+        assert_eq!(engine.pitch_shift, 5);
+    }
+
+    #[test]
+    fn preview_off_sends_every_note_vel_0() {
+        let (mut engine, calls) = test_engine();
+        run_cmd(
+            &mut engine,
+            EngineCommand::PreviewOff {
+                notes: vec![(0, 60), (1, 64)],
+            },
+        );
+        assert_eq!(
+            calls_of(&calls),
+            vec![
+                DummyCall::NoteOff {
+                    ch: 0,
+                    note: 60,
+                    vel: 0
+                },
+                DummyCall::NoteOff {
+                    ch: 1,
+                    note: 64,
+                    vel: 0
+                },
+            ]
+        );
+        // Empty list sends nothing (C++ empty-loop parity).
+        calls.lock().unwrap().clear();
+        run_cmd(&mut engine, EngineCommand::PreviewOff { notes: vec![] });
+        assert!(calls_of(&calls).is_empty());
+    }
+
+    #[test]
+    fn preview_commands_noop_without_live_output() {
+        // No `SelectOutput`: `current()` is None, like the C++ null guard.
+        let (rec, calls) = SharedRecorder::new();
+        let mut manager = MidiOutputManager::new();
+        manager.add_backend(Box::new(rec));
+        let mut engine = Engine::new(FakeClock::new(), manager);
+        run_cmd(
+            &mut engine,
+            EngineCommand::PreviewNote {
+                ch: 0,
+                note: 60,
+                vel: 96,
+            },
+        );
+        run_cmd(
+            &mut engine,
+            EngineCommand::PreviewOff {
+                notes: vec![(0, 60)],
+            },
+        );
+        assert!(
+            calls_of(&calls).is_empty(),
+            "no output → no traffic, got {:?}",
+            calls_of(&calls)
+        );
+    }
+
+    #[test]
+    fn snapshot_carries_d6_metadata_and_copyrights() {
+        let (engine, _calls) = test_engine();
+        // Empty engine song: no metadata, no copyrights (shape pin — the
+        // RMI/SMF decoders fill `info_map`/`text_events` upstream).
+        let snap = engine.snapshot();
+        assert!(snap.metadata.is_empty());
+        assert!(snap.copyrights.is_empty());
     }
 
     // --- song fixtures: division 120, live ticks2micros, hand-set delta ---

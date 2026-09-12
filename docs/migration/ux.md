@@ -478,3 +478,162 @@ Port requirements (libcosmic/iced):
 - T0 verdict: tooltip at-risk CLEARED — verified via the
   `cosmic::widget::tooltip` wrapper; tooltips on all icon buttons remain a
   parity requirement, not optional polish.
+
+## 12. T13b views — piano page + remaining dialogs (view slice)
+
+View modules only — no state logic, no `app.rs` wiring; composition wires
+later. Follows the T11/T12 patterns: VM structs in `ui/mod.rs`, owned VMs
+into views (explicit destructures pin the contracts), whole-state updaters,
+a11y names on every control that has a `.name()` API (checkboxes and all
+button kinds do in the pinned rev; dropdowns/text inputs/canvas do not —
+their visible labels are the accessible names per §11). VM builders are
+pure functions of state with unit tests (empty states, OOR seeds,
+verbatim-string asserts).
+
+Shared-math rule: layout math, string tables, and formatters live
+SINGLE-SOURCED in `state::{piano,midi,dialogs}` (T13a); the views own only
+VMs, builders, and widgets. (The T13b-era D3 preselect exception is
+reconciled — T13c fixed the shared fn to last-wins and the view delegates
+again; see the D3 note.)
+
+### 12.1 Dialog inventory D3–D8
+
+| ID | VM (`ui/mod.rs`) | View module | Builder (pure) | Chrome |
+|---|---|---|---|---|
+| D3 MIDI Setup | `MidiSetupViewModel` | `ui/midi_setup.rs` | `view_model(&MidiState, test_status)` | `dialog()` + `Cancel` secondary, `chrome::wrap_modal` |
+| D7 Jump | `JumpViewModel` | `ui/jump_loop.rs` | `jump_view_model(bar, bars)` | `dialog()` + `Cancel` secondary, `chrome::wrap_modal` |
+| D8 Loop | `LoopViewModel` | `ui/jump_loop.rs` | `loop_view_model(from, to, bars)` | `dialog()` + `Cancel` secondary, `chrome::wrap_modal` |
+| D6 File info | `FileInfoViewModel` + `FileInfoBody` | `ui/info_dialogs.rs` | `file_info_view_model(song, metadata)` | `dialog()`, no actions (`OK` in content) |
+| D5 Help | — (static) | `ui/info_dialogs.rs` (`help_view`) | — (`HELP_TEXT` shared) | `dialog()`, no actions (`OK` in content) |
+| D4 About | — (static) | `ui/info_dialogs.rs` (`about_view(on_url)`) | — (`ABOUT` table shared) | `dialog()`, no actions (`Close` in content) |
+
+- D3: C++ field order verbatim (`window.cpp:961-1128`); labels/buttons/
+  placeholder/hints aliased from `state::midi` (`MIDI_SETUP_FIELDS`, button
+  labels, `SOUNDFONT_PLACEHOLDER`, `NO_DESTINATIONS_HINT`,
+  `TEST_NOTE_STATUS`, `NO_MIDI_OUTPUT`); map/reset options reuse
+  `prefs::{MAP_OPTIONS,RESET_OPTIONS}`. Refresh re-emits the CURRENT
+  backend selection (C++ `refillFn` reads the dropdown on every trigger —
+  retriggers enumeration with no new variant). Connection dropdown shows
+  labels, messages ids. Status via shared `refill_hint` + transient test
+  text. Divergence reconciled (T13c): the C++ loop overwrites `sel` per
+  match (`window.cpp:1047-1051`), so LAST wins — the T13a first-match read
+  lost, `select_refilled_port` is `rposition` now, and the view delegates
+  to it (pinned by `refill_preselect_last_match_wins`).
+- D7: label + spin `1..=max(1, bars)` + `Jump` → `JumpToBar(bar)`; spin
+  steps ride `JumpBarEdited` (T13c scratch variant — per-edit `JumpToBar`
+  would jump-on-step and is banned). No-song: the trigger does not open
+  the dialog (C++ early-return, `window.cpp:777-778` — T13c gates via
+  `jump_allowed`). Cancel = chrome `Cancel` → `CloseDialog` (window-X
+  parity — C++ has no Cancel button).
+- D8: from/to labels + spins + `Loop` → `LoopSet{from,to}`; seeds clamp
+  via shared `loop_seeds` (no from≤to enforcement — C++ assigns blindly).
+  Cancel resets the toggle (falls out of `loop_enabled`-derived toggle +
+  `CloseDialog`). U3 (T13c re-verified + pinned): menu Loop emits the same
+  `LoopToggled(true)` (no new variant) — the dialog opens and the toggle
+  renders ON while open (`loop_toggle_forces_on_while_dialog_open_u3`).
+- D6: File/Format/Duration/Initial tempo/Tracks/Division + metadata +
+  per-copyright lines, values bold (Pango `<b>` parity); duration/tempo via
+  shared `format_file_duration_ms` / `format_initial_tempo_us`; copyrights
+  decoded in the builder with the song charset; metadata is
+  `song.metadata` (T13c extended `SongSnapshot`/`LoadedSong` with
+  `metadata` + `copyrights` from `info_map` + `get_text(Copyright)`).
+  Empty state `No file loaded`.
+- D5: full shared `HELP_TEXT` (verbatim `kHelpText`) in a `scrollable` +
+  `OK`. Dialog title lives in `state::dialogs::HELP_TITLE`.
+- D4: hand-built from the shared `ABOUT` table (the stock `widget::about`
+  has no website/support/issues fields and would drop them): name, version
+  (`env!("CARGO_PKG_VERSION")` = C++ `VERSION`), developer, copyright,
+  license display name, comments, website/support/issues links, 2
+  developers, `Original application` credit, 3 links, `Close`. Links ride
+  `OpenUrl` (T13c: `OpenUrl`/`UrlOpened` + `xdg-open` task — OpenURI portal
+  in-sandbox, no finish-args, same coverage as D13).
+- Chrome: `ui/chrome.rs::wrap_modal(base, sheet)` generalizes the T12 FIXED
+  pattern verbatim (D20): `Stack` + full-bounds capturing `mouse_area`
+  (left press/release + touch captured, wheel → `ChooserCancelled`) + dim
+  scrim. Recipe + per-dialog action table in the module docs; composition
+  adopts it with no `app.rs` change. Confirm buttons live in the content
+  views (C++ field order); chrome adds `Cancel` only where C++ closed via
+  window-X unapplied (D3/D7/D8).
+- T12 doc nits (done here): `message.rs` close-commit doc now says the
+  narrowed 17-key `PrefsChanged(merged)` (not raw scratch); the `app.rs`
+  chrome comment now names middle-press alongside right-press as
+  still-propagating (verified in pinned `mouse_area.rs`: middle-press
+  without `on_middle_press` is not captured).
+
+### 12.2 Piano mapping (`ui/piano.rs`, ux §3.8)
+
+- Toolbar: `Tighten keys` checkbox + `Show all` / `Hide unused` (verbatim
+  labels/order) → `PianoTighten` / `PianoShowAll` / `PianoHideUnused`.
+- Canvas `Program` (pinned API verified in framework source by own reads:
+  `Program<Message, Theme, Renderer>`, `State: Default`,
+  `update → Option<Action>` with `Action::publish/and_capture`,
+  `draw → Vec<Geometry>` via `Frame::new` + `fill_rectangle` /
+  `stroke_rectangle` / `fill_text`; core `Event`, `Cursor::position_in`;
+  impl targets `cosmic::Theme/cosmic::Renderer` for the `Element`
+  conversion). Draw loop ports `window.cpp:1969-2051`: `#241f31` bg,
+  `max(48, h/rows)` rows (truncating int division, shared
+  `row_height_px`), white/black passes, palette/velocity/names via shared
+  `highlight_rgba` / `note_label` / `show_note_name`, `Ch N <label>`
+  footers. Canvas text shifts up by its size (top-left vs cairo baseline).
+- U12 FIX: clicks map within the DRAWN `(lo, hi)` via shared
+  `click_to_preview` (white-key quantization preserved); no-song and
+  out-of-keys clicks emit nothing (C++ sends `lo` OOR — deliberate,
+  pinned). Press latches (release emits `PianoPreviewOff` only after a
+  canvas press — the runtime offers every event to `update`). Empty state:
+  the unlit ch0 keyboard draws (C++ parity — no placeholder).
+- Inversion: a corrupt tightened range (`lo > hi`) survives like C++
+  (draws no keys, clicks `None`).
+
+### 12.3 Song-settings manual surfaces (`ui/song_settings.rs`)
+
+`Load song settings` / `Save song settings` buttons (verbatim C++ menu
+order/labels, `window.cpp:1589-1590`) → `SongSettingsLoad` /
+`SongSettingsSave` (arms exist). Always live (C++ parity — the arms no-op
+on an empty song); `has_song` informational. Stubs for T14 menu placement.
+
+Parity-checklist note: the §10 boxes for D3–D8/piano stay unchecked —
+T13c composed everything (shell state, arms, chrome wiring), but §10 waits
+for the final verification pass (T11/T12 convention — their composed rows
+are unchecked too).
+
+## 13. T13c composition — T13a logic + T13b views wired into the app
+
+Shells (all `None`/abandoned-on-switch like the T12 prefs shell; every new
+arm is unit-pinned in `app.rs`):
+
+- Piano page (`View::Piano` → `piano::view` + `piano::view_model`): clicks
+  light the matrix AND send engine-carried `PreviewNote` (D19 refinement —
+  bypasses the player mix, not the engine thread); release sends
+  `PreviewOff` idle-only via `preview_off_targets` (A3, `window.cpp:2098-2116`).
+- D3 (`midi_dlg: Option<MidiSetupDialog>` — whole-`MidiState` scratch +
+  transient test status; engine-mirror fields ride but never commit back):
+  refill/profile/test/apply arms per the T13a plan fns, port-enumeration
+  task (app-side `MidiOutputManager`, precedented + sequencer-safe), D11
+  chooser task, 400 ms `MidiTestNoteOff` sleep (blocking task half — iced
+  ships no timer future and `Tick` only runs while Playing). Apply order
+  `SetSysexReset → Stop{reset:false} → SetSoundFont(non-empty) →
+  SelectOutput` (T13g F1: stop-before-font — C++ `:1172-1175` sets the font
+  before stopping, the port stops first so the font never loads while the
+  old output is still sounding); stop-first only when the plan sends
+  (`midi_apply_no_change_sends_only_sysex_reset` — the only no-change send
+  is the state-only sysex-reset, T13g F2; deliberate improvement over C++'s
+  unconditional `:330` stop, for devil judgment). Test commits
+  the SoundFont verbatim incl. empty (C++ `:1138`), reselects
+  unconditionally (no T12 planner), sends ch0/C4/96 + verbatim statuses.
+- D7/D8 (`jump_bar`/`loop_from`/`loop_to` scratch, seeded on open — D7 to
+  1, the C++ spin's unset min; D8 from `loop_start`/`loop_end` via
+  `loop_seeds`): scratch variants `JumpBarEdited`/`LoopFromEdited`/
+  `LoopToEdited`, confirms clamp via `clamp_jump_bar`/`loop_confirm` (no
+  from≤to enforcement), D7 gated by `jump_allowed`, D8 unconditional (kept
+  deviation). U3: menu Loop emits `LoopToggled(true)`, toggle forced ON
+  while open via the transport VM.
+- D6/D5/D4: sheets over `dialog_sheet()` + `chrome::wrap_modal` (T13c
+  verified it generalizes the T12 chrome verbatim; D2 keeps its inline
+  copy); `Cancel` only for D3/D7/D8. D4 links ride `OpenUrl`/`UrlOpened` +
+  `xdg-open` (OpenURI portal in-sandbox — verified in
+  `/usr/bin/xdg-open:872-899` `open_flatpak`, no finish-args gap).
+- Song-settings arms gated by `manual_song_action_allowed`, ungated by the
+  auto flag (`window.cpp:1405-1408`); the T13b stubs stay unplaced for T14.
+- Test-harness fallout: the `MidiApply` live probe now opens the D3 shell
+  first (`Harness::persist_live_settings`); mid-dialog prefs probes reopen
+  prefs + resend scratch (switches abandon shells).

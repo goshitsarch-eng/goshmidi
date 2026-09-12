@@ -3,18 +3,27 @@
 //! T9 landed the `transport` view + the path-hack-declared `theme` styles;
 //! T10b adds the real `sidebar` view and promotes `theme` to `ui::theme`;
 //! T11b adds the `lyrics` page view + D2 Lyrics prefs rows;
-//! T12b adds the `channels` page view + the D2 `prefs` dialog shell.
+//! T12b adds the `channels` page view + the D2 `prefs` dialog shell;
+//! T13b adds the `piano` page view, the `chrome` modal-wrap helper, the
+//! remaining dialog views (`midi_setup`, `jump_loop`, `info_dialogs`), and
+//! the `song_settings` manual-action stubs.
 
 pub mod channels;
+pub mod chrome;
+pub mod info_dialogs;
+pub mod jump_loop;
 pub mod lyrics;
+pub mod midi_setup;
+pub mod piano;
 pub mod prefs;
 pub mod sidebar;
+pub mod song_settings;
 pub mod theme;
 pub mod transport;
 
 use std::path::PathBuf;
 
-use crate::message::{SettingsState, Status};
+use crate::message::{MidiPort, SettingsState, Status};
 use crate::state::lyrics::AppliedLyricsPrefs;
 
 /// View model for the transport/dashboard/sliders region (ux §3.2–3.4, §3.9).
@@ -248,4 +257,194 @@ pub struct ChannelsViewModel {
 pub struct PrefsViewModel {
     /// Whole-`Settings` dialog scratch (all 30 keys).
     pub scratch: SettingsState,
+}
+
+/// One piano-page row (ux §3.8, T13b contract): a single drawn keyboard for
+/// a visible used channel — number label, lit-key matrix + velocities for
+/// the palette/velocity render, footer label.
+#[derive(Debug, Clone)]
+pub struct PianoRowViewModel {
+    /// 0-based channel; the footer shows `channel + 1` (`window.cpp:2047`).
+    pub channel: u8,
+    /// Footer label (`LoadedSong::channel_labels[ch]` verbatim).
+    pub label: String,
+    /// Lit keys (`PianoState::notes_on[ch]` verbatim, all 128).
+    pub notes_on: [bool; 128],
+    /// Last velocity per key (`PianoState::note_vel[ch]` verbatim).
+    pub note_vel: [u8; 128],
+}
+
+/// View model for the piano page (ux §3.8). Built fresh by
+/// [`piano::view_model`][piano::view_model] (pure over `PianoState` + song +
+/// settings) on every `view()` and passed BY VALUE to `ui::piano::view`; ux
+/// must not reach into `App` directly.
+///
+/// By value (not `&'a`) deliberately, same rationale as
+/// [`TransportViewModel`]: a `view(&model)` signature borrowing a fresh
+/// per-frame model cannot return its `Element` past the local, so the
+/// reference form is uncallable here — owned data moves into the canvas
+/// `Program` and the `Element` keeps the caller's lifetime.
+///
+/// Field contract (frozen for T13; additions need arch+ux sign-off):
+/// * `rows` holds drawn rows ONLY: `[ch0]` when no song is loaded (C++
+///   `window.cpp:1995` empty-song rule), otherwise used-and-visible
+///   channels in channel order; the canvas renders every row it is given;
+/// * `lo`/`hi` are the drawn note range (`21..=108`, or the tightened
+///   `lowest-2..=highest+2` clamped to `0..=127`; a corrupt inverted song
+///   range survives like C++ — draws no keys, clicks yield `None`)
+///   — clicks quantize to white keys WITHIN this range (U12 FIX);
+/// * `tighten` is the toolbar checkbox state; `highlight_palette`,
+///   `single_color`, `velocity_color`, `names_visibility`, `octave_subscript`
+///   are the D2 Piano settings rows verbatim (the canvas parses
+///   `single_color` under `gdk_rgba_parse` parity, gray on garbage);
+/// * `has_song` selects the click rule (dead with no song — C++
+///   `window.cpp:2060-2064` — while the ch0 keyboard still draws).
+#[derive(Debug, Clone)]
+pub struct PianoViewModel {
+    /// Drawn rows (empty-song `[ch0]` vs used-and-visible, channel order).
+    pub rows: Vec<PianoRowViewModel>,
+    /// Drawn range start (`21`, or tightened `lowest - 2`).
+    pub lo: u8,
+    /// Drawn range end (`108`, or tightened `highest + 2`).
+    pub hi: u8,
+    /// `Tighten keys` checkbox state.
+    pub tighten: bool,
+    /// Note-highlighting palette 0–3 (`highlightPalette`).
+    pub highlight_palette: i32,
+    /// Single-mode color text (`singleColor`, parsed at the canvas).
+    pub single_color: String,
+    /// Velocity→tint switch (`velocityColor`).
+    pub velocity_color: bool,
+    /// Note-names mode 0–3 (`namesVisibility`).
+    pub names_visibility: i32,
+    /// Octave-subscript flag (`octaveSubscript`, render no-op like C++).
+    pub octave_subscript: bool,
+    /// Whether a song is loaded (click-dead switch; the keyboard draws).
+    pub has_song: bool,
+}
+
+/// View model for the D3 MIDI Setup dialog (ux D3). Built fresh by the
+/// pure [`midi_setup::view_model`][midi_setup::view_model] over `MidiState`
+/// and the transient test status, and passed BY VALUE to
+/// `ui::midi_setup::view`; ux must not reach into `App` directly.
+///
+/// Field contract (frozen for T13; additions need arch+ux sign-off):
+/// * `backends` are the manager names in order; `backend_selected` is the
+///   current backend's index (unknown → 0); `backend_name` is the selected
+///   name the Refresh button re-emits (refill retrigger, no new variant);
+/// * `ports` are the last-enumerated `(id, label)` pairs; `port_selected`
+///   is the C++ refill preselect (last id-or-substring match, else 0;
+///   `None` when the list is empty);
+/// * `advanced`/`map`/`reset`/`soundfont` mirror the dialog widgets
+///   (map 0–2, reset 0–4, clamped); `status` is the dim hint line (the
+///   no-destinations hint when `ports` is empty, the transient test result
+///   after Test, else empty).
+#[derive(Debug, Clone)]
+pub struct MidiSetupViewModel {
+    /// Backend names in manager order.
+    pub backends: Vec<String>,
+    /// Backend dropdown selection.
+    pub backend_selected: usize,
+    /// Selected backend name (re-emitted by Refresh).
+    pub backend_name: String,
+    /// Last-enumerated ports (label shown, id messaged).
+    pub ports: Vec<MidiPort>,
+    /// Connection dropdown selection (`None` when empty).
+    pub port_selected: Option<usize>,
+    /// `Show all ports` checkbox state.
+    pub advanced: bool,
+    /// Instrument map 0–2.
+    pub map: u8,
+    /// SysEx reset 0–4.
+    pub reset: u8,
+    /// SoundFont entry text (deferred commit — Test/Apply carry it).
+    pub soundfont: String,
+    /// Dim status line (hints + transient test result).
+    pub status: String,
+}
+
+/// View model for the D7 jump-to-bar dialog (ux D7): the spin scratch value
+/// plus its range. Built fresh by
+/// [`jump_loop::jump_view_model`][jump_loop::jump_view_model] (pure clamp)
+/// and passed BY VALUE to `ui::jump_loop::jump_view`.
+///
+/// Field contract (frozen for T13; additions need arch+ux sign-off):
+/// * `bar` is the scratch value, clamped to `1..=last_bar`;
+/// * `last_bar` is `max(1, bars)` (C++ `std::max(1, lastBar())`).
+#[derive(Debug, Clone, Copy)]
+pub struct JumpViewModel {
+    /// Scratch bar number (`1..=last_bar`).
+    pub bar: u32,
+    /// Range end (`max(1, bars)`).
+    pub last_bar: u32,
+}
+
+/// View model for the D8 loop-range dialog (ux D8): the from/to spin scratch
+/// values plus their range. Built fresh by
+/// [`jump_loop::loop_view_model`][jump_loop::loop_view_model] (pure clamp)
+/// and passed BY VALUE to `ui::jump_loop::loop_view`.
+///
+/// Field contract (frozen for T13; additions need arch+ux sign-off):
+/// * `from`/`to` are the scratch values, each clamped to `1..=last_bar`
+///   (C++ seeds them from `loopStart/loopEnd`; the spins clamp);
+/// * `last_bar` is `max(1, bars)` (C++ `std::max(1, lastBar())`).
+#[derive(Debug, Clone, Copy)]
+pub struct LoopViewModel {
+    /// Scratch `From bar` value (`1..=last_bar`).
+    pub from: u32,
+    /// Scratch `To bar` value (`1..=last_bar`).
+    pub to: u32,
+    /// Range end (`max(1, bars)`).
+    pub last_bar: u32,
+}
+
+/// Loaded-song half of the D6 file-information dialog (ux D6): every C++
+/// body row in order — File/Format/Duration/Initial tempo/Tracks/Division,
+/// then the RIFF INFO metadata lines, then one line per copyright record.
+#[derive(Debug, Clone)]
+pub struct FileInfoBody {
+    /// Song file name (`currentFile`).
+    pub file: String,
+    /// File format (`fileFormat`).
+    pub format: String,
+    /// Duration `HH:MM:SS.mmm` (`durationString`).
+    pub duration: String,
+    /// Initial tempo `%.1f bpm` (`initialTempo`, 120 fallback).
+    pub tempo: String,
+    /// Track count (`getNumTracks`).
+    pub tracks: i32,
+    /// Division (`division`).
+    pub division: i32,
+    /// RIFF INFO `(key, value)` lines (`metadataInfo`, map order).
+    pub metadata: Vec<(String, String)>,
+    /// Decoded copyright records (`getText(Copyright)`).
+    pub copyrights: Vec<String>,
+}
+
+/// View model for the D6 file-information dialog (ux D6). Built fresh by
+/// [`info_dialogs::file_info_view_model`][info_dialogs::file_info_view_model]
+/// (pure over the song + metadata) and passed BY VALUE to
+/// `ui::info_dialogs::file_info_view`.
+///
+/// Field contract (frozen for T13; additions need arch+ux sign-off):
+/// * `body` is `Some` with a song loaded, `None` without (the empty state
+///   renders `No file loaded`, `window.cpp:753-754`).
+#[derive(Debug, Clone)]
+pub struct FileInfoViewModel {
+    /// Body rows (`None` → the `No file loaded` empty state).
+    pub body: Option<FileInfoBody>,
+}
+
+/// View model for the song-settings manual action stubs (ux §4
+/// `app.save/load-settings`): the two C++ File-menu entries as buttons.
+/// Passed BY VALUE to `ui::song_settings::view`.
+///
+/// Field contract (frozen for T13; additions need arch+ux sign-off):
+/// * the buttons stay live with no song (C++ parity — the menu items are
+///   never desensitized; the arms no-op on an empty song,
+///   `window.cpp:633-635,663-665`); `has_song` is informational only.
+#[derive(Debug, Clone, Copy)]
+pub struct SongSettingsViewModel {
+    /// Whether a song is loaded (informational; gates nothing).
+    pub has_song: bool,
 }

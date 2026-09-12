@@ -32,7 +32,7 @@ use dmidiplayer::app::{App, Flags};
 use dmidiplayer::config::paths::{Env, Paths};
 use dmidiplayer::config::settings::Settings;
 use dmidiplayer::config::song::SongSettings;
-use dmidiplayer::message::{Message, PlayerEvent, SongSnapshot};
+use dmidiplayer::message::{Dialog, Message, PlayerEvent, SongSnapshot};
 
 /// Process-wide temp HOME, created and installed exactly once per test
 /// binary (each `tests/*.rs` file is its own process, so binaries never
@@ -136,6 +136,8 @@ impl Harness {
             highest_note: 96,
             charset: "UTF-8".to_string(),
             texts: Vec::new(),
+            metadata: Vec::new(),
+            copyrights: Vec::new(),
         }
     }
 
@@ -170,10 +172,23 @@ impl Harness {
         );
     }
 
-    /// Persist via `MidiApply` (which saves the config but never touches
-    /// `lastPlayList`) and read `lastPlayList` back through the real reader.
-    pub fn persisted_last_play_list(&mut self) -> String {
+    /// Persist the LIVE settings without touching `lastPlayList` (the
+    /// live probe): open the D3 shell and apply it unchanged — a no-change
+    /// Apply saves + closes while sending only the state-only sysex-reset
+    /// (no `Stop`, no reselect — T13g F2; unit-pinned by
+    /// `midi_apply_no_change_sends_only_sysex_reset`). Dialog switches
+    /// abandon other shells, so callers with an open prefs shell must
+    /// reopen it (and resend scratch) afterwards.
+    pub fn persist_live_settings(&mut self) {
+        self.upd(Message::ShowDialog(Dialog::MidiSetup));
         self.upd(Message::MidiApply);
+    }
+
+    /// Persist via [`Harness::persist_live_settings`] (which saves the
+    /// config but never touches `lastPlayList`) and read `lastPlayList`
+    /// back through the real reader.
+    pub fn persisted_last_play_list(&mut self) -> String {
+        self.persist_live_settings();
         let env = Env::for_test(self.home, self.home, self.home, self.home);
         let paths = Paths::with_env(env, Some(Some(self.config.clone())));
         Settings::load(&paths).last_play_list

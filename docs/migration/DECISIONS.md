@@ -202,6 +202,11 @@ simplicity/maintainability > COSMIC conventions.
   bridge code. `PreviewNote/Off` stay app-only (A3 bypass); `NoteOff` gains
   `vel` (C++ parity) when message.rs adopts core's types in T9.
 
+  Amendment (T13): "app-only" refined to mean **bypasses the player mix**,
+  not "no engine command" — outputs live engine-side, so the bypass still
+  crosses the thread via `EngineCommand::PreviewNote/PreviewOff`, whose
+  handlers touch no mute/pitch/sequencing state (C++ `:2098-2116` parity).
+
 ## D20. Prefs overlay modality + close-commit shape (devil T12 OBJECT → T12f)
 
 - Question: the prefs overlay claimed "modal" but iced `Stack` propagates
@@ -219,3 +224,20 @@ simplicity/maintainability > COSMIC conventions.
   scratch D3 keys are dropped at prefs close (C++ prefs has no output
   selection; D3/T13 owns it) — the old backend-switch test pinned an
   unreachable path. T13 dialogs copy the (a) chrome pattern.
+
+## D21. T13 safe improvements over C++ (stop-first, OOR audition, send order)
+
+- Options: (a) bug-for-bug C++ parity; (b) deliberate improvements where C++
+  is provably interruption-prone or audibly wrong, each pinned by tests.
+- Choice: (b), three instances (all devil-judged parity-safe):
+  1. D3 Apply stops the engine only when the reseat plan sends something
+     (C++ stops unconditionally) — no-change/map-only Applies never
+     interrupt playback; end state identical (C++ re-opens the port
+     unconditionally, `applyInstrumentMap` is labels-only).
+  2. Piano OOR clicks emit silence (C++ auditions phantom `lo`) — silence
+     is strictly better than an audibly wrong note.
+  3. Apply sends `SetSysexReset → Stop → SetSoundFont → SelectOutput`
+     (C++ sets the font before stopping); behaviorally equivalent since
+     both sides stage the font with `sfload` at open.
+- Why: each changes only an interruption/artifact, never the end state, and
+  each is pinned (playing-state no-Stop e2e, both-axes OOR pins, order doc).

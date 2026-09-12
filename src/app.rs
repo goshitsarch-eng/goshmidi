@@ -29,23 +29,31 @@ use crate::config::paths::Paths;
 use crate::config::settings::Settings;
 use crate::config::song::{SongChannelSettings, SongSettings};
 use crate::core::event::{MIDI_CHANNELS, clamp_midi, is_supported_midi_file};
+use crate::core::output::MidiOutputManager;
 use crate::core::player::{EngineEventReceiver, EngineHandle, spawn_engine};
 use crate::core::sequence::Sequence;
 use crate::message::{
-    Dialog, EngineCommand, LoadedPlaylist, LoadedSong, Message, PlayerEvent, RepeatMode,
+    Dialog, EngineCommand, LoadedPlaylist, LoadedSong, Message, MidiPort, PlayerEvent, RepeatMode,
     SettingsState, Status, View,
 };
 use crate::state::channels::{self, ChannelState};
+use crate::state::dialogs::{
+    clamp_jump_bar, jump_allowed, loop_confirm, loop_seeds, manual_song_action_allowed,
+};
 use crate::state::lyrics::{
     AppliedLyricsPrefs, LyricsState, TYPE_OPTION_NAMES, codec_option_index, track_options,
 };
-use crate::state::midi::{MidiState, OutputCommit};
-use crate::state::piano::PianoState;
+use crate::state::midi::{
+    MidiState, NO_MIDI_OUTPUT, OutputCommit, TEST_NOTE_STATUS, plan_test_note, profile_for_port,
+    select_refilled_port,
+};
+use crate::state::piano::{PianoState, PreviewNote, preview_off_targets};
 use crate::state::playback::{self, PlaybackState};
 use crate::state::playlist::PlaylistState;
 use crate::ui::{
     ChannelRowViewModel, ChannelsViewModel, LyricsViewModel, PlaylistViewModel, PrefsViewModel,
-    TransportViewModel, lyrics, prefs, sidebar, transport,
+    TransportViewModel, chrome, info_dialogs, jump_loop, lyrics, midi_setup, piano, prefs, sidebar,
+    transport,
 };
 // Aliased: `channels` already names the mix-state module above.
 use crate::ui::channels as channels_view;
@@ -87,6 +95,18 @@ const LYRICS_SAVE_INITIAL_NAME: &str = "lyrics.txt";
 const PRINT_TEMP_PREFIX: &str = "goshmidi-lyrics-";
 /// D13 opener command (DECISIONS D6 choice (a), ux D13 alternative (a)).
 const PRINT_OPENER: &str = "xdg-open";
+/// D4 link opener: the same `xdg-open` mechanism as D13 (in-sandbox it
+/// forwards URLs through the OpenURI portal — `/usr/bin/xdg-open:872-899`
+/// `open_flatpak` — so no finish-args are needed, like D13).
+const URL_OPENER: &str = "xdg-open";
+/// D4 sheet title (the C++ `AdwAboutDialog` sets no window title — the
+/// content headings carry it; the port's `dialog()` needs one, so the File
+/// menu label `About Gosh MIDI Player` (`window.cpp:1612`) doubles here).
+const ABOUT_SHEET_TITLE: &str = "About Gosh MIDI Player";
+/// D11 dialog title + filter (`window.cpp:1094-1100` verbatim).
+const SOUNDFONT_DIALOG_TITLE: &str = "Choose SoundFont";
+const SOUNDFONT_FILTER_LABEL: &str = "SoundFont";
+const SOUNDFONT_FILTER_GLOBS: [&str; 4] = ["*.sf2", "*.sf3", "*.SF2", "*.SF3"];
 /// Wayland drop mime accepted by the `dnd_destination` wrapper (arch §2.3).
 const DND_URI_LIST_MIME: &str = "text/uri-list";
 
@@ -331,6 +351,31 @@ fn spawn_opener(cmd: &str, path: &Path) -> Result<(), String> {
         .map_err(|why| format!("Could not print lyrics: {why}"))
 }
 
+/// D4 link half: hand a URL to the system opener (detached spawn, same
+/// `xdg-open` mechanism + sandbox coverage as D13 — see `URL_OPENER`).
+fn open_url_via_opener(url: &str) -> Result<(), String> {
+    std::process::Command::new(URL_OPENER)
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|why| format!("Could not open {url}: {why}"))
+}
+
+/// D3 refill half (C++ `refillFn`, `window.cpp:1032-1060`): enumerate one
+/// backend's ports. App-side construction is precedented (`MidiState::new`
+/// already builds a manager here) and safe: `AlsaOutput::new` degrades to
+/// an empty list without a sequencer, `FluidOutput::new` performs no FFI.
+/// Unknown backends enumerate the front backend (manager A6c rule).
+fn enumerate_ports(backend: &str, advanced: bool) -> Vec<MidiPort> {
+    let manager = MidiOutputManager::new();
+    manager
+        .find(backend)
+        .map_or_else(Vec::new, |out| out.ports(advanced))
+}
+
 /// Pure half of `dbus_activation`: map a forwarded second launch to file
 /// paths. `Activate` (bare second launch) → no paths, present-only;
 /// `Open` → `Url`s with non-file entries skipped (C++ `g_file_get_path`
@@ -377,10 +422,34 @@ pub struct App {
     /// `ShowDialog(Preferences)`, edited scratch-only, committed once +
     /// cleared on close.
     prefs: Option<(PrefsViewModel, LyricsPickerModels)>,
+    /// D3 MIDI Setup dialog shell (T13c): `None` while shut; `Some` while
+    /// open — dialog-local scratch (C++ `Widgets`, `window.cpp:929-1187`)
+    /// plus the transient test status. Seeded from live `midi` on
+    /// `ShowDialog(MidiSetup)`; Test/Apply commit to settings + engine;
+    /// close abandons. Live `midi` mirrors only move on commit.
+    midi_dlg: Option<MidiSetupDialog>,
+    /// D7 jump scratch: bar number, seeded to 1 on open (the C++ spin is
+    /// never `set_value`d, so it shows the range min, `window.cpp:790`).
+    jump_bar: u32,
+    /// D8 loop scratch: from/to bars, seeded from `loop_start`/`loop_end`
+    /// on open (C++ `window.cpp:852-853`, clamped like the spins).
+    loop_from: u32,
+    loop_to: u32,
     view: View,
     toasts: Vec<String>,
     /// Autoplay flag for the in-flight `Load` (consumed by `Opened`).
     pending_autoplay: bool,
+}
+
+/// D3 dialog shell: dialog-local scratch + the transient test status line.
+/// The scratch is a whole `MidiState` clone so the D3 view builder (which
+/// takes `&MidiState`) applies unchanged; the engine-mirror fields
+/// (`announce_applied`, `fallback_stage`, `output_ok_once`) ride along but
+/// are never read from the scratch and never committed back — Apply/Test
+/// copy exactly the 7 dialog fields.
+pub struct MidiSetupDialog {
+    scratch: MidiState,
+    test_status: Option<String>,
 }
 
 impl Drop for App {
@@ -783,33 +852,129 @@ impl App {
     /// state either.
     fn apply_piano_prefs(&self) {}
 
-    /// D3 Apply (`window.cpp:1150-1187` + `connectOutput`, `window.cpp:328-349`):
-    /// commit soundFont/advanced/map/reset, push reset + SoundFont to the
-    /// engine, select the output (success toast on `OutputChanged`),
-    /// persist (save-point row 2).
+    /// D3 Apply (`window.cpp:1158-1180` + `connectOutput`, `window.cpp:328-349`):
+    /// commit the scratch soundFont/advanced/map/reset (verbatim, C++
+    /// `:1168-1171`), send `SetSysexReset` → `Stop{reset:false}` (only when
+    /// the plan sends, T13a) → `SetSoundFont` (non-empty only, T12 apply
+    /// rule) → `SelectOutput`, announce the reselect (success toast on
+    /// `OutputChanged`), persist (save-point row 2), and close.
+    ///
+    /// Stop-first delta (T13a, for devil judgment): C++ stops
+    /// unconditionally — Apply always calls `connectOutput`, whose first
+    /// statement is `m_player.stop()` (`window.cpp:330`). The port plans
+    /// through the T12 reseat planner and stops only when the plan actually
+    /// sends something (`stop_first`), so a no-change Apply — and a
+    /// map/reset-only Apply — never interrupts playback. A deliberate
+    /// improvement; the send order differs from C++ (`:1172-1175` sets the
+    /// font BEFORE stopping) in that the port stops first (T13g F1 — the
+    /// old wording claimed the C++ order): the font never loads while the
+    /// old output is still sounding.
+    ///
+    /// No shell (stale message) → silent no-op, prefs precedent.
     fn apply_midi_setup(&mut self) {
-        self.settings.sound_font = self.midi.soundfont.clone();
-        self.settings.advanced_ports = self.midi.advanced;
-        self.settings.instrument_map = i32::from(self.midi.instrument_map);
-        self.settings.sysex_reset = i32::from(self.midi.sysex_reset);
-        self.engine
-            .send(EngineCommand::SetSysexReset(self.midi.sysex_reset));
-        if !self.midi.soundfont.is_empty() {
+        let Some(dlg) = self.midi_dlg.as_ref() else {
+            return;
+        };
+        // Clone the scratch pieces first: the planner mutates live `midi`
+        // below, and the shell borrow must end before that.
+        let reset = dlg.scratch.sysex_reset;
+        let soundfont = dlg.scratch.soundfont.clone();
+        let backend = dlg.scratch.backend.clone();
+        let port = dlg.scratch.port.clone();
+        let advanced = dlg.scratch.advanced;
+        let map = dlg.scratch.instrument_map;
+        self.settings.sound_font = soundfont.clone();
+        self.settings.advanced_ports = advanced;
+        self.settings.instrument_map = i32::from(map);
+        self.settings.sysex_reset = i32::from(reset);
+        // T13d F1: sync the map/reset live mirrors (the D3 seed reads them —
+        // without this a reopen seeds the stale values and a no-change
+        // Apply clobbers the commit). The other four mirrors moved via the
+        // planner below; these two have no planner leg (render/engine-only).
+        self.midi.instrument_map = map;
+        self.midi.sysex_reset = reset;
+        self.engine.send(EngineCommand::SetSysexReset(reset));
+        let plan = self.midi.plan_output_reseat(
+            OutputCommit {
+                backend: &self.midi.backend.clone(),
+                port: &self.midi.port.clone(),
+                soundfont: &self.midi.soundfont.clone(),
+                advanced: self.midi.advanced,
+            },
+            OutputCommit {
+                backend: &backend,
+                port: &port,
+                soundfont: &soundfont,
+                advanced,
+            },
+        );
+        if plan.stop_first() {
+            self.engine.send(EngineCommand::Stop { reset: false });
+        }
+        if let Some(font) = plan.sound_font {
+            self.engine.send(EngineCommand::SetSoundFont(font));
+        }
+        if plan.select_output {
+            // User-initiated apply: announce the result (unlike the silent
+            // startup select). Set ONLY with a reselect — a bare flag with
+            // no `OutputChanged` coming would mis-attribute a later event.
+            self.midi.announce_applied = true;
+            let backend = self.midi.backend.clone();
+            let port = self.midi.port.clone();
             self.engine
-                .send(EngineCommand::SetSoundFont(self.midi.soundfont.clone()));
+                .send(EngineCommand::SelectOutput { backend, port });
         }
         self.settings.last_output_backend = self.midi.backend.clone();
         self.settings.last_output_connection = self.midi.port.clone();
-        // User-initiated apply: announce the result (unlike the silent
-        // startup select).
-        self.midi.announce_applied = true;
-        let backend = self.midi.backend.clone();
-        let port = self.midi.port.clone();
-        self.engine
-            .send(EngineCommand::SelectOutput { backend, port });
+        // C++ `applyInstrumentMap` (`:1176`) relabels the patch dropdowns;
+        // the port relabels render-time from `settings.instrument_map`
+        // (T12b) — nothing to send.
         if self.settings.save(&self.paths).is_err() {
             // Silent, as in C++.
         }
+        self.midi_dlg = None;
+        self.dialog = None;
+    }
+
+    /// D3 Test note (`window.cpp:1130-1156`): commit the scratch SoundFont
+    /// entry verbatim (even empty — C++ `:1138` assigns unconditionally),
+    /// `Stop{reset:false}` → `SetSoundFont` → unconditional
+    /// `SelectOutput` (the test path does NOT use the conditional T12
+    /// planner — its job is to audition the live selection), then Middle C
+    /// (ch 0, note 60, vel 96) as an engine-carried raw `PreviewNote` + the
+    /// 400 ms `MidiTestNoteOff` sleep. Status `TEST_NOTE_STATUS`
+    /// optimistically; a failing reselect overwrites it with
+    /// `NO_MIDI_OUTPUT` in the `OutputChanged` arm (C++ `:1143-1145`). The
+    /// dialog stays open (C++ destroys nothing on Test). No shell (stale
+    /// message) → silent no-op, prefs precedent.
+    fn test_midi_note(&mut self) -> Task<Message> {
+        let Some(dlg) = self.midi_dlg.as_mut() else {
+            return Task::none();
+        };
+        // The auditioned port is the DROPDOWN selection (C++ `:1135-1137`
+        // reads `plist[pi].id`), i.e. the refill preselect over the scratch
+        // want — not the want itself.
+        let selected = select_refilled_port(&dlg.scratch.ports, &dlg.scratch.port);
+        let port_id = dlg
+            .scratch
+            .ports
+            .get(selected)
+            .map_or_else(String::new, |port| port.id.clone());
+        let plan = plan_test_note(&dlg.scratch.backend, &port_id, &dlg.scratch.soundfont);
+        self.settings.sound_font = plan.soundfont.clone();
+        self.midi.soundfont = plan.soundfont.clone();
+        self.engine.send(EngineCommand::Stop { reset: false });
+        self.engine
+            .send(EngineCommand::SetSoundFont(plan.soundfont));
+        self.midi.announce_applied = true;
+        let (backend, port) = plan.select_output;
+        self.engine
+            .send(EngineCommand::SelectOutput { backend, port });
+        let (ch, note, vel) = plan.note_on;
+        self.engine
+            .send(EngineCommand::PreviewNote { ch, note, vel });
+        dlg.test_status = Some(TEST_NOTE_STATUS.to_string());
+        Self::test_note_off_task(ch, note, plan.off_delay_ms)
     }
 
     // -- song settings ---------------------------------------------------------
@@ -1112,6 +1277,149 @@ impl App {
         cosmic::task::future(async move { Message::LyricsPrinted(print_lyrics_via_opener(&text)) })
     }
 
+    /// D3 refill `Task` (C++ `refillFn`, `window.cpp:1032-1060`): enumerate
+    /// one backend's ports off the UI thread; results arrive as
+    /// `MidiPortsRefreshed`. Relaunched on dialog open, backend select,
+    /// `Show all` toggle, and Refresh (C++ `:1062-1077` — every trigger
+    /// re-reads the backend dropdown, so Refresh re-emits the current
+    /// backend with no new variant). No single-flight assumption: each
+    /// task carries its requesting backend+advanced as echo (T13g F4), so
+    /// two rapid switches landing out of order (each task blocks on ALSA
+    /// enumeration) resolve by dropping the stale arrival; C++ is
+    /// synchronous and has no equivalent race.
+    fn midi_enumerate_task(backend: String, advanced: bool) -> Task<Message> {
+        cosmic::task::future(async move {
+            let ports = enumerate_ports(&backend, advanced);
+            Message::MidiPortsRefreshed {
+                backend,
+                advanced,
+                ports,
+            }
+        })
+    }
+
+    /// D11 portal chooser `Task` (C++ `window.cpp:1091-1119`): single-file
+    /// open with the SoundFont filter. `Ok` commits the path into the D3
+    /// scratch entry (deferred — Test/Apply carry it); portal cancel maps
+    /// to the silent `ChooserCancelled`; any other error toasts.
+    fn soundfont_browse_task() -> Task<Message> {
+        cosmic::task::future(async move {
+            use cosmic::dialog::file_chooser::{FileFilter, open};
+            let mut filter = FileFilter::new(SOUNDFONT_FILTER_LABEL);
+            for glob in SOUNDFONT_FILTER_GLOBS {
+                filter = filter.glob(glob);
+            }
+            let dialog = open::Dialog::new()
+                .title(SOUNDFONT_DIALOG_TITLE)
+                .filter(filter);
+            match dialog.open_file().await {
+                Ok(response) => {
+                    let url = response.url().clone();
+                    match url.to_file_path() {
+                        Ok(path) => Message::MidiSoundFontChosen(Ok(path)),
+                        Err(()) => Message::MidiSoundFontChosen(Err(format!(
+                            "Cannot open {url}: not a local file"
+                        ))),
+                    }
+                }
+                Err(cosmic::dialog::file_chooser::Error::Cancelled) => Message::ChooserCancelled,
+                Err(why) => {
+                    Message::MidiSoundFontChosen(Err(format!("Could not choose SoundFont: {why}")))
+                }
+            }
+        })
+    }
+
+    /// Test-note release `Task` (C++ `g_timeout_add(400, …)`,
+    /// `window.cpp:1148-1153`): sleep, then resolve as `MidiTestNoteOff`.
+    /// A blocking sleep inside the future, like the other task blocking
+    /// halves (iced ships no timer future in the pinned rev; the 50 ms
+    /// `Tick` subscription only runs while Playing, so it cannot carry an
+    /// idle test-note release).
+    fn test_note_off_task(ch: u8, note: u8, delay_ms: u64) -> Task<Message> {
+        cosmic::task::future(async move {
+            std::thread::sleep(Duration::from_millis(delay_ms));
+            Message::MidiTestNoteOff { ch, note }
+        })
+    }
+
+    /// D4 link `Task`: hand the URL to the opener; `Ok` is silent, spawn
+    /// failures toast via `UrlOpened` (D13 `LyricsPrinted` precedent).
+    fn open_url_task(url: String) -> Task<Message> {
+        cosmic::task::future(async move { Message::UrlOpened(open_url_via_opener(&url)) })
+    }
+
+    /// `ShowDialog` body (returns the D3 enumeration task on MidiSetup;
+    /// `Task::none()` everywhere else). Opening any dialog abandons the
+    /// other shells uncommitted (prefs + D3 scratch — commit rides close /
+    /// Apply, never a switch). D7 gates on a loaded song (C++ `showJump`
+    /// early-return, `window.cpp:777-778`); D8 opens unconditionally (the
+    /// documented `LoopToggled` deviation — a silently dead toggle is a
+    /// trap, and U3 forces the menu path through the same arm).
+    fn open_dialog(&mut self, dialog: Dialog) -> Task<Message> {
+        // T13g F5: the D7 no-song gate runs BEFORE any shell is touched —
+        // a gated jump is a pure no-op (a prefs/D3 shell open underneath
+        // survives; the gate used to run after `self.prefs = None`).
+        if dialog == Dialog::JumpToBar && !jump_allowed(self.song.is_some()) {
+            return Task::none();
+        }
+        if dialog == Dialog::Preferences {
+            self.midi_dlg = None;
+            self.prefs = Some((
+                PrefsViewModel {
+                    scratch: self.settings.clone(),
+                },
+                LyricsPickerModels::from_settings(&self.settings),
+            ));
+            self.dialog = Some(dialog);
+            return Task::none();
+        }
+        self.prefs = None;
+        match dialog {
+            Dialog::MidiSetup => {
+                let scratch = self.midi.clone();
+                let task = Self::midi_enumerate_task(scratch.backend.clone(), scratch.advanced);
+                self.midi_dlg = Some(MidiSetupDialog {
+                    scratch,
+                    test_status: None,
+                });
+                self.dialog = Some(dialog);
+                task
+            }
+            Dialog::JumpToBar => {
+                // Gated at the top of `open_dialog` (T13g F5) — reaching
+                // here means a song is loaded.
+                self.midi_dlg = None;
+                self.jump_bar = 1;
+                self.dialog = Some(dialog);
+                Task::none()
+            }
+            Dialog::Loop => {
+                self.midi_dlg = None;
+                self.open_loop_dialog();
+                Task::none()
+            }
+            _ => {
+                self.midi_dlg = None;
+                self.dialog = Some(dialog);
+                Task::none()
+            }
+        }
+    }
+
+    /// D8 open half, shared by `ShowDialog(Loop)` and `LoopToggled(true)`
+    /// (the U3 menu path emits the same variant — no new variant): seed the
+    /// from/to scratch from `loop_start`/`loop_end` (C++ `:852-853`, spins
+    /// clamp) and open. Unconditional on song presence (documented
+    /// deviation — see `open_dialog`).
+    fn open_loop_dialog(&mut self) {
+        let bars = self.song.as_ref().map_or(0, |song| song.bars);
+        let (from, to) = loop_seeds(self.playback.loop_start, self.playback.loop_end, bars);
+        self.loop_from = from;
+        self.loop_to = to;
+        self.dialog = Some(Dialog::Loop);
+    }
+
     /// D9 result: replace items, record the source in both states, no
     /// autoplay (unlike D1). `Err` is a real I/O error — portal cancel maps
     /// to the silent `ChooserCancelled`, never here — so it gets a toast
@@ -1123,6 +1431,134 @@ impl App {
         self.playlist.set_items(list.items);
         self.playlist.set_source(list.source);
         self.playlist.set_dirty(false);
+    }
+
+    /// T13 dialog sheets (D3/D7/D8/D6/D5/D4): fully-built `dialog()` sheets
+    /// for `chrome::wrap_modal`. `None` renders the base alone (no dialog,
+    /// D2 (inline above), portal-chooser dialogs (D9/D10/D11/D12 — tasks,
+    /// no retained modal state), or a stale shell).
+    fn dialog_sheet(&self) -> Option<Element<'_, Message>> {
+        match self.dialog {
+            Some(Dialog::MidiSetup) => {
+                let dlg = self.midi_dlg.as_ref()?;
+                let vm = midi_setup::view_model(&dlg.scratch, dlg.test_status.as_deref());
+                Some(
+                    cosmic::widget::dialog()
+                        .title(midi_setup::TITLE)
+                        .control(midi_setup::view(vm))
+                        .secondary_action(
+                            cosmic::widget::button::standard("Cancel")
+                                .on_press(Message::CloseDialog),
+                        )
+                        .into(),
+                )
+            }
+            Some(Dialog::JumpToBar) => {
+                let bars = self.song.as_ref().map_or(0, |song| song.bars);
+                let vm = jump_loop::jump_view_model(self.jump_bar, bars);
+                Some(
+                    cosmic::widget::dialog()
+                        .title(jump_loop::JUMP_TITLE)
+                        .control(jump_loop::jump_view(vm, Message::JumpBarEdited))
+                        .secondary_action(
+                            cosmic::widget::button::standard("Cancel")
+                                .on_press(Message::CloseDialog),
+                        )
+                        .into(),
+                )
+            }
+            Some(Dialog::Loop) => {
+                let bars = self.song.as_ref().map_or(0, |song| song.bars);
+                let vm = jump_loop::loop_view_model(self.loop_from, self.loop_to, bars);
+                Some(
+                    cosmic::widget::dialog()
+                        .title(jump_loop::LOOP_TITLE)
+                        .control(jump_loop::loop_view(
+                            vm,
+                            Message::LoopFromEdited,
+                            Message::LoopToEdited,
+                        ))
+                        .secondary_action(
+                            cosmic::widget::button::standard("Cancel")
+                                .on_press(Message::CloseDialog),
+                        )
+                        .into(),
+                )
+            }
+            Some(Dialog::FileInfo) => {
+                let metadata: &[(String, String)] =
+                    self.song.as_ref().map_or(&[], |song| &song.metadata);
+                let vm = info_dialogs::file_info_view_model(self.song.as_ref(), metadata);
+                Some(
+                    cosmic::widget::dialog()
+                        .title(info_dialogs::FILE_INFO_TITLE)
+                        .control(info_dialogs::file_info_view(vm))
+                        .into(),
+                )
+            }
+            Some(Dialog::Help) => Some(
+                cosmic::widget::dialog()
+                    .title(crate::state::dialogs::HELP_TITLE)
+                    .control(info_dialogs::help_view())
+                    .into(),
+            ),
+            Some(Dialog::About) => Some(
+                cosmic::widget::dialog()
+                    .title(ABOUT_SHEET_TITLE)
+                    .control(info_dialogs::about_view(|url: &str| {
+                        Message::OpenUrl(url.to_string())
+                    }))
+                    .into(),
+            ),
+            _ => None,
+        }
+    }
+
+    /// D2 prefs sheet: the T12 inline modal chrome, verbatim (kept inline —
+    /// see the `view()` note; `wrap_modal` generalizes this shape).
+    fn prefs_sheet<'a>(
+        base: Element<'a, Message>,
+        vm: &'a PrefsViewModel,
+        pickers: &'a LyricsPickerModels,
+    ) -> Element<'a, Message> {
+        let sheet: Element<'a, Message> = cosmic::iced::widget::mouse_area(
+            cosmic::widget::container(
+                cosmic::widget::dialog()
+                    .title("Preferences")
+                    .control(cosmic::widget::scrollable(prefs::view(
+                        vm,
+                        pickers,
+                        Message::PrefsScratchEdited,
+                        [
+                            Message::PrefsPickerFuture,
+                            Message::PrefsPickerPast,
+                            Message::PrefsPickerHighlight,
+                        ],
+                    )))
+                    .primary_action(
+                        cosmic::widget::button::standard("Close").on_press(Message::CloseDialog),
+                    ),
+            )
+            .style(|_theme| cosmic::iced::widget::container::Style {
+                background: Some(cosmic::iced::Background::Color(cosmic::iced::Color {
+                    r: 0.0,
+                    g: 0.0,
+                    b: 0.0,
+                    a: 0.45,
+                })),
+                ..Default::default()
+            })
+            .width(cosmic::iced::Length::Fill)
+            .height(cosmic::iced::Length::Fill)
+            .align_x(cosmic::iced::Alignment::Center)
+            .align_y(cosmic::iced::Alignment::Center),
+        )
+        .on_scroll(|_| Message::ChooserCancelled)
+        .into();
+        cosmic::iced::widget::Stack::with_children(vec![base, sheet])
+            .width(cosmic::iced::Length::Fill)
+            .height(cosmic::iced::Length::Fill)
+            .into()
     }
 
     // -- engine → UI --------------------------------------------------------------
@@ -1205,6 +1641,13 @@ impl App {
                 self.midi.backend = backend;
                 self.midi.port = port;
                 if let Some(warning) = warning {
+                    // A failing Test-note reselect surfaces verbatim in the
+                    // D3 status line (C++ `:1143-1145`), alongside the toast.
+                    // Guarded on the open shell: Apply closes synchronously,
+                    // so its failures never touch a dead scratch.
+                    if let Some(dlg) = self.midi_dlg.as_mut() {
+                        dlg.test_status = Some(NO_MIDI_OUTPUT.to_string());
+                    }
                     self.toast(warning);
                     // Startup fallback chain only (ctor parity): once any
                     // output has been confirmed, later failures (user
@@ -1243,7 +1686,11 @@ impl App {
         self.toasts.push(text);
     }
 
-    /// Build the transport view model for `view()`.
+    /// Build the transport view model for `view()`. The loop toggle
+    /// derives from `loop_enabled` — forced ON while the D8 dialog is open
+    /// (U3/C++ `:869,873-880`: confirm keeps it ON, cancel resets it; the
+    /// modal chrome blocks base clicks, so the forced-ON toggle cannot emit
+    /// a spurious `LoopToggled(false)`).
     fn transport_view_model(&self) -> TransportViewModel {
         TransportViewModel {
             song_title: self
@@ -1262,7 +1709,7 @@ impl App {
             seeking: self.playback.seeking,
             tempo_pct: self.playback.tempo_factor_pct,
             volume_pct: self.playback.volume_pct,
-            loop_enabled: self.playback.loop_enabled,
+            loop_enabled: self.playback.loop_enabled || self.dialog == Some(Dialog::Loop),
             has_song: self.song.is_some(),
         }
     }
@@ -1379,6 +1826,10 @@ impl Application for App {
             paths,
             dialog: None,
             prefs: None,
+            midi_dlg: None,
+            jump_bar: 1,
+            loop_from: 1,
+            loop_to: 1,
             view: View::Lyrics,
             toasts: Vec::new(),
             pending_autoplay: false,
@@ -1423,10 +1874,10 @@ impl Application for App {
 
     /// State transitions + engine commands (arch §2.3). Transport/mix/seek/
     /// loop messages update state optimistically and send the matching
-    /// command; D1/D9/D10/D12 launch portal chooser `Task`s, copy/print
-    /// launch clipboard/export `Task`s, picker updates return the picker's
-    /// mapped task (MIDI dialog/T13 still returns `Task::none()`) — every
-    /// arm is covered by a test below.
+    /// command; D1/D9/D10/D11/D12 launch portal chooser `Task`s, copy/print
+    /// launch clipboard/export `Task`s, D3 refill/test-note and D4 links
+    /// launch their `Task`s, picker updates return the picker's mapped task
+    /// — every arm is covered by a test below.
     fn update(&mut self, message: Self::Message) -> Task<Self::Message> {
         match message {
             // --- transport ---
@@ -1440,7 +1891,11 @@ impl Application for App {
             Message::JumpToBar(bar) => {
                 // D7 pause-jump-resume (`window.cpp:802-805`): the engine
                 // drains commands in order, so Pause → jump → Play reproduces
-                // the C++ sequence across the thread boundary.
+                // the C++ sequence across the thread boundary. The bar clamps
+                // to `1..=last_bar` like the C++ spin (`clamp_jump_bar` —
+                // the view already clamps for display; this pins the arm).
+                let last_bar = self.song.as_ref().map_or(1, |song| song.bars);
+                let bar = clamp_jump_bar(i32::try_from(bar).unwrap_or(i32::MAX), last_bar);
                 let resume = self.playback.status == Status::Playing;
                 if resume {
                     self.engine.send(EngineCommand::Pause);
@@ -1453,13 +1908,21 @@ impl Application for App {
             }
             Message::LoopToggled(enabled) => {
                 if enabled {
-                    // D8: toggle ON opens the range dialog (rendered T13);
-                    // the engine command goes out on `LoopSet` confirm.
+                    // D8: toggle ON opens the range dialog; the engine
+                    // command goes out on `LoopSet` confirm. The U3 menu
+                    // path emits this same variant (T13a: no new variant —
+                    // menu Loop forces toggle ON, then opens).
                     // Intended deviation from C++ (`showLoop` early-returns
                     // with no song loaded, `window.cpp:832-834`): the dialog
                     // opens unconditionally instead of a silently dead
                     // toggle. Deliberate; the D8 cancel rule still applies.
-                    self.dialog = Some(Dialog::Loop);
+                    // T13d F2(a): route through `open_dialog` so the toggle
+                    // path abandons the D3/prefs shells exactly like
+                    // `ShowDialog(Loop)` (the T12 switch rule — C++ `showLoop`
+                    // / `showMidiSetup` are sibling modals over a blocked main
+                    // window, `window.cpp:839-841` / `:948-952`, so C++ never
+                    // opens Loop above a live MIDI shell at all).
+                    return self.open_dialog(Dialog::Loop);
                 } else {
                     self.playback.loop_enabled = false;
                     let start = self.playback.loop_start;
@@ -1472,6 +1935,16 @@ impl Application for App {
                 }
             }
             Message::LoopSet { start, end } => {
+                // D8 confirm: clamp each end to `1..=last_bar`
+                // (`loop_confirm` — deliberately NO from≤to enforcement,
+                // C++ `setLoop` assigns blindly), enable, force the header
+                // toggle ON via `loop_enabled`, and close (`window.cpp:864-871`).
+                let last_bar = self.song.as_ref().map_or(0, |song| song.bars);
+                let (start, end) = loop_confirm(
+                    i32::try_from(start).unwrap_or(i32::MAX),
+                    i32::try_from(end).unwrap_or(i32::MAX),
+                    last_bar,
+                );
                 self.playback.loop_enabled = true;
                 self.playback.loop_start = start;
                 self.playback.loop_end = end;
@@ -1482,6 +1955,12 @@ impl Application for App {
                 });
                 self.dialog = None;
             }
+            // D7/D8 spin scratch (stored verbatim — the spins only emit
+            // in-range values; the views clamp for display and the confirm
+            // arms clamp via `clamp_jump_bar`/`loop_confirm`).
+            Message::JumpBarEdited(bar) => self.jump_bar = bar,
+            Message::LoopFromEdited(from) => self.loop_from = from,
+            Message::LoopToEdited(to) => self.loop_to = to,
             Message::RepeatModeChanged(mode) => {
                 self.playback.repeat = mode;
                 // Persisted at close (U2 save-point row 1), like `m_repeat`.
@@ -1671,34 +2150,137 @@ impl Application for App {
                 self.piano.hide_unused(&used);
             }
             Message::PianoPreviewOn(ch, note) => {
-                // A3: audition lights the key at vel 80; the audible NoteOn
-                // goes straight to the outputs in T13, bypassing mute + pitch.
-                self.piano.note_on(ch, note, 80);
+                // A3: audition lights the key at vel 80 AND sends the raw
+                // NoteOn straight to the output via `PreviewNote` (D19
+                // refinement — engine-carried, bypassing mute + pitch like
+                // the C++ direct `sendNoteOn`, `window.cpp:2098-2102`).
+                let preview = PreviewNote::audition(ch, note);
+                self.piano.note_on(preview.ch, preview.note, preview.vel);
+                self.engine.send(EngineCommand::PreviewNote {
+                    ch: preview.ch,
+                    note: preview.note,
+                    vel: preview.vel,
+                });
             }
             Message::PianoPreviewOff => {
-                // A3 idle-only note-off (`window.cpp:2104-2112`): when idle
+                // A3 idle-only note-off (`window.cpp:2105-2116`): when idle
                 // no song notes can be lit (stop/load clear the matrix), so
-                // clearing matches C++; while playing, releases must not
-                // kill song notes.
-                if self.playback.status != Status::Playing {
+                // every lit key is a preview target — send the raw NoteOffs
+                // via `PreviewOff` and clear; while playing, releases must
+                // not kill song notes (no send, no clear).
+                let targets = preview_off_targets(
+                    &self.piano.notes_on,
+                    self.playback.status == Status::Playing,
+                );
+                if !targets.is_empty() {
+                    self.engine
+                        .send(EngineCommand::PreviewOff { notes: targets });
                     self.piano.clear();
                 }
             }
 
-            // --- MIDI setup ---
+            // --- MIDI setup (all scratch-scoped: no shell → silent no-op,
+            // prefs precedent; live `midi` mirrors move only on Test/Apply) ---
             Message::MidiBackendSelected(backend) => {
-                self.midi.backend = backend;
-                // Port list belongs to the old backend (refill is T13).
-                self.midi.ports.clear();
+                if let Some(dlg) = self.midi_dlg.as_mut() {
+                    dlg.scratch.backend = backend.clone();
+                    // The port list belongs to the old backend: clear and
+                    // refill (C++ `refillFn` rebuilds on backend notify,
+                    // `window.cpp:1063-1067`; Refresh re-emits the CURRENT
+                    // backend, so it retriggers through this same arm).
+                    dlg.scratch.ports.clear();
+                    let advanced = dlg.scratch.advanced;
+                    return Self::midi_enumerate_task(backend, advanced);
+                }
             }
-            Message::MidiPortsRefreshed(ports) => self.midi.ports = ports,
-            Message::MidiPortSelected(port) => self.midi.port = port,
-            Message::MidiAdvancedToggled(advanced) => self.midi.advanced = advanced,
-            Message::MidiInstrumentMapChanged(map) => self.midi.instrument_map = map.min(2),
-            Message::MidiResetChanged(reset) => self.midi.sysex_reset = reset.min(4),
-            Message::MidiSoundFontChanged(path) => self.midi.soundfont = path,
-            // T13: portal chooser `Task` / middle-C test note.
-            Message::MidiSoundFontBrowse | Message::MidiTestNote => {}
+            Message::MidiPortsRefreshed {
+                backend,
+                advanced,
+                ports,
+            } => {
+                // Refill completion: store the ports (the dropdown preselect
+                // derives render-time via `select_refilled_port`) and clear
+                // the transient test status (C++ refill overwrites the
+                // status label, `window.cpp:1055-1058`). Deliberately NO
+                // profile inference here — the C++ `filling` guard
+                // (`window.cpp:1080-1081`). Late results after close drop;
+                // stale results (echo mismatch after a rapid backend/`Show
+                // all` switch — T13g F4) drop too, keeping the current
+                // request's list.
+                if let Some(dlg) = self.midi_dlg.as_mut()
+                    && backend == dlg.scratch.backend
+                    && advanced == dlg.scratch.advanced
+                {
+                    dlg.scratch.ports = ports;
+                    dlg.test_status = None;
+                }
+            }
+            Message::MidiPortSelected(port) => {
+                if let Some(dlg) = self.midi_dlg.as_mut() {
+                    dlg.scratch.port = port.clone();
+                    // User-initiated pick → map+reset follow the port label
+                    // (C++ `window.cpp:1082-1087`, via `profile_for_port`).
+                    // Unknown ids (stale/defensive) set the want only.
+                    let label = dlg
+                        .scratch
+                        .ports
+                        .iter()
+                        .find(|p| p.id == port)
+                        .map(|picked| picked.label.clone());
+                    if let Some(label) = label {
+                        let (map, reset) = profile_for_port(&label);
+                        dlg.scratch.instrument_map = map;
+                        dlg.scratch.sysex_reset = reset;
+                    }
+                }
+            }
+            Message::MidiAdvancedToggled(advanced) => {
+                if let Some(dlg) = self.midi_dlg.as_mut() {
+                    dlg.scratch.advanced = advanced;
+                    // `Show all` retriggers the refill (C++ `:1068-1072`).
+                    dlg.scratch.ports.clear();
+                    let backend = dlg.scratch.backend.clone();
+                    return Self::midi_enumerate_task(backend, advanced);
+                }
+            }
+            Message::MidiInstrumentMapChanged(map) => {
+                if let Some(dlg) = self.midi_dlg.as_mut() {
+                    dlg.scratch.instrument_map = map.min(2);
+                }
+            }
+            Message::MidiResetChanged(reset) => {
+                if let Some(dlg) = self.midi_dlg.as_mut() {
+                    dlg.scratch.sysex_reset = reset.min(4);
+                }
+            }
+            Message::MidiSoundFontChanged(path) => {
+                if let Some(dlg) = self.midi_dlg.as_mut() {
+                    dlg.scratch.soundfont = path;
+                }
+            }
+            Message::MidiSoundFontBrowse => {
+                if self.midi_dlg.is_some() {
+                    return Self::soundfont_browse_task();
+                }
+            }
+            Message::MidiSoundFontChosen(result) => match result {
+                // Entry-only, deferred commit (C++ `:1111-1113` writes the
+                // entry; Test/Apply carry it to the engine).
+                Ok(path) => {
+                    if let Some(dlg) = self.midi_dlg.as_mut() {
+                        dlg.scratch.soundfont = path.to_string_lossy().into_owned();
+                    }
+                }
+                Err(error) => self.toast(error),
+            },
+            Message::MidiTestNote => return self.test_midi_note(),
+            Message::MidiTestNoteOff { ch, note } => {
+                // Unconditional raw NoteOff (C++ `g_timeout`, `:1148-1153` —
+                // no idle gate, unlike piano release). Silent by design.
+                self.engine.send(EngineCommand::PreviewOff {
+                    notes: vec![(ch, note)],
+                });
+            }
             Message::MidiApply => self.apply_midi_setup(),
 
             // --- preferences / song settings ---
@@ -1745,28 +2327,29 @@ impl Application for App {
                     );
                 }
             }
-            Message::SongSettingsSave => self.save_song_settings(),
-            Message::SongSettingsLoad => self.load_song_settings(),
+            // Manual song-settings actions (C++ `app.save/load-settings`,
+            // `window.cpp:1405-1408`): gated on a loaded song
+            // (`manual_song_action_allowed` — the `:633-635`/`:663-665`
+            // empty-name guards), UNGATED by `auto_song_settings` (the menu
+            // actions call save/load directly; the auto flag drives only the
+            // finish/load/next-song call sites).
+            Message::SongSettingsSave => {
+                if manual_song_action_allowed(self.song.as_ref().map(|song| song.title.as_str())) {
+                    self.save_song_settings();
+                }
+            }
+            Message::SongSettingsLoad => {
+                if manual_song_action_allowed(self.song.as_ref().map(|song| song.title.as_str())) {
+                    self.load_song_settings();
+                }
+            }
 
             // --- dialogs / navigation ---
-            Message::ShowDialog(dialog) => {
-                // D2 shell open: clone live settings into the scratch and
-                // seed the picker models. Switching to any other dialog
-                // abandons an open scratch (no commit — commit rides close).
-                if dialog == Dialog::Preferences {
-                    self.prefs = Some((
-                        PrefsViewModel {
-                            scratch: self.settings.clone(),
-                        },
-                        LyricsPickerModels::from_settings(&self.settings),
-                    ));
-                } else {
-                    self.prefs = None;
-                }
-                self.dialog = Some(dialog);
-            }
+            Message::ShowDialog(dialog) => return self.open_dialog(dialog),
             // D8 cancel rule falls out of the model: the loop toggle derives
-            // from `loop_enabled`, so closing an unconfirmed dialog resets it.
+            // from `loop_enabled` (forced ON while the dialog is open), so
+            // closing an unconfirmed dialog resets it. D3 close abandons the
+            // scratch unapplied (Cancel parity — C++ destroys `Widgets`).
             // D2 commit-on-close: narrow the scratch to exactly the 17
             // D2-owned keys over live settings (T12 devil-BLOCKING FIX — a
             // wholesale live←scratch replace would silently revert live
@@ -1782,11 +2365,22 @@ impl Application for App {
                     committed.commit_prefs_dialog(&vm.scratch);
                     self.apply_prefs(committed);
                 }
+                self.midi_dlg = None;
                 self.dialog = None;
             }
-            Message::ShowFileInfo => self.dialog = Some(Dialog::FileInfo),
-            Message::ShowAbout => self.dialog = Some(Dialog::About),
-            Message::ShowHelp => self.dialog = Some(Dialog::Help),
+            // D4 link: hand the URL to the opener (D13 mechanism + sandbox
+            // coverage — see `URL_OPENER`); failures toast, success silent.
+            Message::OpenUrl(url) => return Self::open_url_task(url),
+            Message::UrlOpened(result) => {
+                if let Err(error) = result {
+                    self.toast(error);
+                }
+            }
+            // T13g F3: through `open_dialog` so the prefs/D3 shells are
+            // abandoned like every other dialog switch (the F2(a) hazard).
+            Message::ShowFileInfo => return self.open_dialog(Dialog::FileInfo),
+            Message::ShowAbout => return self.open_dialog(Dialog::About),
+            Message::ShowHelp => return self.open_dialog(Dialog::Help),
             Message::ViewSelected(view) => self.view = view,
             Message::Toast(text) => self.toast(text),
             Message::DismissToast => {
@@ -1812,8 +2406,10 @@ impl Application for App {
     /// T10a2 layout (ux W1/§3.1): playlist sidebar on the left at the C++
     /// `AdwOverlaySplitView` 0.28 width fraction (`FillPortion(28/72)`) + main
     /// column (transport region with THE status line, view-switcher page
-    /// — Lyrics + Channels composed (T12b), Piano placeholder —, toasts),
-    /// with the D2 prefs dialog stacked over it while open (T12b). The sidebar
+    /// — Lyrics + Channels composed (T12b), Piano canvas (T13c) —, toasts),
+    /// with the D2 prefs dialog (T12b, inline chrome) or a T13 dialog sheet
+    /// (D3/D7/D8/D6/D5/D4 via `chrome::wrap_modal`) stacked over it while
+    /// open. The sidebar
     /// honors `playlistVisible`
     /// (`settings.playlist_visible`, default true); there is no runtime
     /// collapse toggle yet — any toggle needs a new `Message` + update arm
@@ -1825,11 +2421,11 @@ impl Application for App {
         let page: Element<'_, Self::Message> = match self.view {
             View::Lyrics => lyrics::view(self.lyrics_view_model()),
             View::Channels => channels_view::view(self.channels_view_model()),
-            other => cosmic::widget::text::body(format!(
-                "{other:?} view — switcher lands in T12+ (dialog={:?})",
-                self.dialog,
-            ))
-            .into(),
+            View::Piano => piano::view(piano::view_model(
+                &self.piano,
+                self.song.as_ref(),
+                &self.settings,
+            )),
         };
         let mut main: Vec<Element<'_, Self::Message>> =
             vec![transport::view(self.transport_view_model()), page];
@@ -1879,7 +2475,7 @@ impl Application for App {
         // `on_scroll` into `ChooserCancelled` (the silent no-op arm: no
         // state change, no toast). Clicks therefore cannot reach the base
         // (buttons/toggles/sliders/dropdowns/text inputs all arm on left
-        // press); right-press still propagates, but no base widget binds it.
+        // press); right- and middle-press still propagate, but no base widget binds either.
         // The wrap container also paints the dim scrim (C++ `AdwPrefsWindow`
         // dims its parent). Keyboard: no keyboard subscription or shortcut
         // handling exists yet (T14 owns shortcuts), so there is no key path
@@ -1888,49 +2484,19 @@ impl Application for App {
         // completions (engine events, resize, DnD drops) still apply under
         // the dialog and now survive the close instead of being reverted.
         // Close commits once (commit-on-close — no Cancel row, C++ parity).
-        // Any other dialog state renders the base alone (T13 owns the
-        // remaining dialogs).
-        let (Some(Dialog::Preferences), Some((vm, pickers))) = (&self.dialog, &self.prefs) else {
-            return base;
-        };
-        let sheet: Element<'_, Self::Message> = cosmic::iced::widget::mouse_area(
-            cosmic::widget::container(
-                cosmic::widget::dialog()
-                    .title("Preferences")
-                    .control(cosmic::widget::scrollable(prefs::view(
-                        vm,
-                        pickers,
-                        Message::PrefsScratchEdited,
-                        [
-                            Message::PrefsPickerFuture,
-                            Message::PrefsPickerPast,
-                            Message::PrefsPickerHighlight,
-                        ],
-                    )))
-                    .primary_action(
-                        cosmic::widget::button::standard("Close").on_press(Message::CloseDialog),
-                    ),
-            )
-            .style(|_theme| cosmic::iced::widget::container::Style {
-                background: Some(cosmic::iced::Background::Color(cosmic::iced::Color {
-                    r: 0.0,
-                    g: 0.0,
-                    b: 0.0,
-                    a: 0.45,
-                })),
-                ..Default::default()
-            })
-            .width(cosmic::iced::Length::Fill)
-            .height(cosmic::iced::Length::Fill)
-            .align_x(cosmic::iced::Alignment::Center)
-            .align_y(cosmic::iced::Alignment::Center),
-        )
-        .on_scroll(|_| Message::ChooserCancelled)
-        .into();
-        cosmic::iced::widget::Stack::with_children(vec![base, sheet])
-            .width(cosmic::iced::Length::Fill)
-            .height(cosmic::iced::Length::Fill)
-            .into()
+        // T13 dialogs compose below through `chrome::wrap_modal`, which
+        // generalizes this exact chrome verbatim (T13c verified: same
+        // full-bounds `mouse_area` + 0.45 dim scrim + centered sheet +
+        // wheel-into-`ChooserCancelled` + `Stack` — only the sheet
+        // construction moves to the caller). D2 keeps its inline copy:
+        // zero T12 churn, identical pixels.
+        if let (Some(Dialog::Preferences), Some((vm, pickers))) = (&self.dialog, &self.prefs) {
+            return Self::prefs_sheet(base, vm, pickers);
+        }
+        match self.dialog_sheet() {
+            Some(sheet) => chrome::wrap_modal(base, sheet),
+            None => base,
+        }
     }
 
     /// Second-launch / portal activation: forward files as
@@ -2009,6 +2575,10 @@ mod tests {
             paths: Paths::with_env(env, None),
             dialog: None,
             prefs: None,
+            midi_dlg: None,
+            jump_bar: 1,
+            loop_from: 1,
+            loop_to: 1,
             view: View::Lyrics,
             toasts: Vec::new(),
             pending_autoplay: false,
@@ -2032,6 +2602,8 @@ mod tests {
             highest_note: 96,
             charset: "UTF-8".to_string(),
             texts: Vec::new(),
+            metadata: Vec::new(),
+            copyrights: Vec::new(),
         })
     }
 
@@ -2226,13 +2798,137 @@ mod tests {
     }
 
     #[test]
+    fn loop_toggle_on_abandons_shells_like_switch() {
+        // T13d F2(a): `LoopToggled(true)` abandons the D3/prefs shells
+        // exactly like `ShowDialog(Loop)` (the T12 switch rule) — no hidden
+        // shell survives under the Loop dialog for a stale `MidiApply` to
+        // commit (which would also wrongly close the Loop dialog).
+        let (mut app, _rx, _tmp) = test_app();
+        open_midi_setup(&mut app);
+        upd(&mut app, Message::MidiInstrumentMapChanged(2));
+        upd(&mut app, Message::LoopToggled(true));
+        assert_eq!(app.dialog, Some(Dialog::Loop));
+        assert!(app.midi_dlg.is_none());
+        // A stale Apply now no-ops: settings untouched, Loop still open.
+        upd(&mut app, Message::MidiApply);
+        assert_eq!(app.settings.instrument_map, 0);
+        assert_eq!(app.dialog, Some(Dialog::Loop));
+        // Same for the prefs shell.
+        upd(&mut app, Message::ShowDialog(Dialog::Preferences));
+        assert!(app.prefs.is_some());
+        upd(&mut app, Message::LoopToggled(true));
+        assert!(app.prefs.is_none());
+        assert_eq!(app.dialog, Some(Dialog::Loop));
+    }
+
+    #[test]
     fn loop_set_enables_range_and_closes() {
         let (mut app, _rx, _tmp) = test_app();
+        open_fake_song(&mut app);
         app.dialog = Some(Dialog::Loop);
         upd(&mut app, Message::LoopSet { start: 3, end: 5 });
         assert!(app.playback.loop_enabled);
         assert_eq!((app.playback.loop_start, app.playback.loop_end), (3, 5));
         assert_eq!(app.dialog, None);
+    }
+
+    #[test]
+    fn loop_set_clamps_each_end_without_ordering() {
+        // `loop_confirm`: each end clamps to `1..=last_bar`, from > to
+        // passes through (C++ `setLoop` assigns blindly).
+        let (mut app, _rx, _tmp) = test_app();
+        open_fake_song(&mut app);
+        upd(&mut app, Message::LoopSet { start: 0, end: 99 });
+        assert_eq!((app.playback.loop_start, app.playback.loop_end), (1, 16));
+        upd(&mut app, Message::LoopSet { start: 8, end: 3 });
+        assert_eq!((app.playback.loop_start, app.playback.loop_end), (8, 3));
+        // No song: everything pins to bar 1.
+        let (mut app, _rx, _tmp) = test_app();
+        upd(&mut app, Message::LoopSet { start: 4, end: 9 });
+        assert_eq!((app.playback.loop_start, app.playback.loop_end), (1, 1));
+    }
+
+    #[test]
+    fn jump_dialog_gates_on_song_and_seeds_bar_1() {
+        // D7: C++ `showJump` early-returns with no song (`:777-778`).
+        let (mut app, _rx, _tmp) = test_app();
+        upd(&mut app, Message::ShowDialog(Dialog::JumpToBar));
+        assert_eq!(app.dialog, None);
+        // With a song: opens, scratch seeds to 1 (the C++ spin's unset
+        // initial value is the range min), edits store without jumping.
+        open_fake_song(&mut app);
+        upd(&mut app, Message::ShowDialog(Dialog::JumpToBar));
+        assert_eq!(app.dialog, Some(Dialog::JumpToBar));
+        assert_eq!(app.jump_bar, 1);
+        upd(&mut app, Message::JumpBarEdited(7));
+        assert_eq!(app.jump_bar, 7);
+        assert_eq!(app.dialog, Some(Dialog::JumpToBar));
+        upd(&mut app, Message::JumpToBar(7));
+        assert_eq!(app.dialog, None);
+    }
+
+    #[test]
+    fn gated_jump_preserves_shells() {
+        // T13g F5: a gated D7 open is a pure no-op — the prefs shell and
+        // the D3 shell both survive (the gate used to run after
+        // `open_dialog` cleared prefs, orphaning the shell under D3).
+        let (mut app, _rx, _tmp) = test_app();
+        // No song → gated; the prefs shell survives underneath.
+        upd(&mut app, Message::ShowDialog(Dialog::Preferences));
+        assert!(app.prefs.is_some());
+        upd(&mut app, Message::ShowDialog(Dialog::JumpToBar));
+        assert_eq!(app.dialog, Some(Dialog::Preferences));
+        assert!(app.prefs.is_some());
+        // Same for the D3 shell (scratch edits intact).
+        open_midi_setup(&mut app);
+        upd(&mut app, Message::MidiInstrumentMapChanged(2));
+        upd(&mut app, Message::ShowDialog(Dialog::JumpToBar));
+        assert_eq!(app.dialog, Some(Dialog::MidiSetup));
+        assert_eq!(scratch(&app).instrument_map, 2);
+    }
+
+    #[test]
+    fn loop_dialog_seeds_from_playback_and_stores_scratch() {
+        // D8 seeds come from `loop_start`/`loop_end` (C++ `:852-853`,
+        // clamped like the spins); spin edits store without applying.
+        let (mut app, _rx, _tmp) = test_app();
+        open_fake_song(&mut app);
+        app.playback.loop_start = 3;
+        app.playback.loop_end = 12;
+        upd(&mut app, Message::LoopToggled(true));
+        assert_eq!(app.dialog, Some(Dialog::Loop));
+        assert_eq!((app.loop_from, app.loop_to), (3, 12));
+        assert!(!app.playback.loop_enabled);
+        upd(&mut app, Message::LoopFromEdited(5));
+        upd(&mut app, Message::LoopToEdited(9));
+        assert_eq!((app.loop_from, app.loop_to), (5, 9));
+        assert!(!app.playback.loop_enabled);
+        // OOR playback seeds clamp on open.
+        app.playback.loop_start = 0;
+        app.playback.loop_end = 999;
+        upd(&mut app, Message::ShowDialog(Dialog::Loop));
+        assert_eq!((app.loop_from, app.loop_to), (1, 16));
+    }
+
+    #[test]
+    fn loop_toggle_forces_on_while_dialog_open_u3() {
+        // U3 FIX pin: the menu Loop path emits `LoopToggled(true)` (no new
+        // variant) — the dialog opens and the header toggle renders ON
+        // while it is open, even with no song (the documented `showLoop`
+        // deviation); cancel resets it, confirm keeps it ON.
+        let (mut app, _rx, _tmp) = test_app();
+        upd(&mut app, Message::LoopToggled(true));
+        assert_eq!(app.dialog, Some(Dialog::Loop));
+        assert_eq!((app.loop_from, app.loop_to), (1, 1));
+        assert!(!app.playback.loop_enabled);
+        assert!(app.transport_view_model().loop_enabled);
+        upd(&mut app, Message::CloseDialog);
+        assert!(!app.transport_view_model().loop_enabled);
+        // Confirm path: `LoopSet` enables → toggle stays ON after close.
+        upd(&mut app, Message::LoopToggled(true));
+        upd(&mut app, Message::LoopSet { start: 1, end: 1 });
+        assert!(app.playback.loop_enabled);
+        assert!(app.transport_view_model().loop_enabled);
     }
 
     #[test]
@@ -3207,59 +3903,205 @@ mod tests {
 
     // -- MIDI setup ---------------------------------------------------------------
 
+    /// Open the D3 shell in tests (drops the enumeration `Task` — the
+    /// portal-free tests below feed `MidiPortsRefreshed` synthetically).
+    fn open_midi_setup(app: &mut App) {
+        upd(app, Message::ShowDialog(Dialog::MidiSetup));
+        assert_eq!(app.dialog, Some(Dialog::MidiSetup));
+        assert!(app.midi_dlg.is_some());
+    }
+
+    fn scratch(app: &App) -> &MidiState {
+        &app.midi_dlg.as_ref().expect("D3 shell open").scratch
+    }
+
+    #[test]
+    fn midi_open_seeds_scratch_and_abandons_on_close() {
+        let (mut app, _rx, _tmp) = test_app();
+        app.midi.backend = "ALSA".to_string();
+        app.midi.soundfont = "/sf/live.sf2".to_string();
+        open_midi_setup(&mut app);
+        // Seeded from live mirrors.
+        assert_eq!(scratch(&app).backend, "ALSA");
+        assert_eq!(scratch(&app).soundfont, "/sf/live.sf2");
+        // Close abandons the scratch: live mirrors untouched.
+        upd(&mut app, Message::MidiBackendSelected("Dummy".to_string()));
+        assert_eq!(scratch(&app).backend, "Dummy");
+        assert_eq!(app.midi.backend, "ALSA");
+        upd(&mut app, Message::CloseDialog);
+        assert_eq!(app.dialog, None);
+        assert!(app.midi_dlg.is_none());
+        assert_eq!(app.midi.backend, "ALSA");
+    }
+
     #[test]
     fn midi_selections_stored_and_clamped() {
         let (mut app, _rx, _tmp) = test_app();
+        open_midi_setup(&mut app);
         upd(&mut app, Message::MidiBackendSelected("ALSA".to_string()));
-        assert_eq!(app.midi.backend, "ALSA");
+        assert_eq!(scratch(&app).backend, "ALSA");
         upd(
             &mut app,
-            Message::MidiPortsRefreshed(vec![crate::core::output::MidiPort {
-                id: "128:0".to_string(),
-                label: "Synth".to_string(),
-            }]),
+            Message::MidiPortsRefreshed {
+                backend: "ALSA".to_string(),
+                advanced: false,
+                ports: vec![crate::core::output::MidiPort {
+                    id: "128:0".to_string(),
+                    label: "Synth".to_string(),
+                }],
+            },
         );
-        assert_eq!(app.midi.ports.len(), 1);
+        assert_eq!(scratch(&app).ports.len(), 1);
         // Switching backend drops the stale port list.
         upd(
             &mut app,
             Message::MidiBackendSelected("FluidSynth".to_string()),
         );
-        assert!(app.midi.ports.is_empty());
+        assert!(scratch(&app).ports.is_empty());
         upd(&mut app, Message::MidiPortSelected("128:0".to_string()));
-        assert_eq!(app.midi.port, "128:0");
+        assert_eq!(scratch(&app).port, "128:0");
         upd(&mut app, Message::MidiAdvancedToggled(true));
-        assert!(app.midi.advanced);
+        assert!(scratch(&app).advanced);
         upd(&mut app, Message::MidiInstrumentMapChanged(9));
-        assert_eq!(app.midi.instrument_map, 2);
+        assert_eq!(scratch(&app).instrument_map, 2);
         upd(&mut app, Message::MidiResetChanged(9));
-        assert_eq!(app.midi.sysex_reset, 4);
+        assert_eq!(scratch(&app).sysex_reset, 4);
         upd(
             &mut app,
             Message::MidiSoundFontChanged("/sf/gm.sf2".to_string()),
         );
-        assert_eq!(app.midi.soundfont, "/sf/gm.sf2");
+        assert_eq!(scratch(&app).soundfont, "/sf/gm.sf2");
+        // Live mirrors never move on edits.
+        assert_eq!(app.midi.backend, "FluidSynth");
+        assert!(app.midi.ports.is_empty());
     }
 
     #[test]
-    fn midi_dialog_actions_are_staged_noops() {
+    fn midi_arms_noop_without_shell() {
+        // Stale messages with no open dialog: silent no-ops (prefs
+        // precedent) — no toast, no state change, no shell created.
         let (mut app, _rx, _tmp) = test_app();
+        upd(&mut app, Message::MidiBackendSelected("ALSA".to_string()));
+        upd(
+            &mut app,
+            Message::MidiPortsRefreshed {
+                backend: "ALSA".to_string(),
+                advanced: false,
+                ports: vec![],
+            },
+        );
+        upd(&mut app, Message::MidiPortSelected("128:0".to_string()));
+        upd(&mut app, Message::MidiAdvancedToggled(true));
+        upd(&mut app, Message::MidiInstrumentMapChanged(2));
+        upd(&mut app, Message::MidiResetChanged(4));
+        upd(
+            &mut app,
+            Message::MidiSoundFontChanged("/sf/x.sf2".to_string()),
+        );
         upd(&mut app, Message::MidiSoundFontBrowse);
+        upd(
+            &mut app,
+            Message::MidiSoundFontChosen(Ok(PathBuf::from("/sf/x.sf2"))),
+        );
         upd(&mut app, Message::MidiTestNote);
+        upd(&mut app, Message::MidiApply);
+        assert!(app.midi_dlg.is_none());
         assert_eq!(app.dialog, None);
         assert!(app.toasts.is_empty());
+        assert_eq!(app.midi.backend, "FluidSynth");
+    }
+
+    #[test]
+    fn midi_port_pick_infers_profile_refill_does_not() {
+        let (mut app, _rx, _tmp) = test_app();
+        open_midi_setup(&mut app);
+        // Refill completion stores ports but never infers (C++ `filling`
+        // guard): map/reset stay at the seeded 0/1.
+        upd(
+            &mut app,
+            Message::MidiPortsRefreshed {
+                backend: "FluidSynth".to_string(),
+                advanced: false,
+                ports: vec![
+                    crate::core::output::MidiPort {
+                        id: "128:0".to_string(),
+                        label: "Munt MT-32:Standard".to_string(),
+                    },
+                    crate::core::output::MidiPort {
+                        id: "129:0".to_string(),
+                        label: "Virtual SC55".to_string(),
+                    },
+                ],
+            },
+        );
+        assert_eq!(scratch(&app).instrument_map, 0);
+        assert_eq!(scratch(&app).sysex_reset, 1);
+        // User pick → MT-32 map + MT-32 reset follow the label.
+        upd(&mut app, Message::MidiPortSelected("128:0".to_string()));
+        assert_eq!(scratch(&app).instrument_map, 2);
+        assert_eq!(scratch(&app).sysex_reset, 4);
+        // SC-55 pick → GS map + GS reset.
+        upd(&mut app, Message::MidiPortSelected("129:0".to_string()));
+        assert_eq!(scratch(&app).instrument_map, 1);
+        assert_eq!(scratch(&app).sysex_reset, 2);
+        // Unknown id: want stored, no inference (map/reset keep last).
+        upd(&mut app, Message::MidiPortSelected("nope".to_string()));
+        assert_eq!(scratch(&app).port, "nope");
+        assert_eq!(scratch(&app).instrument_map, 1);
+        assert_eq!(scratch(&app).sysex_reset, 2);
+    }
+
+    #[test]
+    fn midi_soundfont_chosen_commits_entry_errors_toast() {
+        let (mut app, _rx, _tmp) = test_app();
+        open_midi_setup(&mut app);
+        upd(
+            &mut app,
+            Message::MidiSoundFontChosen(Ok(PathBuf::from("/sf/sc55.sf2"))),
+        );
+        assert_eq!(scratch(&app).soundfont, "/sf/sc55.sf2");
+        // Deferred: live mirrors + settings untouched until Test/Apply.
+        assert!(app.midi.soundfont.is_empty());
+        assert!(app.settings.sound_font.is_empty());
+        // Late result after close drops; errors toast.
+        upd(&mut app, Message::CloseDialog);
+        upd(
+            &mut app,
+            Message::MidiSoundFontChosen(Ok(PathBuf::from("/sf/late.sf2"))),
+        );
+        assert!(app.midi.soundfont.is_empty());
+        upd(
+            &mut app,
+            Message::MidiSoundFontChosen(Err("Cannot open x: not a local file".to_string())),
+        );
+        assert_eq!(
+            app.toasts,
+            vec!["Cannot open x: not a local file".to_string()]
+        );
     }
 
     #[test]
     fn midi_apply_persists_and_announces_e2e() {
         let (mut app, rx, _tmp) = test_app();
-        app.midi.backend = "Dummy".to_string();
-        app.midi.port = "dummy".to_string();
-        app.midi.soundfont = "/sf/gm.sf2".to_string();
+        open_midi_setup(&mut app);
+        {
+            let dlg = app.midi_dlg.as_mut().unwrap();
+            dlg.scratch.backend = "Dummy".to_string();
+            dlg.scratch.port = "dummy".to_string();
+            dlg.scratch.soundfont = "/sf/gm.sf2".to_string();
+        }
         upd(&mut app, Message::MidiApply);
+        // Closed + shell cleared.
+        assert_eq!(app.dialog, None);
+        assert!(app.midi_dlg.is_none());
+        // Live mirrors adopted the scratch.
+        assert_eq!(app.midi.backend, "Dummy");
+        assert_eq!(app.midi.port, "dummy");
+        assert_eq!(app.midi.soundfont, "/sf/gm.sf2");
         // Persisted (save-point row 2).
         let disk = std::fs::read_to_string(app.paths.config_file()).unwrap();
         assert!(disk.contains("lastOutputBackend=Dummy\n"));
+        assert!(disk.contains("lastOutputConnection=dummy\n"));
         assert!(disk.contains("soundFont=/sf/gm.sf2\n"));
         // The engine answers; the user-initiated apply announces.
         pump_until(&mut app, &rx, Duration::from_secs(5), |ev| {
@@ -3267,6 +4109,362 @@ mod tests {
         });
         assert!(app.midi.output_ok_once);
         assert_eq!(app.toasts, vec!["MIDI output: Dummy dummy".to_string()]);
+    }
+
+    #[test]
+    fn midi_apply_no_change_sends_only_sysex_reset() {
+        // Stop-first delta (T13a): a no-change Apply must not interrupt
+        // playback — C++ stops unconditionally via `connectOutput`, the
+        // port plans first and sends only the state-only `SetSysexReset`
+        // (correct C++ `:1172` parity — T13g F2: the old "nothing at all"
+        // wording overclaimed). No `Stop`, no reselect.
+        let (mut app, rx, _tmp) = test_app();
+        open_midi_setup(&mut app);
+        upd(&mut app, Message::MidiApply);
+        assert_eq!(app.dialog, None);
+        assert!(app.midi_dlg.is_none());
+        // The engine answers every `SelectOutput` — silence proves none.
+        assert!(
+            rx.recv_lossless_timeout(Duration::from_millis(300))
+                .is_none(),
+            "no-change Apply must send no Stop/reselect"
+        );
+        assert!(app.toasts.is_empty());
+        assert!(!app.midi.announce_applied);
+    }
+
+    #[test]
+    fn midi_apply_map_only_sends_only_sysex_reset_but_persists() {
+        // Map/reset-only Apply: committed + persisted; the only engine
+        // send is the state-only `SetSysexReset` (T13g F2 — the old "no
+        // engine traffic" wording overclaimed). The patch model relabels
+        // render-time; C++ would still stop + reselect here.
+        let (mut app, rx, _tmp) = test_app();
+        open_midi_setup(&mut app);
+        upd(&mut app, Message::MidiInstrumentMapChanged(2));
+        upd(&mut app, Message::MidiResetChanged(4));
+        upd(&mut app, Message::MidiApply);
+        assert_eq!(app.settings.instrument_map, 2);
+        assert_eq!(app.settings.sysex_reset, 4);
+        let disk = std::fs::read_to_string(app.paths.config_file()).unwrap();
+        assert!(disk.contains("instrumentMap=2\n"));
+        assert!(disk.contains("sysexReset=4\n"));
+        assert!(
+            rx.recv_lossless_timeout(Duration::from_millis(300))
+                .is_none(),
+            "map-only Apply must send no Stop/reselect"
+        );
+        assert!(app.toasts.is_empty());
+    }
+
+    #[test]
+    fn midi_apply_syncs_map_reset_mirrors_for_reopen() {
+        // T13d F1: Apply must sync the map/reset live mirrors — the D3 seed
+        // reads them, so without the sync a reopen seeds the stale values
+        // and a no-change Apply clobbers the commit with them.
+        let (mut app, _rx, _tmp) = test_app();
+        open_midi_setup(&mut app);
+        upd(&mut app, Message::MidiInstrumentMapChanged(2));
+        upd(&mut app, Message::MidiResetChanged(4));
+        upd(&mut app, Message::MidiApply);
+        // Mirrors follow the commit.
+        assert_eq!(app.midi.instrument_map, 2);
+        assert_eq!(app.midi.sysex_reset, 4);
+        // Reopen seeds the committed values (not the stale 0/1 defaults).
+        open_midi_setup(&mut app);
+        assert_eq!(scratch(&app).instrument_map, 2);
+        assert_eq!(scratch(&app).sysex_reset, 4);
+        // …so a no-change Apply persists them unchanged (no clobber).
+        upd(&mut app, Message::MidiApply);
+        assert_eq!(app.settings.instrument_map, 2);
+        assert_eq!(app.settings.sysex_reset, 4);
+        let disk = std::fs::read_to_string(app.paths.config_file()).unwrap();
+        assert!(disk.contains("instrumentMap=2\n"));
+        assert!(disk.contains("sysexReset=4\n"));
+    }
+
+    #[test]
+    fn midi_apply_changed_stops_first_then_reselects_e2e() {
+        // Stop-first over a real playing song: the Apply sends `Stop`
+        // before `SelectOutput` (structural — sequential sends on one
+        // channel), and both take effect: the reselect answers with
+        // `OutputChanged`, and the stop lands mid-playback, so the
+        // scheduler postlude emits `Stopped`. Pumped reselect-first: the
+        // reselect answers synchronously out of `handle_command`, while
+        // `Stopped` waits for the postlude — arrival order is NOT send
+        // order here.
+        let (mut app, rx, _tmp) = test_app();
+        app.playlist
+            .set_items(vec![PathBuf::from("examples/test.mid")]);
+        upd(&mut app, Message::Play);
+        pump_opened(&mut app, &rx);
+        pump_until(&mut app, &rx, Duration::from_secs(10), |ev| {
+            matches!(ev, PlayerEvent::Started)
+        });
+        open_midi_setup(&mut app);
+        {
+            let dlg = app.midi_dlg.as_mut().unwrap();
+            dlg.scratch.backend = "Dummy".to_string();
+            dlg.scratch.port = "dummy".to_string();
+        }
+        upd(&mut app, Message::MidiApply);
+        pump_until(&mut app, &rx, Duration::from_secs(5), |ev| {
+            matches!(ev, PlayerEvent::OutputChanged { .. })
+        });
+        pump_until(&mut app, &rx, Duration::from_secs(5), |ev| {
+            matches!(ev, PlayerEvent::Stopped)
+        });
+        assert_eq!(app.playback.status, Status::Stopped);
+        assert_eq!(app.toasts, vec!["MIDI output: Dummy dummy".to_string()]);
+    }
+
+    #[test]
+    fn midi_apply_no_change_while_playing_sends_no_stop_e2e() {
+        // T13g F2: idle `Stop` is event-silent (`player.rs:640-649`), so
+        // the idle pins above prove no-`SelectOutput` but CANNOT prove
+        // no-`Stop`. Over real playback a `Stop` lands mid-scheduler and
+        // the postlude emits `Stopped` (cf. the changed-Apply pin above)
+        // — so: play, no-change Apply, drain a window of live events, and
+        // assert no `Stopped`/`OutputChanged` arrived with status still
+        // `Playing`. (Playback emits `Time`/`Note` traffic, so this drains
+        // rather than asserting total silence.)
+        let (mut app, rx, _tmp) = test_app();
+        app.playlist
+            .set_items(vec![PathBuf::from("examples/test.mid")]);
+        upd(&mut app, Message::Play);
+        pump_opened(&mut app, &rx);
+        pump_until(&mut app, &rx, Duration::from_secs(10), |ev| {
+            matches!(ev, PlayerEvent::Started)
+        });
+        open_midi_setup(&mut app);
+        upd(&mut app, Message::MidiApply);
+        assert_eq!(app.dialog, None);
+        assert!(app.midi_dlg.is_none());
+        let deadline = std::time::Instant::now() + Duration::from_millis(500);
+        loop {
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                break;
+            }
+            match rx.recv_lossless_timeout(deadline - now) {
+                Some(ev) => {
+                    assert!(
+                        !matches!(ev, PlayerEvent::Stopped),
+                        "no-change Apply must not stop playback"
+                    );
+                    assert!(
+                        !matches!(ev, PlayerEvent::OutputChanged { .. }),
+                        "no-change Apply must not reselect"
+                    );
+                    upd(&mut app, Message::Player(ev));
+                }
+                None => {}
+            }
+        }
+        assert_eq!(app.playback.status, Status::Playing);
+        assert!(app.toasts.is_empty());
+        upd(&mut app, Message::Stop);
+    }
+
+    #[test]
+    fn midi_test_note_commits_stays_open_and_announces_e2e() {
+        let (mut app, rx, _tmp) = test_app();
+        open_midi_setup(&mut app);
+        {
+            let dlg = app.midi_dlg.as_mut().unwrap();
+            dlg.scratch.backend = "Dummy".to_string();
+            dlg.scratch.port = "dummy".to_string();
+            dlg.scratch.soundfont = "/sf/gm.sf2".to_string();
+            dlg.scratch.ports = vec![crate::core::output::MidiPort {
+                id: "dummy".to_string(),
+                label: "No MIDI output".to_string(),
+            }];
+        }
+        upd(&mut app, Message::MidiTestNote);
+        // Committed verbatim (settings + live mirror), dialog stays open,
+        // optimistic status set. (The 400 ms `MidiTestNoteOff` task is
+        // dropped by `upd` — its arm is pinned separately below.)
+        assert_eq!(app.settings.sound_font, "/sf/gm.sf2");
+        assert_eq!(app.midi.soundfont, "/sf/gm.sf2");
+        assert_eq!(app.dialog, Some(Dialog::MidiSetup));
+        assert!(app.midi_dlg.is_some());
+        assert_eq!(
+            app.midi_dlg.as_ref().unwrap().test_status.as_deref(),
+            Some(TEST_NOTE_STATUS)
+        );
+        // The unconditional reselect answers + announces like Apply.
+        pump_until(&mut app, &rx, Duration::from_secs(5), |ev| {
+            matches!(ev, PlayerEvent::OutputChanged { .. })
+        });
+        assert_eq!(app.toasts, vec!["MIDI output: Dummy dummy".to_string()]);
+    }
+
+    #[test]
+    fn midi_test_note_empty_soundfont_commits_verbatim() {
+        // C++ assigns the entry unconditionally (`:1138`) — empty included
+        // (unlike Apply's skip-empty rule).
+        let (mut app, _rx, _tmp) = test_app();
+        open_midi_setup(&mut app);
+        upd(
+            &mut app,
+            Message::MidiSoundFontChanged("/sf/before.sf2".to_string()),
+        );
+        upd(&mut app, Message::MidiSoundFontChanged(String::new()));
+        upd(&mut app, Message::MidiTestNote);
+        assert!(app.settings.sound_font.is_empty());
+        assert!(app.midi.soundfont.is_empty());
+        assert_eq!(
+            app.midi_dlg.as_ref().unwrap().test_status.as_deref(),
+            Some(TEST_NOTE_STATUS)
+        );
+    }
+
+    #[test]
+    fn midi_test_note_failure_surfaces_no_output_status() {
+        // C++ `:1143-1145`: a failing test reselect sets the status line
+        // (alongside the toast) instead of the sent status.
+        let (mut app, _rx, _tmp) = test_app();
+        open_midi_setup(&mut app);
+        upd(&mut app, Message::MidiTestNote);
+        assert_eq!(
+            app.midi_dlg.as_ref().unwrap().test_status.as_deref(),
+            Some(TEST_NOTE_STATUS)
+        );
+        upd(
+            &mut app,
+            Message::Player(PlayerEvent::OutputChanged {
+                backend: "ALSA".to_string(),
+                port: "128:0".to_string(),
+                warning: Some("Unable to open MIDI output".to_string()),
+            }),
+        );
+        assert_eq!(
+            app.midi_dlg.as_ref().unwrap().test_status.as_deref(),
+            Some(NO_MIDI_OUTPUT)
+        );
+        assert!(
+            app.toasts
+                .contains(&"Unable to open MIDI output".to_string())
+        );
+    }
+
+    #[test]
+    fn midi_test_note_off_is_silent() {
+        // The release arm only sends the raw NoteOff — no state, no toast.
+        let (mut app, _rx, _tmp) = test_app();
+        open_midi_setup(&mut app);
+        upd(&mut app, Message::MidiTestNoteOff { ch: 0, note: 60 });
+        assert_eq!(app.dialog, Some(Dialog::MidiSetup));
+        assert!(app.toasts.is_empty());
+        // …and without a shell too (a late timer after close).
+        upd(&mut app, Message::CloseDialog);
+        upd(&mut app, Message::MidiTestNoteOff { ch: 0, note: 60 });
+        assert!(app.toasts.is_empty());
+    }
+
+    #[test]
+    fn midi_refill_clears_transient_test_status() {
+        // C++ refill overwrites the status label (`:1055-1058`).
+        let (mut app, _rx, _tmp) = test_app();
+        open_midi_setup(&mut app);
+        upd(&mut app, Message::MidiTestNote);
+        assert!(app.midi_dlg.as_ref().unwrap().test_status.is_some());
+        upd(
+            &mut app,
+            Message::MidiPortsRefreshed {
+                backend: "FluidSynth".to_string(),
+                advanced: false,
+                ports: vec![],
+            },
+        );
+        assert!(app.midi_dlg.as_ref().unwrap().test_status.is_none());
+    }
+
+    #[test]
+    fn midi_refill_drops_stale_arrivals() {
+        // T13g F4: two rapid backend switches launch two refills; each
+        // task blocks on ALSA enumeration, so the first task's ports can
+        // arrive late — the backend+advanced echo must drop them instead
+        // of storing A's ports under B.
+        let (mut app, _rx, _tmp) = test_app();
+        open_midi_setup(&mut app);
+        upd(&mut app, Message::MidiBackendSelected("ALSA".to_string()));
+        upd(&mut app, Message::MidiBackendSelected("Dummy".to_string()));
+        // A's ports arrive late: echo mismatch → dropped.
+        upd(
+            &mut app,
+            Message::MidiPortsRefreshed {
+                backend: "ALSA".to_string(),
+                advanced: false,
+                ports: vec![crate::core::output::MidiPort {
+                    id: "128:0".to_string(),
+                    label: "ALSA port".to_string(),
+                }],
+            },
+        );
+        assert!(scratch(&app).ports.is_empty());
+        // B's ports arrive: echo match → stored.
+        upd(
+            &mut app,
+            Message::MidiPortsRefreshed {
+                backend: "Dummy".to_string(),
+                advanced: false,
+                ports: vec![crate::core::output::MidiPort {
+                    id: "dummy".to_string(),
+                    label: "Dummy".to_string(),
+                }],
+            },
+        );
+        assert_eq!(scratch(&app).ports.len(), 1);
+        assert_eq!(scratch(&app).ports[0].id, "dummy");
+        // Same for the `Show all` leg: a pre-toggle arrival drops.
+        upd(&mut app, Message::MidiAdvancedToggled(true));
+        upd(
+            &mut app,
+            Message::MidiPortsRefreshed {
+                backend: "Dummy".to_string(),
+                advanced: false,
+                ports: vec![crate::core::output::MidiPort {
+                    id: "stale".to_string(),
+                    label: "Stale".to_string(),
+                }],
+            },
+        );
+        assert!(scratch(&app).ports.is_empty());
+        upd(
+            &mut app,
+            Message::MidiPortsRefreshed {
+                backend: "Dummy".to_string(),
+                advanced: true,
+                ports: vec![crate::core::output::MidiPort {
+                    id: "dummy".to_string(),
+                    label: "Dummy".to_string(),
+                }],
+            },
+        );
+        assert_eq!(scratch(&app).ports.len(), 1);
+    }
+
+    #[test]
+    fn enumerate_ports_lists_known_backends() {
+        // FluidSynth + Dummy enumerate deterministically (no hardware);
+        // unknown names fall back to the front backend (manager A6c rule —
+        // pinned by equality with ALSA, whatever the host sequencer says).
+        let fluid = enumerate_ports("FluidSynth", false);
+        assert_eq!(fluid.len(), 1);
+        assert_eq!(fluid[0].id, "fluidsynth");
+        let dummy = enumerate_ports("Dummy", true);
+        assert_eq!(
+            dummy,
+            vec![crate::core::output::MidiPort {
+                id: "dummy".to_string(),
+                label: "No MIDI output".to_string(),
+            }]
+        );
+        assert_eq!(
+            enumerate_ports("NoSuchBackend", false),
+            enumerate_ports("ALSA", false)
+        );
     }
 
     // -- prefs / song settings ------------------------------------------------------
@@ -3464,6 +4662,40 @@ mod tests {
         assert_eq!(app.lyrics.codec, "SHIFT_JIS");
     }
 
+    #[test]
+    fn manual_song_actions_ungated_by_auto_flag() {
+        // C++ `app.save/load-settings` call save/load directly (`:1405-1408`)
+        // — the `autoSongSettings` flag drives only the auto call sites.
+        // Both flag states run the action with a song loaded.
+        for auto in [false, true] {
+            let (mut app, _rx, _tmp) = test_app();
+            app.song = Some(test_song());
+            app.settings.auto_song_settings = auto;
+            upd(&mut app, Message::SongSettingsSave);
+            assert!(
+                app.paths.song_settings_path("song.mid").is_file(),
+                "manual save must run with auto_song_settings={auto}"
+            );
+            // Load runs too (silent — the fresh save parses cleanly).
+            upd(&mut app, Message::SongSettingsLoad);
+            assert!(app.toasts.is_empty());
+        }
+    }
+
+    #[test]
+    fn manual_song_actions_noop_on_empty_title() {
+        // `manual_song_action_allowed`: `Some("")` is as gated as `None`
+        // (the C++ empty-name guards, `:633-635`/`:663-665`).
+        let (mut app, _rx, _tmp) = test_app();
+        let mut song = test_song();
+        song.title = String::new();
+        app.song = Some(song);
+        upd(&mut app, Message::SongSettingsSave);
+        upd(&mut app, Message::SongSettingsLoad);
+        assert!(app.toasts.is_empty());
+        assert!(!app.paths.data_dir().exists());
+    }
+
     // -- dialogs / navigation ---------------------------------------------------------
 
     #[test]
@@ -3489,6 +4721,55 @@ mod tests {
         upd(&mut app, Message::DismissToast);
         upd(&mut app, Message::DismissToast); // empty → no panic
         assert!(app.toasts.is_empty());
+    }
+
+    #[test]
+    fn info_dialogs_abandon_shells_like_switch() {
+        // T13g F3: `ShowFileInfo`/`ShowAbout`/`ShowHelp` route through
+        // `open_dialog`, so the D3/prefs shells are abandoned exactly like
+        // any dialog switch — no hidden shell survives under the info
+        // dialog for a stale `MidiApply` to commit (the F2(a) hazard).
+        let (mut app, _rx, _tmp) = test_app();
+        open_midi_setup(&mut app);
+        upd(&mut app, Message::MidiInstrumentMapChanged(2));
+        upd(&mut app, Message::ShowFileInfo);
+        assert_eq!(app.dialog, Some(Dialog::FileInfo));
+        assert!(app.midi_dlg.is_none());
+        // A stale Apply now no-ops: settings untouched, dialog still open.
+        upd(&mut app, Message::MidiApply);
+        assert_eq!(app.settings.instrument_map, 0);
+        assert_eq!(app.dialog, Some(Dialog::FileInfo));
+        // Same for the prefs shell, and the other two info dialogs.
+        upd(&mut app, Message::ShowDialog(Dialog::Preferences));
+        assert!(app.prefs.is_some());
+        upd(&mut app, Message::ShowAbout);
+        assert!(app.prefs.is_none());
+        assert_eq!(app.dialog, Some(Dialog::About));
+        open_midi_setup(&mut app);
+        upd(&mut app, Message::ShowHelp);
+        assert!(app.midi_dlg.is_none());
+        assert_eq!(app.dialog, Some(Dialog::Help));
+    }
+
+    #[test]
+    fn open_url_launches_silently_errors_toast() {
+        // `OpenUrl` only launches the opener task — no state change;
+        // `UrlOpened(Ok)` is silent (D13 precedent), `Err` toasts.
+        let (mut app, _rx, _tmp) = test_app();
+        upd(&mut app, Message::ShowDialog(Dialog::About));
+        upd(
+            &mut app,
+            Message::OpenUrl("https://example.invalid/".to_string()),
+        );
+        assert_eq!(app.dialog, Some(Dialog::About));
+        assert!(app.toasts.is_empty());
+        upd(&mut app, Message::UrlOpened(Ok(())));
+        assert!(app.toasts.is_empty());
+        upd(
+            &mut app,
+            Message::UrlOpened(Err("Could not open x: boom".to_string())),
+        );
+        assert_eq!(app.toasts, vec!["Could not open x: boom".to_string()]);
     }
 
     #[test]
@@ -3593,6 +4874,8 @@ mod tests {
             highest_note: 96,
             charset: "UTF-8".to_string(),
             texts: Vec::new(),
+            metadata: Vec::new(),
+            copyrights: Vec::new(),
         }
     }
 
@@ -4501,6 +5784,59 @@ mod tests {
         let _ = app.view();
         // Overlay over the lyrics page too, then close.
         app.view = View::Lyrics;
+        let _ = app.view();
+        upd(&mut app, Message::CloseDialog);
+        let _ = app.view();
+    }
+
+    #[test]
+    fn view_builds_piano_page_and_t13_dialogs() {
+        // Every T13c composition surface builds without panic: the piano
+        // page (no-song ch0 keyboard + lit tightened song keyboards) and
+        // each dialog sheet over it (D3 with ports + transient status, D7,
+        // D8, D6 loaded + empty, D5, D4 with link constructors).
+        let (mut app, _rx, _tmp) = test_app();
+        app.view = View::Piano;
+        let _ = app.view();
+        open_fake_song(&mut app);
+        app.piano.tighten = true;
+        upd(&mut app, Message::PianoPreviewOn(0, 60));
+        let _ = app.view();
+        // D3, populated + transient status.
+        open_midi_setup(&mut app);
+        upd(
+            &mut app,
+            Message::MidiPortsRefreshed {
+                backend: "FluidSynth".to_string(),
+                advanced: false,
+                ports: vec![crate::core::output::MidiPort {
+                    id: "128:0".to_string(),
+                    label: "Munt MT-32:Standard".to_string(),
+                }],
+            },
+        );
+        upd(&mut app, Message::MidiTestNote);
+        let _ = app.view();
+        upd(&mut app, Message::CloseDialog);
+        // D7 + D8.
+        upd(&mut app, Message::ShowDialog(Dialog::JumpToBar));
+        let _ = app.view();
+        upd(&mut app, Message::CloseDialog);
+        upd(&mut app, Message::ShowDialog(Dialog::Loop));
+        let _ = app.view();
+        upd(&mut app, Message::CloseDialog);
+        // D6 loaded + empty, D5, D4.
+        upd(&mut app, Message::ShowFileInfo);
+        let _ = app.view();
+        upd(&mut app, Message::CloseDialog);
+        app.song = None;
+        upd(&mut app, Message::ShowFileInfo);
+        let _ = app.view();
+        upd(&mut app, Message::CloseDialog);
+        upd(&mut app, Message::ShowHelp);
+        let _ = app.view();
+        upd(&mut app, Message::CloseDialog);
+        upd(&mut app, Message::ShowAbout);
         let _ = app.view();
         upd(&mut app, Message::CloseDialog);
         let _ = app.view();

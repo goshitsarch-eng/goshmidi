@@ -200,7 +200,7 @@ lead = PLAN/DECISIONS/REPORT + glue.
 - [x] T12 Channels + prefs (ux): 16 rows + solo/mute formula + meters + — DONE (suite 460/460, 16 integration tests, modal FIX T12f ruled+fixed, devil SIGN-OFF; 3 follow-ups → T13)
       patch relabel, prefs General/Piano pages (`spin_button`s, U4);
       integration tests.
-- [ ] T13 Piano + remaining dialogs (ux): canvas program + drawn-range clicks
+- [x] T13 Piano + remaining dialogs (ux): canvas program + drawn-range clicks — DONE (suite 576/576, 22 integration tests, U3 FIX confirmed, F1/F2 + devil F1–F5 fixed, devil SIGN-OFF; 6 follow-ups → T14)
       (U12) + A3 audition rules, D3 MIDI setup + D6/D7/D8/D5/D4, song-settings
       manual actions; integration tests.
 - [ ] T14 Shortcuts + theming + integration (ux): 9 accelerators, 23-item menu

@@ -477,10 +477,18 @@ enum EngineCommand {
     SetDrumsChannel(u8), SetSysexReset(u8),
     SelectOutput { backend: String, port: String },
     SetSoundFont(String),
-    PreviewNote { ch: u8, note: u8, vel: u8 }, PreviewOff,
+    PreviewNote { ch: u8, note: u8, vel: u8 }, PreviewOff { notes: Vec<(u8, u8)> },
     Shutdown,
 }
 ```
+
+D19 refinement (T13c): `PreviewNote`/`PreviewOff` ARE engine commands, not
+app-local calls — the outputs live in the engine thread, so "app-only"
+(D19's original wording) can only mean "bypasses the player MIX", not "no
+engine command". The handlers write straight to the current output and touch
+no mute/pitch/sequencing state (A3 bypass, `window.cpp:2098-2116`); the
+piano/test-note arms in `app.rs` send them, and the idle-only release gate
+lives app-side (`preview_off_targets`).
 
 - `EngineHandle { tx: mpsc::Sender<EngineCommand> }` (`Clone`, `Send`).
 - Engine loop: command queue polled on **every echo tick** (mirroring the C++
@@ -834,7 +842,10 @@ config::SongSettings // all §4.3 keys + load/save/apply
 src/
   main.rs            CLI parsing, portable setup, run_single_instance boot (§2.5)
   app.rs             App state (§2.1), update(), view(), subscriptions
+                     + T13c D3/D7/D8 dialog shells, piano/test-note arms,
+                     T13 sheet wiring via `chrome::wrap_modal`
   message.rs         Message + PlayerEvent + EngineCommand + Dialog + View enums
+                     + T13c scratch/URI/test-note variants, D6 `LoadedSong` fields
   core/
     mod.rs
     event.rs         MidiEvent, Kind, TextType, constants, factories  (events.*)
@@ -843,6 +854,8 @@ src/
     rmi.rs           loadRmi
     wrk.rs           loadWrk (+ chunk consts, banked sysex)
     player.rs        Engine thread, scheduler, mixing, pacing          (player.*)
+                     + T13c `PreviewNote`/`PreviewOff` bypass commands +
+                     D6 `metadata`/`copyrights` snapshot fields
     output.rs        MidiOutput trait + Manager + port types           (output.*)
     output_alsa.rs   AlsaOutput                                        (output.cpp split)
     output_fluid.rs  FluidOutput + SoundFont search
@@ -852,9 +865,19 @@ src/
     playback.rs      PlaybackState + repeat/finish policy
     playlist.rs      PlaylistState + .lst load/save                   (playlist.*)
     channels.rs      [ChannelState; 16] + solo/mute reduction math
-    lyrics.rs        LyricsState + filtering + tag-span model
-    piano.rs         PianoState + geometry/note-name helpers
-    midi.rs          MidiState (backends/ports/selections)
+    lyrics.rs        LyricsState + filtering + tag-span model (+ Rgba /
+                     gdk_rgba_parse parity shared by the piano read path)
+    piano.rs         PianoState + T13a geometry (drawn range, rows, click→note
+                     with the U12 drawn-range FIX), A3 audition rules
+                     (PreviewNote spec → engine-carried bypass, idle-only
+                     offs), highlight / velocity / note-name settings read path
+    midi.rs          MidiState (backends/ports/selections) + T13a D3 logic
+                     (field order, refill preselect, port→profile, test-note
+                     plan, hint strings, stop-first on reseat)
+    dialogs.rs       T13a D7/D8/D6/D5/D4 pure logic: jump range + pause-jump-
+                     resume plan, loop entry/seeds/confirm/cancel (+ U3 menu
+                     FIX pin), file-info assembly, kHelpText copy, About table,
+                     manual song-settings precondition
   config/
     mod.rs
     paths.rs         config/data/song paths + portable mode

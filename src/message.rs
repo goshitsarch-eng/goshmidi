@@ -6,10 +6,12 @@
 //! re-exported here** (DECISIONS D19): one definition, no bridge `From`
 //! impls, no drift. Consequences of that ownership:
 //! * `PlayerEvent::NoteOff` carries `vel` (C++ `onNoteOff` parity).
-//! * There are no engine `PreviewNote`/`PreviewOff` commands: piano audition
-//!   bypasses the player and talks to the outputs directly (A3), so
-//!   `Message::PianoPreviewOn/Off` are app-only messages handled in
-//!   `app.rs`, never engine commands.
+//! * `PreviewNote`/`PreviewOff` ARE engine commands (T13c D19 refinement):
+//!   piano audition bypasses the player MIX (A3 — no mute/pitch/sequencing
+//!   touch), but the outputs live in the engine thread, so "app-only" can
+//!   only mean "bypasses player mix", not "no engine command". The
+//!   `PianoPreviewOn/Off` / test-note arms in `app.rs` send them; the
+//!   engine handlers write straight to the current output.
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -119,8 +121,10 @@ pub enum Message {
     // --- piano ---
     // NOTE: no per-channel visibility toggle — `m_pianoShow[]` is never
     // created in C++ (window.hpp:103); that would be a new feature (arch §1.7).
-    // Preview is app-only (A3 direct-output): there is deliberately no
-    // matching `EngineCommand` — audition bypasses mute and pitch shift.
+    // Preview bypasses the player mix (A3): the arms light/clear the matrix
+    // AND send the engine-carried `PreviewNote`/`PreviewOff` raw writes
+    // (D19 refinement — the outputs live engine-side, so the bypass still
+    // crosses the thread, touching no mute/pitch/sequencing state).
     PianoTighten(bool),
     PianoShowAll,
     PianoHideUnused,
@@ -129,15 +133,52 @@ pub enum Message {
 
     // --- MIDI setup ---
     MidiBackendSelected(String),
-    MidiPortsRefreshed(Vec<MidiPort>),
+    /// D3 refill completion. `backend`/`advanced` echo the requesting
+    /// scratch values (T13g F4): the arm drops arrivals whose echo no
+    /// longer matches, so a late task from a superseded backend switch
+    /// cannot clobber the current port list.
+    MidiPortsRefreshed {
+        backend: String,
+        advanced: bool,
+        ports: Vec<MidiPort>,
+    },
     MidiPortSelected(String),
     MidiAdvancedToggled(bool),
     MidiInstrumentMapChanged(u8),
     MidiResetChanged(u8),
     MidiSoundFontChanged(String),
     MidiSoundFontBrowse,
+    /// D11 chooser result: `Ok(path)` commits the path into the D3 scratch
+    /// entry (deferred — Test/Apply carry it to the engine); `Err` (non-file
+    /// URL or I/O failure) toasts. Portal cancel maps to the silent
+    /// `ChooserCancelled`, never here.
+    MidiSoundFontChosen(Result<PathBuf, String>),
     MidiTestNote,
+    /// Test-note release (the `MidiTestNote` arm's 400 ms sleep resolves
+    /// here): unconditional raw NoteOff via `PreviewOff`, like the C++
+    /// `g_timeout` (`window.cpp:1148-1153` — no idle gate, unlike piano).
+    MidiTestNoteOff {
+        ch: u8,
+        note: u8,
+    },
     MidiApply,
+
+    // --- D7/D8 dialog scratch (spin edits ride these, prefs `on_scratch`
+    // precedent — per-edit `JumpToBar`/`LoopSet` would jump/apply-on-step
+    // and is banned; the views clamp for display, the confirm arms clamp
+    // via `clamp_jump_bar`/`loop_confirm`) ---
+    JumpBarEdited(u32),
+    LoopFromEdited(u32),
+    LoopToEdited(u32),
+
+    // --- D4 about links ---
+    /// Open a URL with the system opener (`xdg-open`, D6 choice (a) like
+    /// D13 — in-sandbox it forwards through the OpenURI portal, so no
+    /// finish-args are needed). Resolves as `UrlOpened`.
+    OpenUrl(String),
+    /// Open-URI result: `Ok` is silent (the viewer owns everything after
+    /// the detached spawn); `Err` (spawn failure) toasts.
+    UrlOpened(Result<(), String>),
 
     // --- preferences (commit-on-close scratch state, applied + saved by
     // `App::apply_prefs`, incl. solo% per U14) ---
@@ -145,7 +186,7 @@ pub enum Message {
     /// Whole-scratch prefs edit (T12b shell): adopted scratch-only via
     /// `adopt_prefs_scratch` — never applied, never saved. Per-edit
     /// `PrefsChanged` would be commit-on-change and is banned; the single
-    /// `PrefsChanged(scratch)` fires once at dialog close.
+    /// `PrefsChanged(merged)` of the narrowed 17-key commit fires once at dialog close.
     PrefsScratchEdited(SettingsState),
     /// D17 picker updates for the three D2 Lyrics color rows (T12b shell):
     /// one constructor per row — the picker builder takes `fn` pointers, so
@@ -288,6 +329,11 @@ pub struct LoadedSong {
     pub charset: String,
     /// Raw text/meta records for the lyrics view (T11 decodes + filters).
     pub texts: Vec<TextRec>,
+    /// RIFF INFO `(key, value)` pairs in map order (D6 file-info dialog).
+    pub metadata: Vec<(String, String)>,
+    /// Decoded copyright records in event order (D6; same bytes the view
+    /// decodes from `texts` + `charset`).
+    pub copyrights: Vec<String>,
 }
 
 impl From<SongSnapshot> for LoadedSong {
@@ -307,6 +353,8 @@ impl From<SongSnapshot> for LoadedSong {
             highest_note: s.highest_note,
             charset: s.charset,
             texts: s.texts,
+            metadata: s.metadata,
+            copyrights: s.copyrights,
         }
     }
 }
@@ -351,8 +399,12 @@ mod tests {
             id: "128:0".to_string(),
             label: "Synth".to_string(),
         };
-        let msg = Message::MidiPortsRefreshed(vec![port]);
-        assert!(matches!(msg, Message::MidiPortsRefreshed(_)));
+        let msg = Message::MidiPortsRefreshed {
+            backend: "ALSA".to_string(),
+            advanced: false,
+            ports: vec![port],
+        };
+        assert!(matches!(msg, Message::MidiPortsRefreshed { .. }));
     }
 
     /// `NoteOff` carries `vel` (C++ `onNoteOff(ch, note, vel)` parity —
@@ -417,6 +469,8 @@ mod tests {
             highest_note: 108,
             charset: "UTF-8".to_string(),
             texts: Vec::new(),
+            metadata: vec![("INAM".to_string(), "Name".to_string())],
+            copyrights: vec!["© 1999 Anon".to_string()],
         }
     }
 
@@ -438,6 +492,11 @@ mod tests {
         assert_eq!(song.highest_note, 108);
         assert_eq!(song.charset, "UTF-8");
         assert!(song.texts.is_empty());
+        assert_eq!(
+            song.metadata,
+            vec![("INAM".to_string(), "Name".to_string())]
+        );
+        assert_eq!(song.copyrights, vec!["© 1999 Anon".to_string()]);
     }
 
     #[test]
