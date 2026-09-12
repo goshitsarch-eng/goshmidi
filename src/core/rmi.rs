@@ -90,10 +90,8 @@ pub(crate) fn load_rmi(seq: &mut Sequence, data: &[u8]) -> bool {
                     while val.last() == Some(&0) {
                         val.pop();
                     }
-                    seq.info_map.insert(
-                        key,
-                        String::from_utf8_lossy(&val).into_owned(),
-                    );
+                    seq.info_map
+                        .insert(key, String::from_utf8_lossy(&val).into_owned());
                 }
             }
             r.pos = list_end;
@@ -298,8 +296,18 @@ mod tests {
         bad_smf_data.extend_from_slice(b"12345678");
         let cases: &[(&str, Vec<u8>, bool, &str)] = &[
             ("empty", vec![], false, "Not a RIFF file<br/>"),
-            ("short", b"RIFF\x04\0\0\0".to_vec(), false, "Not a RIFF file<br/>"),
-            ("non-riff", b"XXXX\x04\0\0\0XXXX".to_vec(), false, "Not a RIFF file<br/>"),
+            (
+                "short",
+                b"RIFF\x04\0\0\0".to_vec(),
+                false,
+                "Not a RIFF file<br/>",
+            ),
+            (
+                "non-riff",
+                b"XXXX\x04\0\0\0XXXX".to_vec(),
+                false,
+                "Not a RIFF file<br/>",
+            ),
             (
                 "non-rmid",
                 [b"RIFF".as_slice(), &4u32.to_le_bytes(), b"XXXX"].concat(),

@@ -60,7 +60,10 @@ fn chan_idx(channel: i32) -> usize {
 /// Track offsets for a 0-based WRK track (the C++ `recFor` closure):
 /// the 1-based map entry, or a default (no override) record.
 fn rec_for(seq: &Sequence, track0: i32) -> TrackMapRec {
-    seq.track_map.get(&(track0 + 1)).copied().unwrap_or_default()
+    seq.track_map
+        .get(&(track0 + 1))
+        .copied()
+        .unwrap_or_default()
 }
 
 /// Channel-voice event with the track's channel override applied (the C++
@@ -129,10 +132,7 @@ fn wrk_note(seq: &mut Sequence, track0: i32, time: i64, chan: i32, pitch: i32, v
 /// `add_meta_data` ignores empty payloads.
 fn wrk_meta(seq: &mut Sequence, track1: i32, time: i64, text_type: TextType, data: &[u8]) {
     seq.add_meta_data(time, track1, text_type as i32, data);
-    if matches!(
-        text_type,
-        TextType::TrackName | TextType::InstrumentName
-    ) {
+    if matches!(text_type, TextType::TrackName | TextType::InstrumentName) {
         let channel = seq.track_map.entry(track1).or_default().channel;
         if channel > -1 {
             let name = seq.trk_name.get(&track1).cloned().unwrap_or_default();
@@ -443,15 +443,7 @@ pub(crate) fn load_wrk(seq: &mut Sequence, data: &[u8]) -> bool {
                     );
                 }
                 if patch > -1 {
-                    wrk_chan_event(
-                        seq,
-                        track,
-                        0,
-                        ch,
-                        Kind::ProgramChange,
-                        patch,
-                        0,
-                    );
+                    wrk_chan_event(seq, track, 0, ch, Kind::ProgramChange, patch, 0);
                 }
             }
             STREAM_CHUNK => process_stream(seq, &mut chunk),
@@ -881,7 +873,10 @@ mod tests {
             payload.extend_from_slice(data);
             payload
         }
-        out.extend_from_slice(&chunk(VARIABLE_CHUNK, &variable("Title", b"Mini WRK Title")));
+        out.extend_from_slice(&chunk(
+            VARIABLE_CHUNK,
+            &variable("Title", b"Mini WRK Title"),
+        ));
         out.extend_from_slice(&chunk(VARIABLE_CHUNK, &variable("Author", b"Gosh")));
         out.extend_from_slice(&chunk(VARIABLE_CHUNK, &variable("Bogus", b"ignored")));
         let mut markers = 2u16.to_le_bytes().to_vec();
@@ -1079,7 +1074,17 @@ mod tests {
                 (Kind::TimeSignature, 0, 1, 0, 4, 4, 0, t500k, String::new()),
                 (Kind::TimeSignature, 0, 9, 0, 6, 8, 0, t500k, String::new()),
                 (Kind::KeySignature, 0, 0, 0, -2, 0, 0, t500k, String::new()),
-                (Kind::Text, 0, 1, 0, 1, 0, 0, t500k, "57524b20636f6d6d656e747320c3bc".into()),
+                (
+                    Kind::Text,
+                    0,
+                    1,
+                    0,
+                    1,
+                    0,
+                    0,
+                    t500k,
+                    "57524b20636f6d6d656e747320c3bc".into()
+                ),
                 (Kind::ProgramChange, 0, 2, 1, 40, 0, 0, t500k, String::new()),
                 (Kind::ControlChange, 0, 1, 0, 7, 1, 0, t500k, String::new()),
                 (Kind::ControlChange, 0, 1, 0, 0, 4, 0, t500k, String::new()),
@@ -1090,22 +1095,112 @@ mod tests {
                 (Kind::Beat, 0, 0, 0, 1, 1, 4, t500k, String::new()),
                 (Kind::NoteOff, 60, 2, 1, 71, 90, 0, t500k, String::new()),
                 (Kind::NoteOff, 240, 1, 0, 62, 97, 0, t500k, String::new()),
-                (Kind::ControlChange, 240, 1, 0, 7, 90, 0, t500k, String::new()),
+                (
+                    Kind::ControlChange,
+                    240,
+                    1,
+                    0,
+                    7,
+                    90,
+                    0,
+                    t500k,
+                    String::new()
+                ),
                 (Kind::Text, 240, 2, 0, 5, 0, 0, t500k, "7369".into()),
-                (Kind::ProgramChange, 480, 1, 0, 5, 0, 0, t500k, String::new()),
+                (
+                    Kind::ProgramChange,
+                    480,
+                    1,
+                    0,
+                    5,
+                    0,
+                    0,
+                    t500k,
+                    String::new()
+                ),
                 (Kind::NoteOn, 480, 1, 0, 66, 77, 0, t500k, String::new()),
                 (Kind::Beat, 480, 0, 0, 1, 2, 4, t500k, String::new()),
                 (Kind::NoteOff, 600, 1, 0, 66, 77, 0, t500k, String::new()),
-                (Kind::KeyPressure, 600, 1, 0, 65, 70, 0, t500k, String::new()),
-                (Kind::ControlChange, 720, 1, 0, 10, 20, 0, t500k, String::new()),
+                (
+                    Kind::KeyPressure,
+                    600,
+                    1,
+                    0,
+                    65,
+                    70,
+                    0,
+                    t500k,
+                    String::new()
+                ),
+                (
+                    Kind::ControlChange,
+                    720,
+                    1,
+                    0,
+                    10,
+                    20,
+                    0,
+                    t500k,
+                    String::new()
+                ),
                 (Kind::SysEx, 840, 1, 0, 0, 0, 0, t500k, "f0411042f7".into()),
-                (Kind::Tempo, 960, 0, 0, 0, 0, 0, 1_000_000f64.to_bits(), String::new()),
-                (Kind::ProgramChange, 960, 1, 0, 7, 0, 0, t500k, String::new()),
+                (
+                    Kind::Tempo,
+                    960,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    1_000_000f64.to_bits(),
+                    String::new()
+                ),
+                (
+                    Kind::ProgramChange,
+                    960,
+                    1,
+                    0,
+                    7,
+                    0,
+                    0,
+                    t500k,
+                    String::new()
+                ),
                 (Kind::Beat, 960, 0, 0, 1, 3, 4, t500k, String::new()),
-                (Kind::ChannelPressure, 1080, 1, 0, 9, 0, 0, t500k, String::new()),
+                (
+                    Kind::ChannelPressure,
+                    1080,
+                    1,
+                    0,
+                    9,
+                    0,
+                    0,
+                    t500k,
+                    String::new()
+                ),
                 (Kind::PitchBend, 1200, 1, 0, 0, 0, 0, t500k, String::new()),
-                (Kind::Tempo, 1920, 0, 0, 0, 0, 0, 400_000f64.to_bits(), String::new()),
-                (Kind::TimeSignature, 7680, 5, 0, 3, 4, 0, t500k, String::new()),
+                (
+                    Kind::Tempo,
+                    1920,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    400_000f64.to_bits(),
+                    String::new()
+                ),
+                (
+                    Kind::TimeSignature,
+                    7680,
+                    5,
+                    0,
+                    3,
+                    4,
+                    0,
+                    t500k,
+                    String::new()
+                ),
             ]
         );
     }
@@ -1205,7 +1300,13 @@ mod tests {
         corrupt.extend_from_slice(&0xFFFFu32.to_le_bytes());
         let cases: &[(&str, Vec<u8>, bool, &str, &str)] = &[
             ("empty", vec![], false, "Invalid WRK header<br/>", ""),
-            ("short", b"CAKEWALK\x00\x02".to_vec(), false, "Invalid WRK header<br/>", ""),
+            (
+                "short",
+                b"CAKEWALK\x00\x02".to_vec(),
+                false,
+                "Invalid WRK header<br/>",
+                "",
+            ),
             (
                 "bad-head",
                 [b"CAKEWALX".as_slice(), &[0; 8]].concat(),

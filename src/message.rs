@@ -110,20 +110,59 @@ pub enum Message {
 #[derive(Clone, Debug)]
 pub enum PlayerEvent {
     Opened(LoadedSong),
-    LoadFailed { file: String, errors: Vec<String> },
-    Time { elapsed_ms: u64, ticks: i64 },
-    Beat { bar: u32, beat: u32, max: u32 },
-    NoteOn { ch: u8, note: u8, vel: u8 },
-    NoteOff { ch: u8, note: u8 },
-    Text { track: u32, text_type: i32, ticks: i64, bytes: Vec<u8> },
-    Program { ch: u8, patch: u8 },
-    Tempo { tempo_us: f64 },
-    KeySignature { track: u32, alterations: i8, minor: bool },
-    TimeSignature { bar: u32, num: u8, den: u8 },
+    LoadFailed {
+        file: String,
+        errors: Vec<String>,
+    },
+    Time {
+        elapsed_ms: u64,
+        ticks: i64,
+    },
+    Beat {
+        bar: u32,
+        beat: u32,
+        max: u32,
+    },
+    NoteOn {
+        ch: u8,
+        note: u8,
+        vel: u8,
+    },
+    NoteOff {
+        ch: u8,
+        note: u8,
+    },
+    Text {
+        track: u32,
+        text_type: i32,
+        ticks: i64,
+        bytes: Vec<u8>,
+    },
+    Program {
+        ch: u8,
+        patch: u8,
+    },
+    Tempo {
+        tempo_us: f64,
+    },
+    KeySignature {
+        track: u32,
+        alterations: i8,
+        minor: bool,
+    },
+    TimeSignature {
+        bar: u32,
+        num: u8,
+        den: u8,
+    },
     Started,
     Stopped,
     Finished,
-    OutputChanged { backend: String, port: String, warning: Option<String> },
+    OutputChanged {
+        backend: String,
+        port: String,
+        warning: Option<String>,
+    },
 }
 
 /// UI → engine commands sent over the engine channel (arch §2.4).
@@ -134,7 +173,9 @@ pub enum EngineCommand {
     Load(PathBuf),
     Play,
     Pause,
-    Stop { reset: bool },
+    Stop {
+        reset: bool,
+    },
     /// `SequencePlayer::resetPosition`: cursor + ticks + latest-beat reset.
     ResetPosition,
     SeekTicks(i64),
@@ -147,12 +188,23 @@ pub enum EngineCommand {
     SetMuted(u8, bool),
     SetLocked(u8, bool),
     SetPatch(u8, u8),
-    SetLoop { enabled: bool, start: u32, end: u32 },
+    SetLoop {
+        enabled: bool,
+        start: u32,
+        end: u32,
+    },
     SetDrumsChannel(u8),
     SetSysexReset(u8),
-    SelectOutput { backend: String, port: String },
+    SelectOutput {
+        backend: String,
+        port: String,
+    },
     SetSoundFont(String),
-    PreviewNote { ch: u8, note: u8, vel: u8 },
+    PreviewNote {
+        ch: u8,
+        note: u8,
+        vel: u8,
+    },
     PreviewOff,
     Shutdown,
 }

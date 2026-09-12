@@ -85,9 +85,7 @@ fn parse_args(args: &[String]) -> (Cli, Option<EarlyExit>) {
 /// present and non-empty; otherwise ignored.
 fn midi_override(cli: &Cli) -> (Option<String>, Option<String>) {
     match (&cli.backend, &cli.conn) {
-        (Some(b), Some(c)) if !b.is_empty() && !c.is_empty() => {
-            (Some(b.clone()), Some(c.clone()))
-        }
+        (Some(b), Some(c)) if !b.is_empty() && !c.is_empty() => (Some(b.clone()), Some(c.clone())),
         _ => (None, None),
     }
 }
@@ -216,7 +214,10 @@ mod tests {
     #[test]
     fn driver_connection_are_both_or_neither() {
         let (cli, _) = parse_args(&argv(&["-d", "ALSA", "-c", "14:0"]));
-        assert_eq!(midi_override(&cli), (Some("ALSA".into()), Some("14:0".into())));
+        assert_eq!(
+            midi_override(&cli),
+            (Some("ALSA".into()), Some("14:0".into()))
+        );
 
         for args in [&["-d", "ALSA"][..], &["-c", "14:0"][..], &[][..]] {
             let (cli, _) = parse_args(&argv(args));
@@ -235,7 +236,10 @@ mod tests {
             "definitely-not-here-12345.mid",
         ]));
         assert_eq!(cli.files, vec![std::fs::canonicalize(&song).unwrap()]);
-        assert_eq!(cli.missing, vec!["definitely-not-here-12345.mid".to_owned()]);
+        assert_eq!(
+            cli.missing,
+            vec!["definitely-not-here-12345.mid".to_owned()]
+        );
     }
 
     #[test]

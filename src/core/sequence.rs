@@ -171,7 +171,9 @@ fn is_latin1_label(charset: &str) -> bool {
         "cp819",
         "ibm819",
     ];
-    ALIASES.iter().any(|alias| charset.eq_ignore_ascii_case(alias))
+    ALIASES
+        .iter()
+        .any(|alias| charset.eq_ignore_ascii_case(alias))
 }
 
 /// True for charset labels that `g_convert`/iconv decode as true
@@ -190,7 +192,9 @@ fn is_latin5_label(charset: &str) -> bool {
         "latin5",
         "csisolatin5",
     ];
-    ALIASES.iter().any(|alias| charset.eq_ignore_ascii_case(alias))
+    ALIASES
+        .iter()
+        .any(|alias| charset.eq_ignore_ascii_case(alias))
 }
 
 /// ISO-8859-9 (latin5) single-byte table: identity except the six Turkish
@@ -299,8 +303,7 @@ impl Sequence {
         // MIDI text is not web content, so ISO-2022-JP stays a possible
         // guess (the email/honest-detection setting), and UTF-8 is always
         // allowed; the TLD is unknown so detection runs unconditioned.
-        let mut detector =
-            chardetng::EncodingDetector::new(chardetng::Iso2022JpDetection::Allow);
+        let mut detector = chardetng::EncodingDetector::new(chardetng::Iso2022JpDetection::Allow);
         detector.feed(&self.charset_sample, true);
         let encoding = detector.guess(None, chardetng::Utf8Detection::Allow);
         self.charset = encoding.name().to_string();
@@ -1392,8 +1395,18 @@ mod tests {
     ///   (`0xA1+`) errors and returns the record raw, while WHATWG EUC-KR
     ///   accepts the low trail and decodes Hangul U+D6A9.
     const DIVERGENT: &[(&str, &str, usize, u64)] = &[
-        ("haendel_hallelujah.mid", "SHIFT_JIS", 1619, 0xf8b9d9e3e9414be4),
-        ("mozart_konigdernacht.mid", "SHIFT_JIS", 1204, 0x0cdd3c0f50d66859),
+        (
+            "haendel_hallelujah.mid",
+            "SHIFT_JIS",
+            1619,
+            0xf8b9d9e3e9414be4,
+        ),
+        (
+            "mozart_konigdernacht.mid",
+            "SHIFT_JIS",
+            1204,
+            0x0cdd3c0f50d66859,
+        ),
         ("Schubert_Standchen.mid", "EUC-KR", 800, 0x60331bb9c4ad82a2),
         ("Negra_Sombra.kar", "SHIFT_JIS", 915, 0x0af6041f8942ff02),
         ("twinkle.kar", "SHIFT_JIS", 648, 0x34e08aa2a95b567e),
@@ -1408,11 +1421,19 @@ mod tests {
         for fx in CODEC_FIXTURES {
             let path = Path::new("examples").join(fx.name);
             let mut seq = Sequence::default();
-            assert!(seq.load_file(&path), "{}: {:?}", fx.name, seq.loading_errors);
+            assert!(
+                seq.load_file(&path),
+                "{}: {:?}",
+                fx.name,
+                seq.loading_errors
+            );
             for (i, codec) in codecs.iter().enumerate() {
                 let cat = decode_all(&mut seq, codec);
                 let (len, fnv) = (cat.len(), fnv1a64_str(&cat));
-                match DIVERGENT.iter().find(|(f, c, _, _)| *f == fx.name && *c == codec) {
+                match DIVERGENT
+                    .iter()
+                    .find(|(f, c, _, _)| *f == fx.name && *c == codec)
+                {
                     Some((_, _, rust_len, rust_fnv)) => {
                         // Pinned library delta: assert the Rust pair, and
                         // that it still differs from the oracle (a silent
@@ -1437,15 +1458,63 @@ mod tests {
         // `MAC-CENTRALEUROPE` misdetection mojibakes (oracle pair
         // 51/`425a9cd8564b041d`) while chardetng decodes correctly.
         const DEFAULTS: &[(&str, &str, &str, usize, u64)] = &[
-            ("haendel_hallelujah.mid", "UTF-8", "ASCII", 1619, 0xf8b9d9e3e9414be4),
+            (
+                "haendel_hallelujah.mid",
+                "UTF-8",
+                "ASCII",
+                1619,
+                0xf8b9d9e3e9414be4,
+            ),
             ("lindaamiga.mid", "UTF-8", "ASCII", 784, 0x79613d8e28abeffc),
-            ("mozart_aveverum.mid", "UTF-8", "ASCII", 592, 0xd5db686a98fbdc7d),
-            ("mozart_diesirae.mid", "UTF-8", "ASCII", 1044, 0xd0560a7b666ca263),
-            ("mozart_konigdernacht.mid", "UTF-8", "UTF-8", 1168, 0xdd458106513e539a),
-            ("schubert_avemaria.mid", "UTF-8", "UTF-8", 1426, 0x98ec118504301c92),
-            ("Schubert_Standchen.mid", "UTF-8", "UTF-8", 783, 0x5d9f9d58ae3ac7fd),
-            ("test.mid", "UTF-8", "MAC-CENTRALEUROPE", 47, 0x7af40e2cd7665f13),
-            ("Negra_Sombra.kar", "UTF-8", "UTF-8", 883, 0x21bf8542ec18918a),
+            (
+                "mozart_aveverum.mid",
+                "UTF-8",
+                "ASCII",
+                592,
+                0xd5db686a98fbdc7d,
+            ),
+            (
+                "mozart_diesirae.mid",
+                "UTF-8",
+                "ASCII",
+                1044,
+                0xd0560a7b666ca263,
+            ),
+            (
+                "mozart_konigdernacht.mid",
+                "UTF-8",
+                "UTF-8",
+                1168,
+                0xdd458106513e539a,
+            ),
+            (
+                "schubert_avemaria.mid",
+                "UTF-8",
+                "UTF-8",
+                1426,
+                0x98ec118504301c92,
+            ),
+            (
+                "Schubert_Standchen.mid",
+                "UTF-8",
+                "UTF-8",
+                783,
+                0x5d9f9d58ae3ac7fd,
+            ),
+            (
+                "test.mid",
+                "UTF-8",
+                "MAC-CENTRALEUROPE",
+                47,
+                0x7af40e2cd7665f13,
+            ),
+            (
+                "Negra_Sombra.kar",
+                "UTF-8",
+                "UTF-8",
+                883,
+                0x21bf8542ec18918a,
+            ),
             ("twinkle.kar", "UTF-8", "ASCII", 648, 0x34e08aa2a95b567e),
         ];
         for (name, rust_charset, _cpp_charset, len, fnv) in DEFAULTS {
@@ -1473,7 +1542,9 @@ mod tests {
         // headers remapped to Kar* types (oracle type census).
         assert!(seq.get_text(TextType::Text).join("").contains("\\Can"));
         assert_eq!(
-            seq.get_text(TextType::KarTitles).first().map(String::as_str),
+            seq.get_text(TextType::KarTitles)
+                .first()
+                .map(String::as_str),
             Some("@TNegra Sombra")
         );
         assert_eq!(seq.type_max_points(), TextType::Text as i32);
@@ -1505,7 +1576,10 @@ mod tests {
             latin1,
             "edge:\u{80}\u{81}\u{8d}\u{8f}\u{90}\u{9d}\u{9f} Ã©â\u{82}¬"
         );
-        assert_eq!((latin1.len(), fnv1a64_str(&latin1)), (30, 0x9492badd77d024c1));
+        assert_eq!(
+            (latin1.len(), fnv1a64_str(&latin1)),
+            (30, 0x9492badd77d024c1)
+        );
         // WINDOWS-1252: WHATWG maps the undefined C1 bytes to C1 controls
         // (no error), 0x80 → €, 0x9F → Ÿ. `g_convert` instead errors and
         // returns the 18 raw bytes — pinned divergence (a Rust `String`
@@ -1514,7 +1588,10 @@ mod tests {
         seq.set_current_charset("WINDOWS-1252");
         let cp1252 = seq.decode_text(raw);
         assert_eq!(cp1252, "edge:€\u{81}\u{8d}\u{8f}\u{90}\u{9d}Ÿ Ã©â\u{201a}¬");
-        assert_eq!((cp1252.len(), fnv1a64_str(&cp1252)), (32, 0xda59c9526fd98b13));
+        assert_eq!(
+            (cp1252.len(), fnv1a64_str(&cp1252)),
+            (32, 0xda59c9526fd98b13)
+        );
         // The A10 core: the two labels must never collapse into each other.
         assert_ne!(latin1, cp1252);
         seq.set_current_charset("ISO-8859-1");
@@ -1527,7 +1604,10 @@ mod tests {
         seq.set_current_charset("ISO-8859-9");
         let latin5 = seq.decode_text(raw);
         assert_eq!(latin5, latin1);
-        assert_eq!((latin5.len(), fnv1a64_str(&latin5)), (30, 0x9492badd77d024c1));
+        assert_eq!(
+            (latin5.len(), fnv1a64_str(&latin5)),
+            (30, 0x9492badd77d024c1)
+        );
         assert_eq!(seq.decode_text(b"\xd0\xdd\xde\xf0\xfd\xfe"), "ĞİŞğış");
         // Case-insensitive aliases reach the same tables.
         for alias in ["iso-8859-1", "LATIN1", "l1", "iso88591"] {
@@ -1681,7 +1761,10 @@ mod tests {
         seq.add_meta_data(10, 1, 5, "la".as_bytes());
         seq.add_meta_data(20, 2, 5, "si".as_bytes());
         seq.add_meta_data(30, 2, 3, "Piano".as_bytes());
-        assert_eq!(seq.get_text(TextType::Lyric), vec!["la".to_string(), "si".to_string()]);
+        assert_eq!(
+            seq.get_text(TextType::Lyric),
+            vec!["la".to_string(), "si".to_string()]
+        );
         assert_eq!(seq.get_text(TextType::Text), vec!["t1".to_string()]);
         assert!(seq.get_text(TextType::Marker).is_empty());
         // `track <= 0` matches all tracks; `None` matches all types.
@@ -1692,7 +1775,10 @@ mod tests {
             vec![(0, b"t1".to_vec()), (10, b"la".to_vec())]
         );
         assert_eq!(seq.get_raw_text(0, TextType::Lyric).len(), 2);
-        assert_eq!(seq.get_raw_text(2, TextType::Lyric), vec![(20, b"si".to_vec())]);
+        assert_eq!(
+            seq.get_raw_text(2, TextType::Lyric),
+            vec![(20, b"si".to_vec())]
+        );
         assert!(seq.get_raw_text(9, TextType::None).is_empty());
     }
 
@@ -1708,7 +1794,11 @@ mod tests {
             ("@Wwhatever", TextType::KarWhatever),
         ] {
             seq.add_meta_data(0, 1, 1, header.as_bytes());
-            assert_eq!(seq.text_events().last().unwrap().text_type, mapped, "{header}");
+            assert_eq!(
+                seq.text_events().last().unwrap().text_type,
+                mapped,
+                "{header}"
+            );
         }
         // Lowercase `@k` and bare `@` keep the original meta type.
         seq.add_meta_data(0, 1, 5, b"@knope");
@@ -1717,7 +1807,10 @@ mod tests {
         assert_eq!(seq.text_events().last().unwrap().text_type, TextType::Lyric);
         // KAR-mapped records are stored but create no playable events.
         assert_eq!(seq.text_events().len(), 8);
-        assert_eq!(seq.events.iter().filter(|ev| ev.kind == Kind::Text).count(), 2);
+        assert_eq!(
+            seq.events.iter().filter(|ev| ev.kind == Kind::Text).count(),
+            2
+        );
     }
 
     #[test]

@@ -29,8 +29,16 @@ pub struct Flags {
 
 impl Flags {
     pub fn new(files: Vec<PathBuf>, backend: Option<String>, conn: Option<String>) -> Self {
-        let args_cache = files.iter().map(|p| p.to_string_lossy().into_owned()).collect();
-        Self { files, backend, conn, args_cache }
+        let args_cache = files
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        Self {
+            files,
+            backend,
+            conn,
+            args_cache,
+        }
     }
 }
 
@@ -42,7 +50,11 @@ impl CosmicFlags for Flags {
     type Args = Vec<String>;
 
     fn action(&self) -> Option<&Self::SubCommand> {
-        if self.files.is_empty() { None } else { Some(&OPEN_COMMAND) }
+        if self.files.is_empty() {
+            None
+        } else {
+            Some(&OPEN_COMMAND)
+        }
     }
 
     fn args(&self) -> Vec<&str> {
@@ -75,7 +87,11 @@ impl Application for App {
     }
 
     fn init(core: Core, flags: Self::Flags) -> (Self, Task<Self::Message>) {
-        let mut app = Self { core, status: "Ready".to_owned(), pending_files: flags.files };
+        let mut app = Self {
+            core,
+            status: "Ready".to_owned(),
+            pending_files: flags.files,
+        };
         app.core.set_header_title("Gosh MIDI Player".to_owned());
         (app, Task::none())
     }
@@ -126,9 +142,10 @@ impl Application for App {
 
         let paths: Vec<PathBuf> = match msg.msg {
             Details::Activate => Vec::new(),
-            Details::Open { url } => {
-                url.into_iter().filter_map(|u| u.to_file_path().ok()).collect()
-            }
+            Details::Open { url } => url
+                .into_iter()
+                .filter_map(|u| u.to_file_path().ok())
+                .collect(),
             Details::ActivateAction { action: _, args } => {
                 args.into_iter().map(PathBuf::from).collect()
             }
@@ -143,7 +160,10 @@ impl Application for App {
         if paths.is_empty() {
             present
         } else {
-            Task::batch([Task::done(Action::App(Message::OpenFiles(paths, true))), present])
+            Task::batch([
+                Task::done(Action::App(Message::OpenFiles(paths, true))),
+                present,
+            ])
         }
     }
 }
