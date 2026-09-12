@@ -188,7 +188,7 @@ lead = PLAN/DECISIONS/REPORT + glue.
       subscriptions, header transport, dashboard, 3 sliders, status line,
       toasts; commit-on-close prefs (U14); load-time UI↔engine sync (**fix**,
       A8); unit tests per Message variant; repeat/finish policy.
-- [ ] T10 Playlist + file flows (ux+arch): sidebar (U11 select/activate) + 8
+- [x] T10 Playlist + file flows (ux+arch): sidebar (U11 select/activate) + 8 — DONE (suite 354/354, 13 integration tests, retirement sequenced, FULL PASS, devil SIGN-OFF; 6 follow-ups → T11)
       tools, D1/D9/D10 via pinned chooser (Url→PathBuf, cancel — A5),
       single-instance forward + present + `COSMIC_SINGLE_INSTANCE=false`
       escape (A4), portal paths incl. replace-asserting integration test

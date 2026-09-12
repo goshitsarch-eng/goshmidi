@@ -9,7 +9,7 @@
 //!
 //! | widget | message |
 //! |---|---|
-//! | Open (see gap 1 — currently insensitive) | — |
+//! | Open | `OpenFilesDialog` (D1; T9 gap 1 closed in T10b) |
 //! | Prev / Play / Pause / Stop / Next | `PrevSong` / `Play` / `Pause` / `Stop` / `NextSong` |
 //! | Rew / Fwd (±1 bar) | `BeatBackward` / `BeatForward` |
 //! | Loop toggle | `LoopToggled(!loop_enabled)` |
@@ -18,12 +18,12 @@
 //! | Tempo slider 50..200 / Tempo reset | `TempoChanged(u32)` / `TempoChanged(100)` |
 //! | Volume slider 0..200 / Volume reset | `VolumeChanged(u32)` / `VolumeChanged(100)` |
 //!
-//! T9b → lead contract notes (arch-owned files untouched):
+//! T9b → lead contract notes (arch-owned files untouched; T10b resolutions
+//! inline):
 //!
-//! 1. Header Open has no D1-trigger `Message`: `OpenFiles` carries chooser
-//!    *results* and `Dialog` deliberately omits D1, so there is nothing
-//!    faithful to emit until T10 adds the portal-chooser task + trigger.
-//!    The button renders (icon + tooltip + a11y name) but insensitive.
+//! 1. CLOSED in T10b: header Open now emits `Message::OpenFilesDialog`
+//!    (the T10a D1 portal-chooser trigger); results arrive as
+//!    `OpenFilesChosen` into the `OpenFiles(paths, true)` path.
 //! 2. The status line here duplicates the arch-owned `App::footer`, which
 //!    already renders `status.text()` — the T10+ layout keeps exactly one.
 //! 3. C++ parity (lead ruling): the 7 transport action buttons + loop
@@ -32,14 +32,10 @@
 //!    model but is not consulted for sensitivity. Sliders, the pitch
 //!    spin, and the reset buttons stay live like their C++ twins
 //!    (`PositionSeek` already no-ops arch-side when no song is loaded).
-//! 4. `theme` is declared here via `#[path]` only because `ui/mod.rs` is
-//!    arch-owned this task — T10+ moves the one-line declaration up so it
-//!    becomes `ui::theme`.
+//! 4. CLOSED in T10b: `theme` moved up to `ui::theme` (`ui/mod.rs`); the
+//!    T9 path-attribute hack is gone.
 //!
 //! [`TransportViewModel`]: super::TransportViewModel
-
-#[path = "theme.rs"]
-pub mod theme;
 
 use cosmic::Element;
 use cosmic::iced::Alignment;
@@ -51,9 +47,8 @@ use cosmic::widget::tooltip::Position as TooltipPosition;
 use cosmic::widget::{button, column, container, icon, row, slider, space, spin_button, text};
 
 use super::TransportViewModel;
+use super::theme::{self, RhythmLamp};
 use crate::message::Message;
-
-use theme::RhythmLamp;
 
 /// Position slider resolution (`m_posScale` 0..1000, `window.cpp:1696`).
 const POSITION_STEPS: u32 = 1000;
@@ -92,7 +87,7 @@ fn lamp_state(index: u32, beat: u32) -> RhythmLamp {
 }
 
 /// One header transport icon button: freedesktop symbolic icon + tooltip +
-/// a11y name/description; `None` renders insensitive (Open gap — note 1).
+/// a11y name/description; `None` renders insensitive.
 fn transport_button<'a>(
     icon_name: &'static str,
     name: &'static str,
@@ -146,14 +141,13 @@ pub fn view<'a>(vm: TransportViewModel) -> Element<'a, Message> {
         has_song: _has_song,
     } = vm;
 
-    // Note 3: transport actions stay live with no song (C++ parity);
-    // only Open (gap 1) stays `None`.
+    // Note 3: transport actions stay live with no song (C++ parity).
     let transport_row = row::with_children(vec![
         transport_button(
             "document-open-symbolic",
             "Open",
             "Open MIDI files",
-            None,
+            Some(Message::OpenFilesDialog),
             false,
         ),
         transport_button(

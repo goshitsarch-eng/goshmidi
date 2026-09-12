@@ -6,9 +6,12 @@
 //! engine feedback arrives as `Message::Player` through the event-stream
 //! subscription, meter decay through the 50 ms ticker.
 //!
-//! `view()` is a TEMPORARY minimal shell (status footer + transport stub +
-//! dialog/view/toast debug row). Ux builds the real layout in T10+ against
-//! the [`TransportViewModel`][crate::ui::TransportViewModel] contract.
+//! `view()` is the T10a2 layout (ux W1/§3.1): playlist sidebar (left) +
+//! main column (transport region with the status line, view-switcher
+//! placeholder, toasts), wrapped in the `dnd_destination` drop target. View
+//! models are built fresh per frame against the
+//! [`TransportViewModel`][crate::ui::TransportViewModel] and
+//! [`PlaylistViewModel`][crate::ui::PlaylistViewModel] contracts.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -19,6 +22,8 @@ use std::time::Duration;
 use cosmic::app::{ContextDrawer, Core, CosmicFlags, Task};
 use cosmic::iced::Subscription;
 use cosmic::{Action, Application, Element};
+
+use url::Url;
 
 use crate::config::paths::Paths;
 use crate::config::settings::Settings;
@@ -36,7 +41,7 @@ use crate::state::midi::MidiState;
 use crate::state::piano::PianoState;
 use crate::state::playback::{self, PlaybackState};
 use crate::state::playlist::PlaylistState;
-use crate::ui::{TransportViewModel, transport};
+use crate::ui::{PlaylistViewModel, TransportViewModel, sidebar, transport};
 
 /// Meter/clock ticker interval while playing (`m_meterTimer`, 50 ms).
 const TICK_INTERVAL: Duration = Duration::from_millis(50);
@@ -44,6 +49,29 @@ const TICK_INTERVAL: Duration = Duration::from_millis(50);
 const ENGINE_POLL_INTERVAL: Duration = Duration::from_millis(5);
 /// Toast stack cap: a flood of engine warnings must not grow memory.
 const MAX_TOASTS: usize = 8;
+
+// ---------------------------------------------------------------------------
+// File-chooser contracts (D1/D9/D10, ux.md dialog table; C++ `window.cpp`
+// filter/pattern strings verbatim). The portal `Task`s below build their
+// `FileFilter`s from these so tests pin the contract without a portal.
+// ---------------------------------------------------------------------------
+
+/// D1 dialog title (`window.cpp:712`).
+const OPEN_DIALOG_TITLE: &str = "Open MIDI files";
+/// D1 filter label (`window.cpp:714`).
+const OPEN_FILTER_LABEL: &str = "MIDI / Karaoke / Cakewalk / Playlist";
+/// D1 filter: one filter, 6 glob patterns (`window.cpp:715-720`).
+const OPEN_FILTER_GLOBS: [&str; 6] = ["*.mid", "*.midi", "*.kar", "*.rmi", "*.wrk", "*.lst"];
+/// D9 dialog title (`window.cpp:1530`); the `.lst` filter is parity-safe
+/// added (C++ has no filter there).
+const PLAYLIST_OPEN_TITLE: &str = "Open playlist";
+const PLAYLIST_FILTER_LABEL: &str = "Playlists";
+const PLAYLIST_FILTER_GLOB: &str = "*.lst";
+/// D10 dialog title + initial name (`window.cpp:1553-1554`).
+const PLAYLIST_SAVE_TITLE: &str = "Save playlist";
+const PLAYLIST_SAVE_INITIAL_NAME: &str = "playlist.lst";
+/// Wayland drop mime accepted by the `dnd_destination` wrapper (arch §2.3).
+const DND_URI_LIST_MIME: &str = "text/uri-list";
 
 /// Startup flags parsed from the CLI in `main.rs` (arch §2.5).
 /// `backend`/`conn` are applied once as the initial output selection.
@@ -183,8 +211,11 @@ fn run_engine_stream(
     stream.boxed()
 }
 
-/// Map window-resize runtime events to `Message::WindowResized`.
-fn resize_message(
+/// Map runtime window events to messages: resize → `WindowResized`, X11
+/// file drops → `FilesDropped` (replace-playlist, arch §2.3). Hover has no
+/// C++ surface and stays unmapped; Wayland drops arrive through the
+/// `dnd_destination` widget in `view()` instead (same message path).
+fn window_event_message(
     event: cosmic::iced::event::Event,
     _status: cosmic::iced::event::Status,
     _window: cosmic::iced::window::Id,
@@ -193,7 +224,80 @@ fn resize_message(
         cosmic::iced::event::Event::Window(cosmic::iced::window::Event::Resized(size)) => Some(
             Message::WindowResized(size.width as u32, size.height as u32),
         ),
+        cosmic::iced::event::Event::Window(cosmic::iced::window::Event::FileDropped(paths)) => {
+            Some(Message::FilesDropped(paths))
+        }
         _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Url / drop payload conversion (pure, portal-independent)
+// ---------------------------------------------------------------------------
+
+/// Convert portal-chooser `Url`s to local paths (arch §2.3): percent-decoding
+/// included via `Url::to_file_path`. The first non-file `Url` aborts the
+/// whole batch with a toastable error — never a panic, never a silent skip.
+fn urls_to_paths(urls: &[Url]) -> Result<Vec<PathBuf>, String> {
+    let mut out = Vec::with_capacity(urls.len());
+    for url in urls {
+        match url.to_file_path() {
+            Ok(path) => out.push(path),
+            Err(()) => return Err(format!("Cannot open {url}: not a local file")),
+        }
+    }
+    Ok(out)
+}
+
+/// Drop filter (`dmidi_drop_files`, `window.cpp:80-99`): the 5 supported song
+/// extensions (case-insensitive) plus `.lst` (case-sensitive suffix, like
+/// `g_str_has_suffix`). Portal `/run/…/doc/…` paths pass like any other —
+/// they are ordinary absolute paths by the time they reach here.
+fn is_droppable(path: &Path) -> bool {
+    is_supported_midi_file(path) || path.to_string_lossy().ends_with(".lst")
+}
+
+/// Parse a `text/uri-list` drop payload (RFC 2483 lines: `file://` URIs,
+/// `#` comments, CRLF): percent-decoding + non-file-URL rules shared with
+/// the chooser path, then the C++ drop filter — unsupported entries and
+/// unparsable lines are silently skipped, exactly like the GTK target.
+fn parse_uri_list(data: &[u8]) -> Vec<PathBuf> {
+    let text = String::from_utf8_lossy(data);
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Ok(url) = Url::parse(line) else {
+            continue;
+        };
+        let Ok(path) = url.to_file_path() else {
+            continue;
+        };
+        if is_droppable(&path) {
+            out.push(path);
+        }
+    }
+    out
+}
+
+/// Pure half of `dbus_activation`: map a forwarded second launch to file
+/// paths. `Activate` (bare second launch) → no paths, present-only;
+/// `Open` → `Url`s with non-file entries skipped (C++ `g_file_get_path`
+/// NULL-skip parity); `ActivateAction` → our own CLI path args, empty
+/// entries skipped. No existence check (A14 keeps nonexistent paths).
+fn activation_files(msg: &cosmic::dbus_activation::Message) -> Vec<PathBuf> {
+    use cosmic::dbus_activation::Details;
+
+    match &msg.msg {
+        Details::Activate => Vec::new(),
+        Details::Open { url } => url.iter().filter_map(|u| u.to_file_path().ok()).collect(),
+        Details::ActivateAction { action: _, args } => args
+            .iter()
+            .filter(|a| !a.is_empty())
+            .map(PathBuf::from)
+            .collect(),
     }
 }
 
@@ -333,6 +437,16 @@ impl App {
         self.playlist.select_first();
         let autoplay = self.settings.auto_play;
         self.load_current(autoplay);
+    }
+
+    /// OS file drop (`dmidi_drop_files`, `window.cpp:80-99`): keep only
+    /// droppable entries, then `openFiles(paths, replace=true)`. An empty or
+    /// fully-filtered drop is a silent no-op (the GTK target rejects it).
+    fn dropped_files(&mut self, paths: Vec<PathBuf>) {
+        let kept: Vec<PathBuf> = paths.into_iter().filter(|p| is_droppable(p)).collect();
+        if !kept.is_empty() {
+            self.open_files(kept, true);
+        }
     }
 
     /// `loadCurrent` (`window.cpp:372-404`), async half: stop the engine,
@@ -689,10 +803,107 @@ impl App {
 
     // -- playlist results -------------------------------------------------------
 
+    /// D1 portal chooser `Task` (pinned provider: xdg-portal/ashpd per D16/A5
+    /// — NEVER rfd): multi-select over the one 6-glob filter. `Ok` converts
+    /// every `Url` to a `PathBuf` and feeds `OpenFilesChosen`; `Cancelled`
+    /// maps to the silent `ChooserCancelled`; any other portal error toasts.
+    /// NOTE: `lastDirectory` is deliberately NOT wired as the initial folder
+    /// — the open-dialog `directory` builder is dead upstream (ux D1).
+    fn open_files_task() -> Task<Message> {
+        cosmic::task::future(async move {
+            use cosmic::dialog::file_chooser::{FileFilter, open};
+            let mut filter = FileFilter::new(OPEN_FILTER_LABEL);
+            for glob in OPEN_FILTER_GLOBS {
+                filter = filter.glob(glob);
+            }
+            let dialog = open::Dialog::new().title(OPEN_DIALOG_TITLE).filter(filter);
+            match dialog.open_files().await {
+                Ok(response) => Message::OpenFilesChosen(urls_to_paths(response.urls())),
+                Err(cosmic::dialog::file_chooser::Error::Cancelled) => Message::ChooserCancelled,
+                Err(why) => Message::OpenFilesChosen(Err(format!("Could not open files: {why}"))),
+            }
+        })
+    }
+
+    /// D9 portal chooser `Task`: single-file open with the `.lst` filter. The
+    /// `.lst` itself is parsed by reusing `PlaylistState::load` verbatim (no
+    /// parallel parser), then handed to `PlaylistLoaded` (no autoplay).
+    fn playlist_load_task() -> Task<Message> {
+        cosmic::task::future(async move {
+            use cosmic::dialog::file_chooser::{FileFilter, open};
+            let dialog = open::Dialog::new()
+                .title(PLAYLIST_OPEN_TITLE)
+                .filter(FileFilter::new(PLAYLIST_FILTER_LABEL).glob(PLAYLIST_FILTER_GLOB));
+            match dialog.open_file().await {
+                Ok(response) => {
+                    let url = response.url().clone();
+                    match url.to_file_path() {
+                        Ok(path) => {
+                            let mut state = PlaylistState::new();
+                            if state.load(&path) {
+                                Message::PlaylistLoaded(Ok(LoadedPlaylist {
+                                    source: Some(path),
+                                    items: state.items().to_vec(),
+                                }))
+                            } else {
+                                Message::PlaylistLoaded(Err(format!(
+                                    "Could not open playlist {}",
+                                    path.display()
+                                )))
+                            }
+                        }
+                        Err(()) => Message::PlaylistLoaded(Err(format!(
+                            "Cannot open {url}: not a local file"
+                        ))),
+                    }
+                }
+                Err(cosmic::dialog::file_chooser::Error::Cancelled) => Message::ChooserCancelled,
+                Err(why) => Message::PlaylistLoaded(Err(format!("Could not open playlist: {why}"))),
+            }
+        })
+    }
+
+    /// D10 portal chooser `Task`: save dialog with initial `playlist.lst` +
+    /// `.lst` filter. The write reuses `PlaylistState::save` verbatim on a
+    /// snapshot of the current items (absolute paths, LF).
+    fn playlist_save_task(items: Vec<PathBuf>) -> Task<Message> {
+        cosmic::task::future(async move {
+            use cosmic::dialog::file_chooser::{FileFilter, save};
+            let dialog = save::Dialog::new()
+                .title(PLAYLIST_SAVE_TITLE.to_string())
+                .file_name(PLAYLIST_SAVE_INITIAL_NAME.to_string())
+                .filter(FileFilter::new(PLAYLIST_FILTER_LABEL).glob(PLAYLIST_FILTER_GLOB));
+            match dialog.save_file().await {
+                Ok(response) => match response.url().cloned() {
+                    Some(url) => match url.to_file_path() {
+                        Ok(path) => {
+                            let mut state = PlaylistState::new();
+                            state.set_items(items);
+                            if state.save(&path) {
+                                Message::PlaylistSaved(Ok(path))
+                            } else {
+                                Message::PlaylistSaved(Err(format!(
+                                    "Could not save playlist {}",
+                                    path.display()
+                                )))
+                            }
+                        }
+                        Err(()) => Message::PlaylistSaved(Err(format!(
+                            "Cannot save to {url}: not a local file"
+                        ))),
+                    },
+                    None => Message::PlaylistSaved(Err("Could not save playlist".to_string())),
+                },
+                Err(cosmic::dialog::file_chooser::Error::Cancelled) => Message::ChooserCancelled,
+                Err(why) => Message::PlaylistSaved(Err(format!("Could not save playlist: {why}"))),
+            }
+        })
+    }
+
     /// D9 result: replace items, record the source in both states, no
-    /// autoplay (unlike D1). `Err` is a real I/O error — portal cancel never
-    /// produces a message — so it gets a toast (the C++ callback had no
-    /// error path to preserve).
+    /// autoplay (unlike D1). `Err` is a real I/O error — portal cancel maps
+    /// to the silent `ChooserCancelled`, never here — so it gets a toast
+    /// (the C++ callback had no error path to preserve).
     fn apply_loaded_playlist(&mut self, list: LoadedPlaylist) {
         if let Some(source) = &list.source {
             self.settings.last_play_list = source.to_string_lossy().into_owned();
@@ -838,6 +1049,15 @@ impl App {
             has_song: self.song.is_some(),
         }
     }
+
+    /// Build the playlist sidebar view model for `view()`: full paths in
+    /// playlist order + `current_index` as `Option<usize>` (`-1` → `None`).
+    fn playlist_view_model(&self) -> PlaylistViewModel {
+        PlaylistViewModel {
+            items: self.playlist.items().to_vec(),
+            selected: usize::try_from(self.playlist.current_index()).ok(),
+        }
+    }
 }
 
 impl Application for App {
@@ -902,14 +1122,13 @@ impl Application for App {
         None
     }
 
-    /// Status line: the 5 C++ states (ux §3.9).
-    fn footer(&self) -> Option<Element<'_, Self::Message>> {
-        Some(cosmic::widget::text::body(self.playback.status.text()).into())
-    }
+    // No `footer()` override (T9 status-dup resolved at T10a2 composition):
+    // the transport region already renders the status line (ux §3.9), so the
+    // COSMIC footer stays at its `None` default — exactly one status line.
 
     fn subscription(&self) -> Subscription<Self::Message> {
         let engine = Subscription::run_with(self.engine_sub, run_engine_stream);
-        let resize = cosmic::iced::event::listen_with(resize_message);
+        let resize = cosmic::iced::event::listen_with(window_event_message);
         // Intended deviation from C++ (`m_meterTimer` is always on): the
         // 50 ms meter-decay ticker runs only while Playing. Visual-only
         // difference — paused/stopped meters freeze instead of decaying —
@@ -927,8 +1146,9 @@ impl Application for App {
 
     /// State transitions + engine commands (arch §2.3). Transport/mix/seek/
     /// loop messages update state optimistically and send the matching
-    /// command; dialog-launching file flows return `Task::none()` until T10
-    /// (lyrics/T11, MIDI dialog/T13) — every arm is covered by a test below.
+    /// command; D1/D9/D10 launch portal chooser `Task`s (lyrics/T11 and MIDI
+    /// dialog/T13 still return `Task::none()`) — every arm is covered by a
+    /// test below.
     fn update(&mut self, message: Self::Message) -> Task<Self::Message> {
         match message {
             // --- transport ---
@@ -1015,18 +1235,35 @@ impl Application for App {
 
             // --- playlist ---
             Message::OpenFiles(paths, replace) => self.open_files(paths, replace),
-            // Select-only (click-select, U11); row-activation load+play is a
-            // T10 sidebar concern.
+            Message::OpenFilesDialog => return Self::open_files_task(),
+            Message::OpenFilesChosen(result) => match result {
+                Ok(paths) => {
+                    if !paths.is_empty() {
+                        self.open_files(paths, true);
+                    }
+                }
+                Err(error) => self.toast(error),
+            },
+            // Select-only (click-select, U11); activation is the next arm.
             Message::PlaylistSelect(i) => {
                 self.playlist.set_current_index(i as i32);
+            }
+            // Row-activated (double-click/Enter, `window.cpp:1572-1578`):
+            // select + load + play. An out-of-range index is ignored by the
+            // select (A14) and the load still targets the current item — C++.
+            Message::PlaylistRowActivated(i) => {
+                self.playlist.set_current_index(i as i32);
+                self.load_current(true);
             }
             Message::PlaylistRemove(i) => self.playlist.remove_at(i as i32),
             Message::PlaylistMoveUp(i) => self.playlist.move_up(i as i32),
             Message::PlaylistMoveDown(i) => self.playlist.move_down(i as i32),
             Message::PlaylistShuffle => self.playlist.shuffle(),
             Message::PlaylistClear => self.playlist.clear(),
-            // T10: portal chooser `Task`s.
-            Message::PlaylistLoadDialog | Message::PlaylistSaveDialog => {}
+            Message::PlaylistLoadDialog => return Self::playlist_load_task(),
+            Message::PlaylistSaveDialog => {
+                return Self::playlist_save_task(self.playlist.items().to_vec());
+            }
             Message::PlaylistLoaded(result) => match result {
                 Ok(list) => self.apply_loaded_playlist(list),
                 Err(error) => self.toast(error),
@@ -1037,6 +1274,33 @@ impl Application for App {
                     self.playlist.set_source(Some(path));
                     self.playlist.set_dirty(false);
                 }
+                Err(error) => self.toast(error),
+            },
+            // Portal `Cancelled` from any chooser: silent no-op.
+            Message::ChooserCancelled => {}
+
+            // --- drag-and-drop (same `openFiles(replace)` path as D1) ---
+            Message::FilesDropped(paths) => self.dropped_files(paths),
+            Message::DndDataReceived { mime, data } => {
+                if mime == DND_URI_LIST_MIME {
+                    self.dropped_files(parse_uri_list(&data));
+                }
+            }
+            Message::DndFileTransfer(key) => {
+                return cosmic::command::file_transfer_receive(key).map(|result| {
+                    Action::App(match result {
+                        Ok(files) => Message::DndFileTransferDone(Ok(files
+                            .into_iter()
+                            .map(PathBuf::from)
+                            .collect())),
+                        Err(why) => Message::DndFileTransferDone(Err(format!(
+                            "Could not receive dropped files: {why}"
+                        ))),
+                    })
+                });
+            }
+            Message::DndFileTransferDone(result) => match result {
+                Ok(paths) => self.dropped_files(paths),
                 Err(error) => self.toast(error),
             },
 
@@ -1164,46 +1428,74 @@ impl Application for App {
         Task::none()
     }
 
-    /// TEMPORARY T9 shell (ux builds the real layout in T10+): the transport
-    /// stub region plus a dialog/view/toast debug row.
+    /// T10a2 layout (ux W1/§3.1): playlist sidebar on the left at the C++
+    /// `AdwOverlaySplitView` 0.28 width fraction (`FillPortion(28/72)`) + main
+    /// column (transport region with THE status line, view-switcher
+    /// placeholder, toasts). The sidebar honors `playlistVisible`
+    /// (`settings.playlist_visible`, default true); there is no runtime
+    /// collapse toggle yet — any toggle needs a new `Message` + update arm
+    /// (arch decision, recorded gap), so a hidden sidebar reappears only via
+    /// the setting. The whole layout stays wrapped in the Wayland drop
+    /// target (`dnd_destination`, arch §2.3, same mimes + callbacks); X11
+    /// drops arrive via the `FileDropped` subscription instead.
     fn view(&self) -> Element<'_, Self::Message> {
-        let mut kids: Vec<Element<'_, Self::Message>> = vec![
+        let mut main: Vec<Element<'_, Self::Message>> = vec![
             transport::view(self.transport_view_model()),
             cosmic::widget::text::body(format!(
-                "view={:?} dialog={:?} toasts={}",
-                self.view,
-                self.dialog,
-                self.toasts.len()
+                "{:?} view — switcher lands in T11+ (dialog={:?})",
+                self.view, self.dialog,
             ))
             .into(),
         ];
         for toast in &self.toasts {
-            kids.push(cosmic::widget::text::body(toast.as_str()).into());
+            main.push(cosmic::widget::text::body(toast.as_str()).into());
         }
-        cosmic::widget::container(cosmic::widget::column::with_children(kids).spacing(8))
-            .center(cosmic::iced::Length::Fill)
+        let main = cosmic::widget::column::with_children(main)
+            .spacing(8)
+            .width(cosmic::iced::Length::Fill);
+        let content = if self.settings.playlist_visible {
+            cosmic::widget::row::with_children(vec![
+                cosmic::widget::container(sidebar::view(self.playlist_view_model()))
+                    .width(cosmic::iced::Length::FillPortion(28))
+                    .height(cosmic::iced::Length::Fill)
+                    .into(),
+                cosmic::widget::container(main)
+                    .width(cosmic::iced::Length::FillPortion(72))
+                    .height(cosmic::iced::Length::Fill)
+                    .into(),
+            ])
+            .spacing(8)
+        } else {
+            cosmic::widget::row::with_children(vec![
+                cosmic::widget::container(main)
+                    .width(cosmic::iced::Length::Fill)
+                    .height(cosmic::iced::Length::Fill)
+                    .into(),
+            ])
+        }
+        .height(cosmic::iced::Length::Fill);
+        cosmic::widget::dnd_destination(content, vec![DND_URI_LIST_MIME.into()])
+            .on_data_received(|mime, data| Message::DndDataReceived { mime, data })
+            .on_file_transfer(Message::DndFileTransfer)
             .into()
     }
 
     /// Second-launch / portal activation: forward files as
     /// `OpenFiles(paths, replace=true)` + present the window (arch §2.5,
-    /// same contract as C++ `on_open` in `src/main.cpp`).
+    /// same contract as C++ `on_open` in `src/main.cpp`: forward, then
+    /// `gtk_window_present` unconditionally — even with no files).
+    ///
+    /// Present mechanism: `iced::window::gain_focus` on the main window id,
+    /// batched with the `OpenFiles` task (no window yet → `Task::none()` for
+    /// the present half). The `COSMIC_SINGLE_INSTANCE=false` escape hatch is
+    /// honored inside libcosmic's `run_single_instance` boot path (which we
+    /// call unconditionally from `main.rs`): a second process then runs
+    /// standalone and this override never fires.
     ///
     /// No `cfg` gate: this crate unconditionally enables libcosmic's
     /// `single-instance` feature, so the trait method always exists.
     fn dbus_activation(&mut self, msg: cosmic::dbus_activation::Message) -> Task<Self::Message> {
-        use cosmic::dbus_activation::Details;
-
-        let paths: Vec<PathBuf> = match msg.msg {
-            Details::Activate => Vec::new(),
-            Details::Open { url } => url
-                .into_iter()
-                .filter_map(|u| u.to_file_path().ok())
-                .collect(),
-            Details::ActivateAction { action: _, args } => {
-                args.into_iter().map(PathBuf::from).collect()
-            }
-        };
+        let paths = activation_files(&msg);
 
         let present = self
             .core
@@ -1617,12 +1909,17 @@ mod tests {
     }
 
     #[test]
-    fn playlist_dialog_launches_are_staged_noops() {
+    fn playlist_dialogs_launch_without_state_change() {
+        // T10: D9/D10 launch portal chooser `Task`s (dropped here — no portal
+        // headless). Launching itself mutates nothing; results arrive as
+        // `PlaylistLoaded` / `PlaylistSaved` (tested below and in T9).
         let (mut app, _rx, _tmp) = test_app();
+        app.playlist.set_items(vec![PathBuf::from("/m/a.mid")]);
         upd(&mut app, Message::PlaylistLoadDialog);
         upd(&mut app, Message::PlaylistSaveDialog);
         assert_eq!(app.dialog, None);
         assert!(app.toasts.is_empty());
+        assert_eq!(app.playlist.len(), 1);
     }
 
     #[test]
@@ -1657,6 +1954,430 @@ mod tests {
         assert!(!app.playlist.dirty());
         upd(&mut app, Message::PlaylistSaved(Err("denied".to_string())));
         assert_eq!(app.toasts, vec!["denied".to_string()]);
+    }
+
+    // -- T10 file flows ---------------------------------------------------------
+
+    #[test]
+    fn chooser_contract_strings_match_cpp() {
+        assert_eq!(OPEN_DIALOG_TITLE, "Open MIDI files");
+        assert_eq!(OPEN_FILTER_LABEL, "MIDI / Karaoke / Cakewalk / Playlist");
+        assert_eq!(
+            OPEN_FILTER_GLOBS,
+            ["*.mid", "*.midi", "*.kar", "*.rmi", "*.wrk", "*.lst"]
+        );
+        assert_eq!(PLAYLIST_OPEN_TITLE, "Open playlist");
+        assert_eq!(PLAYLIST_FILTER_LABEL, "Playlists");
+        assert_eq!(PLAYLIST_FILTER_GLOB, "*.lst");
+        assert_eq!(PLAYLIST_SAVE_TITLE, "Save playlist");
+        assert_eq!(PLAYLIST_SAVE_INITIAL_NAME, "playlist.lst");
+        assert_eq!(DND_URI_LIST_MIME, "text/uri-list");
+    }
+
+    #[test]
+    fn open_files_dialog_launches_without_state_change() {
+        // D1 trigger: launches the portal multi-select `Task` (dropped here —
+        // no portal headless). Results arrive as `OpenFilesChosen`.
+        let (mut app, _rx, _tmp) = test_app();
+        app.playlist.set_items(vec![PathBuf::from("/m/a.mid")]);
+        upd(&mut app, Message::OpenFilesDialog);
+        assert_eq!(app.playlist.len(), 1);
+        assert_eq!(app.dialog, None);
+        assert!(app.toasts.is_empty());
+        assert!(!app.pending_autoplay);
+    }
+
+    #[test]
+    fn open_files_chosen_replaces_via_open_files_path() {
+        let (mut app, _rx, _tmp) = test_app();
+        app.playlist.set_items(vec![PathBuf::from("/m/old.mid")]);
+        upd(
+            &mut app,
+            Message::OpenFilesChosen(Ok(vec![
+                PathBuf::from("/m/a.mid"),
+                PathBuf::from("/m/b.kar"),
+            ])),
+        );
+        // REPLACE (P2), first selected, autoplay per settings (default on).
+        assert_eq!(app.playlist.len(), 2);
+        assert_eq!(app.playlist.current_index(), 0);
+        assert!(app.pending_autoplay);
+        assert!(app.toasts.is_empty());
+    }
+
+    #[test]
+    fn open_files_chosen_single_lst_loads_playlist_with_autoplay() {
+        // D1 `.lst` follows C++ `openFiles` (window.cpp:354-360): playlist
+        // load + `loadCurrent(autoPlay)` — autoplay per settings. The
+        // no-autoplay list load is D9, not D1 (ux F3 keeps the distinction).
+        let (mut app, _rx, tmp) = test_app();
+        let list = tmp.path().join("gig.lst");
+        std::fs::write(&list, "a.mid\nb.mid\n").unwrap();
+        upd(&mut app, Message::OpenFilesChosen(Ok(vec![list.clone()])));
+        assert_eq!(app.playlist.len(), 2);
+        assert_eq!(app.settings.last_play_list, list.to_string_lossy());
+        assert!(app.pending_autoplay);
+    }
+
+    #[test]
+    fn open_files_chosen_empty_is_silent_noop_and_err_toasts() {
+        let (mut app, _rx, _tmp) = test_app();
+        app.playlist.set_items(vec![PathBuf::from("/m/a.mid")]);
+        upd(&mut app, Message::OpenFilesChosen(Ok(Vec::new())));
+        assert_eq!(app.playlist.len(), 1);
+        assert!(!app.pending_autoplay);
+        assert!(app.toasts.is_empty());
+
+        upd(
+            &mut app,
+            Message::OpenFilesChosen(Err("Could not open files: boom".to_string())),
+        );
+        assert_eq!(app.toasts, vec!["Could not open files: boom".to_string()]);
+        assert_eq!(app.playlist.len(), 1);
+        assert!(!app.pending_autoplay);
+    }
+
+    #[test]
+    fn chooser_cancelled_is_silent_noop() {
+        let (mut app, _rx, _tmp) = test_app();
+        app.playlist.set_items(vec![PathBuf::from("/m/a.mid")]);
+        app.dialog = Some(Dialog::Loop);
+        upd(&mut app, Message::ChooserCancelled);
+        assert_eq!(app.playlist.len(), 1);
+        assert_eq!(app.playlist.current_index(), 0);
+        assert_eq!(app.dialog, Some(Dialog::Loop));
+        assert!(app.toasts.is_empty());
+        assert!(!app.pending_autoplay);
+    }
+
+    #[test]
+    fn playlist_row_activated_selects_loads_and_plays() {
+        let (mut app, _rx, _tmp) = test_app();
+        app.playlist.set_items(vec![
+            PathBuf::from("/m/a.mid"),
+            PathBuf::from("/m/b.mid"),
+            PathBuf::from("/m/c.mid"),
+        ]);
+        upd(&mut app, Message::PlaylistRowActivated(2));
+        assert_eq!(app.playlist.current_index(), 2);
+        assert!(app.pending_autoplay);
+        // Select-only still never loads (U11 click vs activate).
+        upd(&mut app, Message::PlaylistSelect(0));
+        assert_eq!(app.playlist.current_index(), 0);
+    }
+
+    #[test]
+    fn playlist_row_activated_out_of_range_keeps_current() {
+        // C++ parity: the select ignores the bad index (A14) and the load
+        // still targets the current item.
+        let (mut app, _rx, _tmp) = test_app();
+        app.playlist.set_items(vec![PathBuf::from("/m/a.mid")]);
+        upd(&mut app, Message::PlaylistRowActivated(99));
+        assert_eq!(app.playlist.current_index(), 0);
+        assert!(app.pending_autoplay);
+    }
+
+    #[test]
+    fn urls_to_paths_converts_multi_and_percent_decodes() {
+        let urls = [
+            Url::parse("file:///m/a.mid").unwrap(),
+            Url::parse("file:///m/my%20song.KAR").unwrap(),
+        ];
+        assert_eq!(
+            urls_to_paths(&urls).unwrap(),
+            vec![PathBuf::from("/m/a.mid"), PathBuf::from("/m/my song.KAR"),]
+        );
+    }
+
+    #[test]
+    fn urls_to_paths_rejects_non_file_url_with_error() {
+        let urls = [
+            Url::parse("file:///m/a.mid").unwrap(),
+            Url::parse("https://example.com/b.mid").unwrap(),
+        ];
+        assert_eq!(
+            urls_to_paths(&urls).unwrap_err(),
+            "Cannot open https://example.com/b.mid: not a local file"
+        );
+        // The error toasts through the D1 result arm without touching state.
+        let (mut app, _rx, _tmp) = test_app();
+        app.playlist.set_items(vec![PathBuf::from("/m/old.mid")]);
+        let err = urls_to_paths(&urls).unwrap_err();
+        upd(&mut app, Message::OpenFilesChosen(Err(err.clone())));
+        assert_eq!(app.toasts, vec![err]);
+        assert_eq!(app.playlist.len(), 1);
+    }
+
+    #[test]
+    fn is_droppable_matches_gtk_target_filter() {
+        // 5 song extensions, case-insensitive …
+        for name in [
+            "a.mid", "b.MID", "c.midi", "d.Midi", "e.kar", "f.KAR", "g.rmi", "h.RMI", "i.wrk",
+            "j.WRK",
+        ] {
+            assert!(is_droppable(Path::new(name)), "{name}");
+        }
+        // … plus `.lst`, case-SENSITIVE (`g_str_has_suffix` parity) …
+        assert!(is_droppable(Path::new("gig.lst")));
+        assert!(!is_droppable(Path::new("gig.LST")));
+        // … and nothing else.
+        for name in ["notes.txt", "song.mid.bak", "lst", ".mid~", "noext"] {
+            assert!(!is_droppable(Path::new(name)), "{name}");
+        }
+        // Portal document paths pass like any other absolute path.
+        assert!(is_droppable(Path::new(
+            "/run/user/1000/doc/abc123/song.mid"
+        )));
+    }
+
+    #[test]
+    fn parse_uri_list_skips_comments_blanks_and_junk() {
+        let payload = b"# comment\r\n\r\nfile:///m/a.mid\r\nfile:///m/my%20song.kar\r\n\
+            https://example.com/b.mid\r\nnot-a-url\r\nfile:///m/notes.txt\r\nfile:///gig.lst\r\n";
+        assert_eq!(
+            parse_uri_list(payload),
+            vec![
+                PathBuf::from("/m/a.mid"),
+                PathBuf::from("/m/my song.kar"),
+                PathBuf::from("/gig.lst"),
+            ]
+        );
+        assert!(parse_uri_list(b"").is_empty());
+        assert!(parse_uri_list(b"# only a comment\n").is_empty());
+    }
+
+    #[test]
+    fn files_dropped_filters_and_replaces() {
+        let (mut app, _rx, _tmp) = test_app();
+        app.playlist.set_items(vec![PathBuf::from("/m/old.mid")]);
+        upd(
+            &mut app,
+            Message::FilesDropped(vec![
+                PathBuf::from("/m/notes.txt"), // filtered out
+                PathBuf::from("/m/a.mid"),
+            ]),
+        );
+        assert_eq!(app.playlist.len(), 1);
+        assert_eq!(app.playlist.current_index(), 0);
+        assert!(app.pending_autoplay);
+    }
+
+    #[test]
+    fn files_dropped_unsupported_only_is_silent_noop() {
+        let (mut app, _rx, _tmp) = test_app();
+        app.playlist.set_items(vec![PathBuf::from("/m/old.mid")]);
+        upd(
+            &mut app,
+            Message::FilesDropped(vec![PathBuf::from("/m/notes.txt")]),
+        );
+        upd(&mut app, Message::FilesDropped(Vec::new()));
+        assert_eq!(app.playlist.len(), 1);
+        assert!(!app.pending_autoplay);
+        assert!(app.toasts.is_empty());
+    }
+
+    #[test]
+    fn files_dropped_single_lst_loads_playlist() {
+        let (mut app, _rx, tmp) = test_app();
+        let list = tmp.path().join("drop.lst");
+        std::fs::write(&list, "a.mid\n").unwrap();
+        upd(&mut app, Message::FilesDropped(vec![list.clone()]));
+        assert_eq!(app.playlist.len(), 1);
+        assert_eq!(app.settings.last_play_list, list.to_string_lossy());
+        assert!(app.pending_autoplay);
+    }
+
+    #[test]
+    fn dnd_data_received_parses_uri_list_and_gates_mime() {
+        let (mut app, _rx, _tmp) = test_app();
+        app.playlist.set_items(vec![PathBuf::from("/m/old.mid")]);
+        upd(
+            &mut app,
+            Message::DndDataReceived {
+                mime: "text/uri-list".to_string(),
+                data: b"file:///m/a.mid\r\nfile:///m/notes.txt\r\n".to_vec(),
+            },
+        );
+        assert_eq!(app.playlist.len(), 1);
+        assert!(app.pending_autoplay);
+
+        // Any other mime is ignored (offered mimes outside our contract).
+        app.pending_autoplay = false;
+        upd(
+            &mut app,
+            Message::DndDataReceived {
+                mime: "text/plain".to_string(),
+                data: b"file:///m/b.mid".to_vec(),
+            },
+        );
+        assert_eq!(app.playlist.len(), 1);
+        assert!(!app.pending_autoplay);
+        assert!(app.toasts.is_empty());
+    }
+
+    #[test]
+    fn dnd_file_transfer_launches_without_state_change() {
+        // The portal file-transfer resolution is a runtime `Task` (dropped
+        // here); results arrive as `DndFileTransferDone`.
+        let (mut app, _rx, _tmp) = test_app();
+        app.playlist.set_items(vec![PathBuf::from("/m/a.mid")]);
+        upd(
+            &mut app,
+            Message::DndFileTransfer("transfer-key".to_string()),
+        );
+        assert_eq!(app.playlist.len(), 1);
+        assert!(app.toasts.is_empty());
+        assert!(!app.pending_autoplay);
+    }
+
+    #[test]
+    fn dnd_file_transfer_done_opens_or_toasts() {
+        let (mut app, _rx, _tmp) = test_app();
+        app.playlist.set_items(vec![PathBuf::from("/m/old.mid")]);
+        upd(
+            &mut app,
+            Message::DndFileTransferDone(Ok(vec![
+                PathBuf::from("/run/user/1000/doc/deadbeef/song.wrk"),
+                PathBuf::from("/m/notes.txt"),
+            ])),
+        );
+        assert_eq!(app.playlist.len(), 1);
+        assert!(app.pending_autoplay);
+
+        upd(
+            &mut app,
+            Message::DndFileTransferDone(Err("Could not receive dropped files: gone".to_string())),
+        );
+        assert_eq!(
+            app.toasts,
+            vec!["Could not receive dropped files: gone".to_string()]
+        );
+    }
+
+    #[test]
+    fn window_event_message_maps_resize_drop_and_ignores_hover() {
+        use cosmic::iced::event::{Event, Status};
+        use cosmic::iced::window::{Event as WindowEvent, Id};
+
+        let id = Id::unique();
+        match window_event_message(
+            Event::Window(WindowEvent::Resized(cosmic::iced::Size::new(3.0, 4.0))),
+            Status::Ignored,
+            id,
+        ) {
+            Some(Message::WindowResized(3, 4)) => {}
+            other => panic!("expected WindowResized, got {other:?}"),
+        }
+        match window_event_message(
+            Event::Window(WindowEvent::FileDropped(vec![PathBuf::from("/m/a.mid")])),
+            Status::Ignored,
+            id,
+        ) {
+            Some(Message::FilesDropped(paths)) => {
+                assert_eq!(paths, vec![PathBuf::from("/m/a.mid")]);
+            }
+            other => panic!("expected FilesDropped, got {other:?}"),
+        }
+        // Hover has no C++ surface: unmapped.
+        assert!(
+            window_event_message(
+                Event::Window(WindowEvent::FileHovered(vec![PathBuf::from("/m/a.mid")])),
+                Status::Ignored,
+                id,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn portal_doc_paths_replace_playlist_integration_shape() {
+        // P2 replacing-integration shape: a song delivered through a portal
+        // document path (`/run/…/doc/…`, copied fixture) REPLACES the
+        // playlist — never appends — via the same `OpenFiles` path the
+        // chooser, DnD, and single-instance forward all share.
+        let (mut app, _rx, tmp) = test_app();
+        let doc_dir = tmp.path().join("run/1000/doc/deadbeef");
+        std::fs::create_dir_all(&doc_dir).unwrap();
+        let song = doc_dir.join("song.mid");
+        std::fs::copy("examples/test.mid", &song).unwrap();
+        app.playlist.set_items(vec![
+            PathBuf::from("/m/old-a.mid"),
+            PathBuf::from("/m/old-b.mid"),
+        ]);
+
+        upd(&mut app, Message::OpenFiles(vec![song.clone()], true));
+
+        assert_eq!(app.playlist.len(), 1);
+        let current = app.playlist.current().unwrap().to_path_buf();
+        assert!(current.ends_with("song.mid"));
+        assert_eq!(app.playlist.current_index(), 0);
+        assert!(app.pending_autoplay);
+        assert!(app.toasts.is_empty());
+    }
+
+    /// Rust successor of `tests/check_single_instance_open.cmake` (retired in
+    /// T10): a forwarded second-open lands in running state as
+    /// `OpenFiles(paths, replace=true)` — REPLACE, never append (P2).
+    ///
+    /// Present mechanism (observed in `dbus_activation`, not in this test's
+    /// reach): the override batches `Task::done(Action::App(OpenFiles))` with
+    /// `iced::window::gain_focus(main_window_id)` — the `gtk_window_present`
+    /// twin, issued unconditionally even with no files. `Task` values expose
+    /// no introspection, so this test pins the pure mapping
+    /// (`activation_files`) plus the state half (driven through `update()`,
+    /// exactly as the runtime delivers the batched task).
+    #[test]
+    fn second_open_forwards_into_running_state() {
+        use cosmic::dbus_activation::{Details, Message as Activation};
+
+        fn activation(msg: Details<String, Vec<String>>) -> Activation<String, Vec<String>> {
+            Activation {
+                activation_token: None,
+                desktop_startup_id: None,
+                msg,
+            }
+        }
+
+        // `ActivateAction{"open", args}` — our own second CLI launch.
+        let forwarded = activation(Details::ActivateAction {
+            action: "open".to_string(),
+            args: vec!["/m/new.mid".to_string(), String::new()],
+        });
+        assert_eq!(
+            activation_files(&forwarded),
+            vec![PathBuf::from("/m/new.mid")]
+        );
+
+        // `Open{urls}` — portal/MIME activation; non-file URLs skipped.
+        let opened = activation(Details::Open {
+            url: vec![
+                Url::parse("file:///m/a.mid").unwrap(),
+                Url::parse("https://example.com/b.mid").unwrap(),
+            ],
+        });
+        assert_eq!(activation_files(&opened), vec![PathBuf::from("/m/a.mid")]);
+
+        // Bare `Activate` — present-only, no files.
+        assert!(activation_files(&activation(Details::Activate)).is_empty());
+
+        // The state half: `OpenFiles(paths, replace=true)` REPLACES.
+        let (mut app, _rx, _tmp) = test_app();
+        app.playlist.set_items(vec![
+            PathBuf::from("/m/old-a.mid"),
+            PathBuf::from("/m/old-b.mid"),
+        ]);
+        let paths = activation_files(&forwarded);
+        upd(&mut app, Message::OpenFiles(paths, true));
+        assert_eq!(app.playlist.len(), 1);
+        assert_eq!(app.playlist.current_index(), 0);
+        assert!(app.pending_autoplay);
+        assert!(app.toasts.is_empty());
+
+        // The override itself runs without panicking on every variant (its
+        // `Task` output is runtime-delivered, asserted above by shape).
+        std::mem::drop(app.dbus_activation(forwarded));
+        std::mem::drop(app.dbus_activation(opened));
+        std::mem::drop(app.dbus_activation(activation(Details::Activate)));
     }
 
     // -- mix ------------------------------------------------------------------
@@ -2464,6 +3185,41 @@ mod tests {
         assert_eq!(vm.tempo_pct, 100);
         assert_eq!(vm.volume_pct, 100);
         assert!(!vm.loop_enabled);
+    }
+
+    #[test]
+    fn playlist_view_model_contract() {
+        let (mut app, _rx, _tmp) = test_app();
+        // Empty: no items, `current == -1` → `None`.
+        let vm = app.playlist_view_model();
+        assert!(vm.items.is_empty());
+        assert_eq!(vm.selected, None);
+        // Populated: full paths in playlist order + current as `Some`.
+        let items = vec![
+            PathBuf::from("/m/b.mid"),
+            PathBuf::from("/m/a.mid"),
+            PathBuf::from("/m/c.mid"),
+        ];
+        app.playlist.set_items(items.clone());
+        app.playlist.set_current_index(2);
+        let vm = app.playlist_view_model();
+        assert_eq!(vm.items, items);
+        assert_eq!(vm.selected, Some(2));
+    }
+
+    #[test]
+    fn view_builds_with_sidebar_visible_and_hidden() {
+        // `view` is not introspectable, but it must build without panic on
+        // both sides of the `playlistVisible` branch (populated playlist +
+        // a toast, so every row of the layout is exercised).
+        let (mut app, _rx, _tmp) = test_app();
+        app.playlist
+            .set_items(vec![PathBuf::from("/m/a.mid"), PathBuf::from("/m/b.mid")]);
+        app.toast("hello".to_string());
+        app.settings.playlist_visible = true;
+        let _ = app.view();
+        app.settings.playlist_visible = false;
+        let _ = app.view();
     }
 
     #[test]

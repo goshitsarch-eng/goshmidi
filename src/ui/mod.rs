@@ -1,9 +1,13 @@
-//! Views: transport, playlist, lyrics, channels, piano, dialogs, theme.
+//! Views: transport, playlist sidebar, lyrics, channels, piano, dialogs, theme.
 //!
-//! T9 owns this contract + a compiling stub; ux implements the real
-//! `transport` view next (header transport, dashboard, sliders, status).
+//! T9 landed the `transport` view + the path-hack-declared `theme` styles;
+//! T10b adds the real `sidebar` view and promotes `theme` to `ui::theme`.
 
+pub mod sidebar;
+pub mod theme;
 pub mod transport;
+
+use std::path::PathBuf;
 
 use crate::message::Status;
 
@@ -55,4 +59,29 @@ pub struct TransportViewModel {
     pub loop_enabled: bool,
     /// Whether a song is loaded.
     pub has_song: bool,
+}
+
+/// View model for the playlist sidebar (ux §3.1). Built fresh by
+/// `App::playlist_view_model` on every `view()` and passed BY VALUE to
+/// `ui::sidebar::view`; ux must not reach into `App` directly.
+///
+/// By value (not `&'a`) deliberately, same rationale as
+/// [`TransportViewModel`]: a `view(&model)` signature borrowing a fresh
+/// per-frame model cannot return its `Element` past the local, so the
+/// reference form is uncallable here — owned data moves into the widgets
+/// and the `Element` keeps the caller's lifetime.
+///
+/// Field contract (frozen for T10; additions need arch+ux sign-off):
+/// * `items` are full paths in playlist order; the view renders basenames
+///   (`file_name`, middle-ellipsized) and never mutates order;
+/// * `selected` is `playlist.current_index()` as `Option<usize>` (`-1` →
+///   `None`); it drives the highlight and Remove/Up/Down sensitivity.
+///   Out-of-range values highlight nothing (defensive; the state
+///   guarantees in-range-or-`-1`, and its guards no-op regardless).
+#[derive(Debug, Clone, Default)]
+pub struct PlaylistViewModel {
+    /// Playlist items, full paths in order.
+    pub items: Vec<PathBuf>,
+    /// Selected row (`current_index`, `-1` → `None`).
+    pub selected: Option<usize>,
 }

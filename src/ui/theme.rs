@@ -12,9 +12,8 @@
 //! (The transport Tempo/Volume reset buttons stay `standard`: plain
 //! `GtkButton`s in C++, `window.cpp:1708-1709`.)
 //!
-//! Placement: declared as `transport::theme` via `#[path]` (see
-//! `transport.rs`) because `ui/mod.rs` is arch-owned during T9; T10+ moves
-//! the declaration up one level so this becomes `ui::theme`.
+//! Placement: `ui::theme` (T10b moved the declaration up from the T9
+//! `transport::theme` path-attribute hack).
 
 use cosmic::Theme;
 use cosmic::iced::widget::{container, text};
@@ -123,6 +122,34 @@ pub fn rhythm_lamp(state: RhythmLamp) -> impl Fn(&Theme) -> container::Style {
     }
 }
 
+/// Selected-row wash alpha: the accent stays recognizable on the wash in
+/// both modes without swallowing the row text.
+const SELECTED_ROW_ALPHA: f32 = 0.28;
+
+/// Playlist sidebar row (`navigation-sidebar` rows, `window.cpp:1476-1480`):
+/// the selected row gets an accent wash + small theme radius, unselected
+/// rows stay transparent with the same radius (so selection never shifts
+/// layout). Theme-derived, so it stays readable in both modes.
+pub fn playlist_row(selected: bool) -> impl Fn(&Theme) -> container::Style {
+    move |theme| {
+        let background = if selected {
+            let mut wash: Color = theme.cosmic().accent.base.into();
+            wash.a = SELECTED_ROW_ALPHA;
+            Some(Background::Color(wash))
+        } else {
+            None
+        };
+        container::Style {
+            background,
+            border: Border {
+                radius: theme.cosmic().corner_radii.radius_s.into(),
+                ..Border::default()
+            },
+            ..container::Style::default()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,5 +179,19 @@ mod tests {
             style.background,
             Some(Background::Color(Color::from_rgb8(0x57, 0xE3, 0x89)))
         );
+    }
+
+    #[test]
+    fn playlist_row_wash_only_when_selected() {
+        let theme = Theme::dark();
+        let selected = playlist_row(true)(&theme);
+        let wash = match selected.background {
+            Some(Background::Color(color)) => color,
+            other => panic!("expected a wash fill, got {other:?}"),
+        };
+        let accent: Color = theme.cosmic().accent.base.into();
+        assert_eq!((wash.r, wash.g, wash.b), (accent.r, accent.g, accent.b));
+        assert!((wash.a - SELECTED_ROW_ALPHA).abs() < f32::EPSILON);
+        assert!(playlist_row(false)(&theme).background.is_none());
     }
 }

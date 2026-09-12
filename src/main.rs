@@ -5,12 +5,7 @@
 //! `--dry-run`/`--dump-info`, which parse + validate inputs and exit 0
 //! *before* any GUI init (P10c: must work with no display).
 
-mod app;
-mod config;
-pub(crate) mod core;
-mod message;
-mod state;
-mod ui;
+use dmidiplayer::app;
 
 use std::path::PathBuf;
 

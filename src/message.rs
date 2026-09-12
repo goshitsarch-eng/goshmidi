@@ -38,7 +38,10 @@ pub enum Message {
     BeatBackward,
     JumpToBar(u32),
     LoopToggled(bool),
-    LoopSet { start: u32, end: u32 },
+    LoopSet {
+        start: u32,
+        end: u32,
+    },
     RepeatModeChanged(RepeatMode),
     PositionSeek(f64),
     TempoChanged(u32),
@@ -47,7 +50,16 @@ pub enum Message {
 
     // --- playlist ---
     OpenFiles(Vec<PathBuf>, bool /* replace */),
+    /// D1 trigger (the Open button/menu/Add action): launches the portal
+    /// multi-select chooser; results arrive as `OpenFilesChosen`.
+    OpenFilesDialog,
+    /// D1 chooser result: `Ok(paths)` feeds the `OpenFiles(paths, true)`
+    /// path; `Ok(empty)` is unreachable from the portal but stays a silent
+    /// no-op defensively; `Err` (I/O failure or non-file URL) toasts.
+    OpenFilesChosen(Result<Vec<PathBuf>, String>),
     PlaylistSelect(usize),
+    /// Sidebar row-activated (double-click/Enter, U11): select + load + play.
+    PlaylistRowActivated(usize),
     PlaylistRemove(usize),
     PlaylistMoveUp(usize),
     PlaylistMoveDown(usize),
@@ -57,6 +69,26 @@ pub enum Message {
     PlaylistLoaded(Result<LoadedPlaylist, String>),
     PlaylistSaveDialog,
     PlaylistSaved(Result<PathBuf, String>),
+    /// Shared portal-choosers cancel signal: `Error::Cancelled` maps here
+    /// from every file-chooser `Task` (D1/D9/D10) and is a silent no-op —
+    /// no state change, no toast.
+    ChooserCancelled,
+
+    // --- drag-and-drop (T0 verdict, arch §2.3; chooser stays primary) ---
+    /// X11: `window::Event::FileDropped` paths from the event subscription.
+    FilesDropped(Vec<PathBuf>),
+    /// Wayland: raw payload from `dnd_destination.on_data_received`; only
+    /// `text/uri-list` is parsed (same Url→PathBuf rules as the chooser).
+    DndDataReceived {
+        mime: String,
+        data: Vec<u8>,
+    },
+    /// Wayland sandboxed drop: portal file-transfer key from
+    /// `dnd_destination.on_file_transfer`; resolves via
+    /// `cosmic::command::file_transfer_receive`.
+    DndFileTransfer(String),
+    /// Resolved sandboxed drop: `Ok(paths)` feeds the drop path, `Err` toasts.
+    DndFileTransferDone(Result<Vec<PathBuf>, String>),
 
     // --- per-channel mix ---
     ChannelMute(u8, bool),
@@ -127,9 +159,10 @@ pub enum Message {
 /// About=D4, Help=D5, FileInfo=D6, JumpToBar=D7, Loop=D8, PlaylistOpen=D9,
 /// PlaylistSave=D10, SoundFontBrowse=D11, SaveLyrics=D12). Full dialog views
 /// land in T11–T13. D1 (open files) and D13 (print lyrics) are deliberately
-/// absent: D1 is a portal file-chooser `Task` whose results arrive as
-/// `Message::OpenFiles`, and D13 routes through `Message::LyricsPrint` to
-/// the portal/export print path — neither needs retained modal state here.
+/// absent: D1 is a portal file-chooser `Task` (`Message::OpenFilesDialog`
+/// trigger, results via `Message::OpenFilesChosen` into the `OpenFiles`
+/// path), and D13 routes through `Message::LyricsPrint` to the portal/export
+/// print path — neither needs retained modal state here.
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dialog {

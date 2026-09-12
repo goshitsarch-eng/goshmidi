@@ -104,10 +104,9 @@ if(BUILD_TESTING)
              COMMAND ${CMAKE_COMMAND}
                      -DPROJECT_SOURCE_DIR=${CMAKE_SOURCE_DIR}
                      -P ${CMAKE_SOURCE_DIR}/tests/check_identity.cmake)
-    add_test(NAME single_instance_file_open_contract
-             COMMAND ${CMAKE_COMMAND}
-                     -DPROJECT_SOURCE_DIR=${CMAKE_SOURCE_DIR}
-                     -P ${CMAKE_SOURCE_DIR}/tests/check_single_instance_open.cmake)
+    # NOTE (T10): single_instance_file_open_contract retired — its Rust
+    # successor is `app::tests::second_open_forwards_into_running_state`
+    # (`cargo test`), which pins the same forward+replace contract in state.
 endif()
 
 if(UNIX AND NOT APPLE)

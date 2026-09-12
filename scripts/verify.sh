@@ -29,6 +29,10 @@ cargo build --locked
 step "cargo clippy --locked"
 cargo clippy --locked -- -D warnings
 
+step "cargo fmt --check"
+# `cargo fmt`, never bare `rustfmt`: bare rustfmt parses edition-2015 and misfires on edition-2024 sources (T9 precedent).
+cargo fmt --check
+
 step "cargo test --locked"
 cargo test --locked
 
