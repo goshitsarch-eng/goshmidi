@@ -278,6 +278,12 @@ impl PlaylistState {
     pub fn source_path(&self) -> Option<&Path> {
         self.source.as_deref()
     }
+
+    /// Record the source path after an out-of-band load (T9 `PlaylistLoaded`:
+    /// the portal chooser read the file, so `load` already ran elsewhere).
+    pub fn set_source(&mut self, source: Option<PathBuf>) {
+        self.source = source;
+    }
 }
 
 fn xorshift64(state: &mut u64) -> u64 {

@@ -24,10 +24,17 @@
 //!   wins; duplicate groups merge. CRLF and a missing final newline are
 //!   tolerated; a BOM, `[]`, or any line that is neither blank, comment,
 //!   group nor key=value fails the whole load.
-//! - Corrupt → defaults: a structural failure (or missing/unreadable file,
-//!   or invalid UTF-8) leaves the in-memory settings untouched
-//!   (`settings.cpp:79-84`); a per-key failure leaves that field's current
-//!   value (`recentFiles` resets to empty, mirroring the C++ clear+fill).
+//! - Corrupt → defaults: a structural failure (or a missing/unreadable
+//!   file) leaves the in-memory settings untouched (`settings.cpp:79-84`); a
+//!   per-key failure leaves that field's current value (`recentFiles` resets
+//!   to empty, mirroring the C++ clear+fill).
+//! - Invalid-UTF-8 deviation (probed 2026-09-12): GLib *loads* such files —
+//!   `g_key_file_load_from_file` succeeds, the good keys stay readable, and
+//!   only the undecodable key's getter fails — so C++ applies the good keys
+//!   and defaults just the bad one. The Rust reader instead rejects the whole
+//!   file (non-UTF-8 is a [`ParseError`]) and keeps in-memory state (defaults
+//!   at startup). Salvaging would need lossy parsing; the gap is documented
+//!   here, not emulated.
 //!
 //! Deviation from C++ (mandated by arch A11): `AppSettings::save()` rewrites
 //! only the known keys, silently dropping unknown ones. The Rust writer
@@ -146,7 +153,7 @@ impl KeyFile {
         Ok(kf)
     }
 
-    fn group_or_new(&mut self, name: &str) -> usize {
+    pub(crate) fn group_or_new(&mut self, name: &str) -> usize {
         if let Some(i) = self.groups.iter().position(|g| g.name == name) {
             return i;
         }
@@ -515,7 +522,8 @@ impl Settings {
 
     /// Load from an explicit file. `Ok` = parsed (per-key errors already
     /// folded to keep-current); `Err` = file unreadable / non-UTF-8 /
-    /// structurally corrupt, `self` untouched.
+    /// structurally corrupt, `self` untouched. (On non-UTF-8 input C++
+    /// salvages the good keys instead — see the module docs.)
     pub fn load_file(&mut self, path: &Path) -> Result<(), ParseError> {
         let bytes = std::fs::read(path).map_err(|e| ParseError {
             line: 0,
@@ -642,7 +650,10 @@ impl Settings {
             kf.set_string_list(GROUP, "recentFiles", &self.recent_files);
         }
         // Preserved unknown tail, verbatim and in original relative order.
+        // The group header is touched first so keyless groups survive
+        // (GLib keeps `[Empty]` through `g_key_file_to_data` too — probed).
         for group in &self.unknown.groups {
+            kf.group_or_new(&group.name);
             for (k, v) in &group.keys {
                 kf.set_raw(&group.name, k, v);
             }
@@ -1121,6 +1132,20 @@ mod tests {
         // Invalid UTF-8 → defaults.
         std::fs::write(paths.config_file(), [0xff, 0xfe, 0x0a]).unwrap();
         assert_eq!(Settings::load(&paths), Settings::new());
+    }
+
+    #[test]
+    fn empty_unknown_groups_survive_round_trip_like_glib() {
+        let mut s = Settings::new();
+        s.load_from_str("[General]\nlanguage=en\n\n[Empty]\n\n[Other]\nkeepme=yes\n")
+            .unwrap();
+        let data = s.to_data();
+        assert!(data.contains("[Empty]\n"), "keyless group kept: {data}");
+        assert!(data.contains("[Other]\nkeepme=yes\n"));
+        // Stable across a second round trip.
+        let mut s2 = Settings::new();
+        s2.load_from_str(&data).unwrap();
+        assert_eq!(s2.to_data(), data);
     }
 
     #[test]

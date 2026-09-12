@@ -141,6 +141,10 @@ Load dispatch (`Sequence::loadFile`): `.wrk` → `loadWrk`, `.rmi` → `loadRmi`
 - **FluidSynth** (`FluidOutput`): creates settings (gain 0.6) + synth + audio driver,
   trying `pulseaudio → pipewire → alsa → jack → sdl2`; loads requested or default
   SoundFont (`sfload`). Single port `fluidsynth` labelled with the SF filename.
+  Rust note (T6, carried here in T9): the Rust port tries `sdl3`, not `sdl2`,
+  as the trailing entry — upstream removed the SDL2 audio driver in
+  FluidSynth 2.5.0, so `sdl2` can never construct against the pinned 2.6.0
+  (`src/core/output_fluid.rs: AUDIO_DRIVERS`).
   Pitch bend remapped -8192..8191 → 0..16383. Accumulates `lastError` for UI toast.
 - **Dummy**: silent sink, always available.
 - **Manager**: owns backends in order ALSA, FluidSynth, Dummy; `select` closes the
@@ -712,7 +716,9 @@ one async model, and eliminates the current data races.
   pack spike (DECISIONS D16). The `fluidsynth` 0.0.1 crate is 2018 abandonware
   and is rejected; no `bindgen` (avoids a libclang build dependency). Scope is
   small (~17 functions, 3 opaque types: settings, synth, audio driver):
-  settings/synth/audio-driver creation with the same driver fallback order and
+  settings/synth/audio-driver creation with the same driver fallback order
+  (trailing SDL entry `sdl3` in Rust, `sdl2` in C++ — upstream removed the
+  SDL2 audio driver in 2.5.0 and the pin is 2.6.0, see the §1.5 note) and
   gain 0.6, `sfload`, note/cc/program/pressure/bend/sysex calls, pitch-bend range
   remap. Keep default-SoundFont search paths and `lastError` accumulation.
 - **Dummy**: trivial Rust sink.

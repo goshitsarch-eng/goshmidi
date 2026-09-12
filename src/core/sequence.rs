@@ -682,16 +682,24 @@ impl Sequence {
     /// maps them to U+00A5/U+203E (¥/‾), so backslash/tilde bytes diverge
     /// under an explicit SHIFT_JIS selection.
     pub fn decode_text(&self, data: &[u8]) -> String {
+        Self::decode_with_charset(data, &self.charset)
+    }
+
+    /// [`decode_text`][Self::decode_text] with the charset passed in instead
+    /// of `self.charset`. `pub(crate)`: the T9 app shell decodes live lyric
+    /// bytes with the UI codec override without touching the engine thread's
+    /// `Sequence`.
+    pub(crate) fn decode_with_charset(data: &[u8], charset: &str) -> String {
         if data.is_empty() {
             return String::new();
         }
-        if is_latin1_label(&self.charset) {
+        if is_latin1_label(charset) {
             return data.iter().map(|&b| b as char).collect();
         }
-        if is_latin5_label(&self.charset) {
+        if is_latin5_label(charset) {
             return data.iter().map(|&b| latin5_char(b)).collect();
         }
-        match encoding_rs::Encoding::for_label(self.charset.as_bytes()) {
+        match encoding_rs::Encoding::for_label(charset.as_bytes()) {
             Some(encoding) => {
                 let (text, _, malformed) = encoding.decode(data);
                 if malformed {

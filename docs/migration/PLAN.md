@@ -184,7 +184,7 @@ lead = PLAN/DECISIONS/REPORT + glue.
       30 keys + MRU-10 + portable mode, song-settings schema/apply,
       save-on-close-request (**fix**, U2) + save-point truth table, `.lst`
       load/save with A14 semantics; fixture round-trip tests.
-- [ ] T9 App shell + transport (arch+ux): `Message`/`update`/`view`/tasks/
+- [x] T9 App shell + transport (arch+ux): `Message`/`update`/`view`/tasks/ — DONE (suite 311/311, 69 variants tested, F1/F2 fixed, FULL PASS, devil substance SIGN-OFF; fmt-leg OBJECT adjudicated: cargo fmt --check exit 0)
       subscriptions, header transport, dashboard, 3 sliders, status line,
       toasts; commit-on-close prefs (U14); load-time UI↔engine sync (**fix**,
       A8); unit tests per Message variant; repeat/finish policy.

@@ -150,12 +150,16 @@ fn main() -> cosmic::iced::Result {
         return Ok(());
     }
 
-    // T8 wires portable mode + settings load here (`AppSettings::setPortable`
-    // / `load` in main.cpp); T1 boots straight into the skeleton shell.
-    let _ = (&cli.portable, &cli.portable_file);
-
+    // Portable mode (`AppSettings::setPortable`, `main.cpp:102-103`):
+    // threaded through `Flags` into `init`, which resolves `Paths` from it.
     let settings = cosmic::app::Settings::default().size(cosmic::iced::Size::new(1100.0, 720.0));
-    let flags = app::Flags::new(cli.files, backend, conn);
+    let flags = app::Flags::new(
+        cli.files,
+        backend,
+        conn,
+        cli.portable,
+        cli.portable_file.map(PathBuf::from),
+    );
     cosmic::app::run_single_instance::<app::App>(settings, flags)
 }
 
@@ -209,6 +213,40 @@ mod tests {
         // Trailing `-f` with no value is silently ignored (C++ parity).
         let (cli, _) = parse_args(&argv(&["-f"]));
         assert!(!cli.portable);
+    }
+
+    #[test]
+    fn portable_cli_threads_into_app_flags() {
+        // `-f FILE` implies portable mode and carries the file into `Flags`
+        // (the `setPortable` half of `main.cpp:102-103`).
+        let (cli, _) = parse_args(&argv(&["-f", "alt.conf"]));
+        let flags = app::Flags::new(
+            vec![],
+            None,
+            None,
+            cli.portable,
+            cli.portable_file.map(PathBuf::from),
+        );
+        assert!(flags.portable);
+        assert_eq!(flags.portable_file, Some(PathBuf::from("alt.conf")));
+
+        // Bare `-p`: portable with no file (resolves to `./dmidiplayer.conf`).
+        let (cli, _) = parse_args(&argv(&["-p"]));
+        let flags = app::Flags::new(
+            vec![],
+            None,
+            None,
+            cli.portable,
+            cli.portable_file.map(PathBuf::from),
+        );
+        assert!(flags.portable);
+        assert_eq!(flags.portable_file, None);
+
+        // Default: not portable.
+        let (cli, _) = parse_args(&argv(&[]));
+        let flags = app::Flags::new(vec![], None, None, cli.portable, None);
+        assert!(!flags.portable);
+        assert_eq!(flags.portable_file, None);
     }
 
     #[test]

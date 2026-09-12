@@ -218,7 +218,10 @@ impl SongSettings {
                 kf.set_int(&group, "level", v);
             }
         }
+        // The group header is touched first so keyless groups survive
+        // (GLib keeps `[Empty]` through `g_key_file_to_data` too — probed).
         for (name, keys) in &self.unknown.snapshot() {
+            kf.group_or_new(name);
             for (k, v) in keys {
                 kf.set_raw(name, k, v);
             }
@@ -433,6 +436,15 @@ mod tests {
         // Present-but-empty name IS applied.
         let s = SongSettings::parse("[MIDI Channel  3]\nname=\n").unwrap();
         assert_eq!(s.channels[2].as_ref().unwrap().name, Some(String::new()));
+    }
+
+    #[test]
+    fn empty_unknown_groups_survive_round_trip_like_glib() {
+        let s = SongSettings::parse("[Global]\nfile=/m/s.mid\n\n[Empty]\n").unwrap();
+        let data = s.to_data();
+        assert!(data.contains("[Empty]\n"), "keyless group kept: {data}");
+        let s2 = SongSettings::parse(&data).unwrap();
+        assert_eq!(s2.to_data(), data);
     }
 
     #[test]

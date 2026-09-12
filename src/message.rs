@@ -1,15 +1,31 @@
 //! Application message types (`docs/migration/architecture.md` §2.2, §2.4).
 //!
-//! T1 walking skeleton: full enum shapes per the architecture doc, as stubs.
-//! `update()` wiring lands in T9, playlist/file flows in T10.
+//! T9: full `Message` enum plus the UI snapshot types (`LoadedSong`,
+//! `LoadedPlaylist`, `SettingsState`, …). The engine protocol
+//! (`EngineCommand` / `PlayerEvent`) is **owned by `core::player` and only
+//! re-exported here** (DECISIONS D19): one definition, no bridge `From`
+//! impls, no drift. Consequences of that ownership:
+//! * `PlayerEvent::NoteOff` carries `vel` (C++ `onNoteOff` parity).
+//! * There are no engine `PreviewNote`/`PreviewOff` commands: piano audition
+//!   bypasses the player and talks to the outputs directly (A3), so
+//!   `Message::PianoPreviewOn/Off` are app-only messages handled in
+//!   `app.rs`, never engine commands.
 
 use std::path::PathBuf;
 use std::time::Instant;
 
+use crate::core::event::MIDI_CHANNELS;
+pub use crate::core::output::MidiPort;
+pub use crate::core::player::{EngineCommand, PlayerEvent, SongSnapshot};
+use crate::core::sequence::TextRec;
+
 /// App-level messages: every transport / playlist / mix / lyrics / piano /
 /// MIDI-setup / prefs / dialog / navigation event, plus engine feedback
-/// (`Player`) and async results. T9 wires `update()`; T10 the file flows.
+/// (`Player`) and async results. Handled by `App::update` (`app.rs`).
 #[allow(dead_code)]
+// `PrefsChanged` carries the whole 30-key `Settings` by value per arch §2.2
+// (one message per dialog close — boxing would churn the contract).
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug)]
 pub enum Message {
     // --- transport ---
@@ -62,6 +78,8 @@ pub enum Message {
     // --- piano ---
     // NOTE: no per-channel visibility toggle — `m_pianoShow[]` is never
     // created in C++ (window.hpp:103); that would be a new feature (arch §1.7).
+    // Preview is app-only (A3 direct-output): there is deliberately no
+    // matching `EngineCommand` — audition bypasses mute and pitch shift.
     PianoTighten(bool),
     PianoShowAll,
     PianoHideUnused,
@@ -80,7 +98,8 @@ pub enum Message {
     MidiTestNote,
     MidiApply,
 
-    // --- preferences (one per persisted key or grouped) ---
+    // --- preferences (commit-on-close scratch state, applied + saved by
+    // `App::apply_prefs`, incl. solo% per U14) ---
     PrefsChanged(SettingsState),
 
     // --- song settings ---
@@ -102,111 +121,6 @@ pub enum Message {
     // --- async ---
     Tick(Instant),
     WindowResized(u32, u32),
-}
-
-/// Engine → UI events: the 12 C++ player callbacks plus open/load/output
-/// results. Produced by the engine thread (T7), consumed by `update()` (T9).
-#[allow(dead_code)]
-#[derive(Clone, Debug)]
-pub enum PlayerEvent {
-    Opened(LoadedSong),
-    LoadFailed {
-        file: String,
-        errors: Vec<String>,
-    },
-    Time {
-        elapsed_ms: u64,
-        ticks: i64,
-    },
-    Beat {
-        bar: u32,
-        beat: u32,
-        max: u32,
-    },
-    NoteOn {
-        ch: u8,
-        note: u8,
-        vel: u8,
-    },
-    NoteOff {
-        ch: u8,
-        note: u8,
-    },
-    Text {
-        track: u32,
-        text_type: i32,
-        ticks: i64,
-        bytes: Vec<u8>,
-    },
-    Program {
-        ch: u8,
-        patch: u8,
-    },
-    Tempo {
-        tempo_us: f64,
-    },
-    KeySignature {
-        track: u32,
-        alterations: i8,
-        minor: bool,
-    },
-    TimeSignature {
-        bar: u32,
-        num: u8,
-        den: u8,
-    },
-    Started,
-    Stopped,
-    Finished,
-    OutputChanged {
-        backend: String,
-        port: String,
-        warning: Option<String>,
-    },
-}
-
-/// UI → engine commands sent over the engine channel (arch §2.4).
-/// The engine thread + channel land in T7.
-#[allow(dead_code)]
-#[derive(Clone, Debug)]
-pub enum EngineCommand {
-    Load(PathBuf),
-    Play,
-    Pause,
-    Stop {
-        reset: bool,
-    },
-    /// `SequencePlayer::resetPosition`: cursor + ticks + latest-beat reset.
-    ResetPosition,
-    SeekTicks(i64),
-    JumpToBar(u32),
-    BeatStep(i8),
-    SetTempoFactor(f64),
-    SetVolumeFactor(u32),
-    SetPitchShift(i32),
-    SetChannelVolume(u8, f64),
-    SetMuted(u8, bool),
-    SetLocked(u8, bool),
-    SetPatch(u8, u8),
-    SetLoop {
-        enabled: bool,
-        start: u32,
-        end: u32,
-    },
-    SetDrumsChannel(u8),
-    SetSysexReset(u8),
-    SelectOutput {
-        backend: String,
-        port: String,
-    },
-    SetSoundFont(String),
-    PreviewNote {
-        ch: u8,
-        note: u8,
-        vel: u8,
-    },
-    PreviewOff,
-    Shutdown,
 }
 
 /// Modal dialogs: PLAN D2–D12 in D-number order (Preferences=D2, MidiSetup=D3,
@@ -241,7 +155,32 @@ pub enum View {
     Piano,
 }
 
-/// Repeat policy: off / repeat song / repeat playlist (T9).
+/// Transport status line: the 5 C++ states verbatim (ux §3.9).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Status {
+    #[default]
+    Ready,
+    Playing,
+    Paused,
+    Stopped,
+    Finished,
+}
+
+impl Status {
+    /// Status-line text, exactly the C++ `setStatus` strings.
+    pub fn text(self) -> &'static str {
+        match self {
+            Status::Ready => "Ready",
+            Status::Playing => "Playing",
+            Status::Paused => "Paused",
+            Status::Stopped => "Stopped",
+            Status::Finished => "Finished",
+        }
+    }
+}
+
+/// Repeat policy: off / repeat song / repeat playlist (persisted to
+/// `repeatMode`: `Off = 0`, `Song = 1`, `Playlist = 2`, like `m_repeat`).
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RepeatMode {
@@ -251,15 +190,82 @@ pub enum RepeatMode {
     Playlist,
 }
 
-/// Immutable song metadata snapshot for the UI (arch §2.1).
-/// Full shape (labels, bars, duration, …) lands with T3/T7.
-#[allow(dead_code)]
+impl RepeatMode {
+    /// `m_repeat` integer twin (window.cpp:2140-2152, `repeatMode` key).
+    pub fn as_i32(&self) -> i32 {
+        match self {
+            RepeatMode::Off => 0,
+            RepeatMode::Song => 1,
+            RepeatMode::Playlist => 2,
+        }
+    }
+
+    /// Inverse of [`RepeatMode::as_i32`]; out-of-range reads as `Off`.
+    pub fn from_i32(v: i32) -> Self {
+        match v {
+            1 => RepeatMode::Song,
+            2 => RepeatMode::Playlist,
+            _ => RepeatMode::Off,
+        }
+    }
+}
+
+/// Immutable song metadata snapshot for the UI (arch §2.1): the engine's
+/// [`SongSnapshot`] converted field-for-field at `Opened` time. The UI never
+/// touches the engine's `Sequence` directly.
+#[allow(dead_code)] // T11 lyrics body + T13 file-info/piano consume the rest.
 #[derive(Clone, Debug)]
 pub struct LoadedSong {
     pub title: String,
+    pub format: String,
+    /// Last bar number (`Sequence::last_bar`); jump/loop ranges clamp to it.
+    pub bars: i32,
+    pub len_ticks: i64,
+    pub duration_ms: u64,
+    pub division: i32,
+    pub num_tracks: i32,
+    /// Raw first tempo in µs per quarter (unscaled by any tempo factor).
+    pub initial_tempo_us: f64,
+    pub channel_used: [bool; MIDI_CHANNELS],
+    pub channel_labels: [String; MIDI_CHANNELS],
+    pub lowest_note: i32,
+    pub highest_note: i32,
+    /// Detected charset at load time; the lyrics codec override starts here.
+    pub charset: String,
+    /// Raw text/meta records for the lyrics view (T11 decodes + filters).
+    pub texts: Vec<TextRec>,
 }
 
-/// Result of a playlist load: source path + items (T8/T10 fill this in).
+impl From<SongSnapshot> for LoadedSong {
+    fn from(s: SongSnapshot) -> Self {
+        Self {
+            title: s.title,
+            format: s.format,
+            bars: s.bars,
+            len_ticks: s.len_ticks,
+            duration_ms: s.duration_ms,
+            division: s.division,
+            num_tracks: s.num_tracks,
+            initial_tempo_us: s.initial_tempo_us,
+            channel_used: s.channel_used,
+            channel_labels: s.channel_labels,
+            lowest_note: s.lowest_note,
+            highest_note: s.highest_note,
+            charset: s.charset,
+            texts: s.texts,
+        }
+    }
+}
+
+impl LoadedSong {
+    /// Last-bar clamp for the jump dialog range `1..=last_bar` (D7: min 1).
+    pub fn last_bar(&self) -> u32 {
+        self.bars.max(1) as u32
+    }
+}
+
+/// Result of a playlist load: source path + items (T10 fills this in via the
+/// portal chooser; the `PlaylistLoaded` arm applies it).
 #[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct LoadedPlaylist {
@@ -267,16 +273,132 @@ pub struct LoadedPlaylist {
     pub items: Vec<PathBuf>,
 }
 
-/// One MIDI output port (T6 fills in the full ALSA/FluidSynth shape).
-#[allow(dead_code)]
-#[derive(Clone, Debug)]
-pub struct MidiPort {
-    pub id: String,
-    pub label: String,
-}
+/// Preferences scratch state: the full [`Settings`][crate::config::settings::Settings]
+/// (all 30 keys), edited by the prefs dialog and committed wholesale by
+/// `App::apply_prefs` at close (commit-on-close, U14). A type alias — not a
+/// parallel struct — so the dialog can never drift from the persisted schema.
+pub type SettingsState = crate::config::settings::Settings;
 
-/// Mirrors C++ `AppSettings` (all 30 keys). Full struct lands in T8
-/// (`config::settings`); this stub keeps `Message` compiling for T1.
-#[allow(dead_code)]
-#[derive(Clone, Debug, Default)]
-pub struct SettingsState {}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// D19: the re-exported protocol types ARE the core types — a core value
+    /// needs no conversion to travel as a `Message`.
+    #[test]
+    fn protocol_types_are_core_owned() {
+        let cmd: EngineCommand = crate::core::player::EngineCommand::Play;
+        assert!(matches!(cmd, EngineCommand::Play));
+        let ev: PlayerEvent = crate::core::player::PlayerEvent::Started;
+        let msg = Message::Player(ev);
+        assert!(matches!(msg, Message::Player(PlayerEvent::Started)));
+        let port: MidiPort = crate::core::output::MidiPort {
+            id: "128:0".to_string(),
+            label: "Synth".to_string(),
+        };
+        let msg = Message::MidiPortsRefreshed(vec![port]);
+        assert!(matches!(msg, Message::MidiPortsRefreshed(_)));
+    }
+
+    /// `NoteOff` carries `vel` (C++ `onNoteOff(ch, note, vel)` parity —
+    /// the T1 stub dropped it, D19 restores it).
+    #[test]
+    fn note_off_carries_velocity() {
+        match (PlayerEvent::NoteOff {
+            ch: 0,
+            note: 60,
+            vel: 80,
+        }) {
+            PlayerEvent::NoteOff { ch, note, vel } => {
+                assert_eq!((ch, note, vel), (0, 60, 80));
+            }
+            other => panic!("expected NoteOff, got {other:?}"),
+        }
+    }
+
+    /// `run_single_instance` bound (D16): `Message: Clone + Debug + Send`.
+    #[test]
+    fn message_is_clone_debug_send_static() {
+        fn assert_bounds<T: Clone + std::fmt::Debug + Send + 'static>() {}
+        assert_bounds::<Message>();
+    }
+
+    #[test]
+    fn status_texts_match_cpp_set_status() {
+        assert_eq!(Status::Ready.text(), "Ready");
+        assert_eq!(Status::Playing.text(), "Playing");
+        assert_eq!(Status::Paused.text(), "Paused");
+        assert_eq!(Status::Stopped.text(), "Stopped");
+        assert_eq!(Status::Finished.text(), "Finished");
+        assert_eq!(Status::default(), Status::Ready);
+    }
+
+    #[test]
+    fn repeat_mode_round_trips_m_repeat_integers() {
+        assert_eq!(RepeatMode::Off.as_i32(), 0);
+        assert_eq!(RepeatMode::Song.as_i32(), 1);
+        assert_eq!(RepeatMode::Playlist.as_i32(), 2);
+        assert_eq!(RepeatMode::from_i32(0), RepeatMode::Off);
+        assert_eq!(RepeatMode::from_i32(1), RepeatMode::Song);
+        assert_eq!(RepeatMode::from_i32(2), RepeatMode::Playlist);
+        assert_eq!(RepeatMode::from_i32(99), RepeatMode::Off);
+        assert_eq!(RepeatMode::from_i32(-1), RepeatMode::Off);
+        assert_eq!(RepeatMode::default(), RepeatMode::Off);
+    }
+
+    fn test_snapshot() -> SongSnapshot {
+        SongSnapshot {
+            title: "song.mid".to_string(),
+            format: "SMF".to_string(),
+            bars: 32,
+            len_ticks: 9600,
+            duration_ms: 120_000,
+            division: 96,
+            num_tracks: 4,
+            initial_tempo_us: 500_000.0,
+            channel_used: std::array::from_fn(|ch| ch < 3),
+            channel_labels: std::array::from_fn(|ch| format!("Ch{ch}")),
+            lowest_note: 21,
+            highest_note: 108,
+            charset: "UTF-8".to_string(),
+            texts: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn loaded_song_converts_from_snapshot_field_for_field() {
+        let song = LoadedSong::from(test_snapshot());
+        assert_eq!(song.title, "song.mid");
+        assert_eq!(song.format, "SMF");
+        assert_eq!(song.bars, 32);
+        assert_eq!(song.len_ticks, 9600);
+        assert_eq!(song.duration_ms, 120_000);
+        assert_eq!(song.division, 96);
+        assert_eq!(song.num_tracks, 4);
+        assert!((song.initial_tempo_us - 500_000.0).abs() < f64::EPSILON);
+        assert!(song.channel_used[0]);
+        assert!(!song.channel_used[3]);
+        assert_eq!(song.channel_labels[1], "Ch1");
+        assert_eq!(song.lowest_note, 21);
+        assert_eq!(song.highest_note, 108);
+        assert_eq!(song.charset, "UTF-8");
+        assert!(song.texts.is_empty());
+    }
+
+    #[test]
+    fn last_bar_clamps_to_min_1() {
+        let mut song = LoadedSong::from(test_snapshot());
+        assert_eq!(song.last_bar(), 32);
+        song.bars = 0;
+        assert_eq!(song.last_bar(), 1);
+        song.bars = -4;
+        assert_eq!(song.last_bar(), 1);
+    }
+
+    #[test]
+    fn settings_state_is_the_persisted_settings() {
+        let s = SettingsState::new();
+        assert_eq!(s.drums_channel, 10);
+        assert_eq!(s.solo_volume_reduction, 50);
+    }
+}

@@ -15,7 +15,8 @@
 //!   idle-only note-off), so preview stays a T9/T13 direct-output call.
 //! * `PlayerEvent::NoteOff` carries `vel`: the C++ `onNoteOff(ch, note, vel)`
 //!   callback has it; the message.rs T1 stub dropped it. T9 reconciles.
-//! * `Opened` carries the engine-side [`SongSnapshot`], not the T9 UI shape.
+//! * `Opened` carries the engine-side [`SongSnapshot`] (full UI fields since
+//!   T9; the app converts it to `message::LoadedSong` via `From`).
 //!
 //! ## Threading and wakeup (A2)
 //!
@@ -99,7 +100,7 @@ use super::event::{
 };
 use super::event::{Kind, MidiEvent};
 use super::output::MidiOutputManager;
-use super::sequence::Sequence;
+use super::sequence::{Sequence, TextRec};
 use super::sysex::{
     companion_syx_path, load_sysex_file, parse_sysex_messages, sysex_pacing_ms,
     sysex_reset_message, sysex_reset_settle_ms,
@@ -120,23 +121,38 @@ const PACING_CHUNK_MS: u64 = 5;
 // Protocol: EngineCommand / PlayerEvent
 // ---------------------------------------------------------------------------
 
-/// Immutable song metadata snapshot for `PlayerEvent::Opened` (the T9 UI
-/// shape lands with the app shell; this is the engine-side minimum).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Immutable song metadata snapshot for `PlayerEvent::Opened`: everything
+/// the UI shows about a song (arch §2.1 `LoadedSong`: labels, bars,
+/// duration, …), built from the engine's [`Sequence`] at load time. The app
+/// shell converts this to its own `LoadedSong` (`From`, no bridge code).
+#[derive(Debug, Clone, PartialEq)]
 pub struct SongSnapshot {
     pub title: String,
     pub format: String,
     pub bars: i32,
     pub len_ticks: i64,
     pub duration_ms: u64,
+    pub division: i32,
+    pub num_tracks: i32,
+    /// Raw first tempo in µs per quarter (unscaled by any tempo factor).
+    pub initial_tempo_us: f64,
+    pub channel_used: [bool; MIDI_CHANNELS],
+    pub channel_labels: [String; MIDI_CHANNELS],
+    pub lowest_note: i32,
+    pub highest_note: i32,
+    pub charset: String,
+    /// Raw text/meta records for the lyrics view (T11 decodes + filters).
+    pub texts: Vec<TextRec>,
 }
 
 /// Engine → UI events: the 12 C++ player callbacks plus open/load/output
-/// results. Mirrors `crate::message::PlayerEvent` (see module docs for the
-/// two deliberate deltas).
+/// results. Owned here; `crate::message` re-exports this type (D19), so the
+/// app and the engine can never drift.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlayerEvent {
-    Opened(SongSnapshot),
+    /// Boxed: the snapshot is ~0.5 KB but `Opened` fires once per song,
+    /// while the other variants flow at event rate.
+    Opened(Box<SongSnapshot>),
     LoadFailed {
         file: String,
         errors: Vec<String>,
@@ -155,7 +171,7 @@ pub enum PlayerEvent {
         note: u8,
         vel: u8,
     },
-    /// DELTA vs message.rs: carries `vel` (C++ `onNoteOff` has it).
+    /// Carries `vel` (C++ `onNoteOff(ch, note, vel)` has it).
     NoteOff {
         ch: u8,
         note: u8,
@@ -1125,7 +1141,7 @@ impl<C: PlayerClock> Engine<C> {
         self.loop_enabled = false;
         self.init_channels();
         if ok {
-            events.emit(PlayerEvent::Opened(self.snapshot()));
+            events.emit(PlayerEvent::Opened(Box::new(self.snapshot())));
         } else {
             events.emit(PlayerEvent::LoadFailed {
                 file: path.to_string_lossy().into_owned(),
@@ -1142,6 +1158,15 @@ impl<C: PlayerClock> Engine<C> {
             bars: self.song.last_bar(),
             len_ticks: i64::from(len),
             duration_ms: self.song.time_of_ticks(len as u64).as_millis() as u64,
+            division: self.song.division(),
+            num_tracks: self.song.num_tracks(),
+            initial_tempo_us: self.song.initial_tempo(),
+            channel_used: std::array::from_fn(|ch| self.song.channel_used(ch as i32)),
+            channel_labels: std::array::from_fn(|ch| self.song.channel_label(ch as i32)),
+            lowest_note: self.song.lowest_note(),
+            highest_note: self.song.highest_note(),
+            charset: self.song.current_charset().to_string(),
+            texts: self.song.text_events().to_vec(),
         }
     }
 
