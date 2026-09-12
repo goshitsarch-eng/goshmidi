@@ -176,7 +176,8 @@ spawning). Audio risks: see §5.
   including a portal-delivered `/run/user/$UID/doc/...` path copy of
   `test.mid` (portal-path replacement test, P2).
 - **D-Bus activation + bus name (P8).** The desktop file gains
-  `DBusActivatable=true`; the app owns the well-known bus name
+  `DBusActivatable=true` (**landed T14c** — the only desktop delta vs the
+  C++-shipped file); the app owns the well-known bus name
   `com.goshapps.GoshMIDI` (which matches the desktop basename, as required
   for activatability) via `run_single_instance` (DECISIONS D12). A second
   launch — including `flatpak run com.goshapps.GoshMIDI file.mid` while the
@@ -184,6 +185,27 @@ spawning). Audio risks: see §5.
   running window. Verification: integration test for forward + present, plus
   an RC step running a second `flatpak run` against a live instance and
   asserting replace + present (§3.2).
+- **T14c single-instance evidence (A4, incl. `flatpak run` case).**
+  Source-verified in the pinned libcosmic rev: first instance serves
+  `/com/goshapps/GoshMIDI` and claims `APP_ID` (`dbus_activation.rs:41`);
+  second instance proxies `destination(APP_ID)` and calls
+  `activate_action("open", args)` / `activate()` (`app/mod.rs:195-258`),
+  exiting before GUI init when the call lands. `APP_ID` is
+  `com.goshapps.GoshMIDI` (`src/app.rs`, `const APP_ID`), equal to the
+  desktop basename — pinned by
+  `tests/desktop_integration.rs::single_instance_bus_name_matches_desktop_basename`,
+  and the sending half (`action() == "open"` + argv) by
+  `...::single_instance_flags_forward_files_as_open_action`. Sandbox bus
+  policy probed live (2026-09-12): a sandboxed app CAN own its own app-ID
+  name (`RequestName` → `PRIMARY_OWNER`) and CANNOT own a foreign name —
+  so **no `--own-name` finish-arg is needed**. Wayland `application_id`
+  and `iced.id` are both `APP_ID` (`app/mod.rs:67-70`), matching
+  `StartupWMClass`. Remaining live half (needs a display, Phase-3 recipe
+  in §3.2): second `flatpak run --file-forwarding … @@ file.mid @@`
+  against a running instance → replace + present; `--file-forwarding` is
+  required because bare host paths are invisible in both sandboxes, and
+  the forwarded document-portal path is valid in the first sandbox only
+  because both instances share the per-app document store.
 - Portal-delivered paths (`/run/user/.../doc/...`) must be accepted anywhere
   a path is accepted (open flows, playlist entries, SoundFont picker).
 
@@ -194,16 +216,27 @@ Reuse as-is; the app ID is stable and tested:
 - `com.goshapps.GoshMIDI.desktop`: keep `Name`, `Icon=com.goshapps.GoshMIDI`,
   `StartupWMClass=com.goshapps.GoshMIDI`, `MimeType`, `Exec=dmidiplayer %F`
   (already correct — binary name decided, P3, so no `Exec` change). The only
-  desktop change in the migration is adding `DBusActivatable=true` (P8).
+  desktop change in the migration is adding `DBusActivatable=true` (P8,
+  **landed T14c**). Pinned line-by-line by
+  `tests/desktop_integration.rs::desktop_file_is_cpp_shipped_plus_dbus_activatable`
+  (15 lines, exact) plus `verify.sh` field greps and
+  `desktop-file-validate` when installed.
 - `com.goshapps.GoshMIDI.metainfo.xml` — scope is exactly these three
-  (P11, Phase 2+, not now):
-  1. Update `<description>` toolkit wording (GTK4/libadwaita → libcosmic/Rust).
-  2. **Rhythm-claim fix:** line 18 advertises "Piano, MIDI Channels, Rhythm,
+  (P11, Phase 2+):
+  1. Update `<description>` toolkit wording (GTK4/libadwaita → libcosmic/Rust)
+     — **landed T14c**.
+  2. **Rhythm-claim fix:** line 18 advertised "Piano, MIDI Channels, Rhythm,
      and Lyrics (Karaoke) views", but the code implements rhythm as dashboard
-     lamps, not a switcher page (DECISIONS D5). Reword to lamps/meter-follow.
-  3. Add a `<release>` entry at the first libcosmic release.
+     lamps, not a switcher page (DECISIONS D5) — **landed T14c** as
+     "Piano, MIDI Channels, and Lyrics (Karaoke) views, plus dashboard
+     rhythm lamps that follow the meter". `README.md:38` carried the same
+     doc bug (ux.md §3.5) and got the same fix.
+  3. Add a `<release>` entry at the first libcosmic release — **T15's**.
   Out of scope: screenshot refresh, new `content_rating`/categories — defer.
   Keep `<id>`, license, existing screenshots/releases otherwise.
+  `appstreamcli validate` passes (2026-09-12, appstream 1.1.3; sole note is
+  the pedantic grandfathered `cid-contains-uppercase-letter` — the app ID is
+  decided, P3/D3); `verify.sh` runs it strictly when installed.
 - `icons/`: keep the `icons/CMakeLists.txt` pattern of installing
   `dmidiplayer_*` sources renamed to `${GOSH_APP_ID}` under
   `icons/hicolor/<size>/apps` (+ scalable `.svgz`). The Flatpak module must
@@ -211,6 +244,31 @@ Reuse as-is; the app ID is stable and tested:
   `scripts/verify.sh` asserts the canonical ID present, legacy
   `net.sourceforge.dmidiplayer` absent, and installed icon filenames —
   without depending on CMake (P9, §2.4).
+- **T14c symbolic-icon hicolor fallback** (`icons/fallback/`, 29 SVGs).
+  Why: icon lookup (`cosmic-freedesktop-icons`, pinned via libcosmic)
+  searches requested-theme → Inherits → `Cosmic` → `hicolor` → `gnome` →
+  `Yaru` → pixmaps, and the in-sandbox default theme is always `Cosmic`
+  (fresh sandboxed cosmic-config). The freedesktop runtime ships only
+  `hicolor`, and real `flatpak run` mounts host icons at
+  `/run/host/share/icons` — so on any host without a `Cosmic`/`Pop` theme
+  (GNOME, KDE, minimal COSMIC) every `*-symbolic` lookup previously fell
+  through to an empty-SVG render (invisible buttons). Verified matrix:
+  `flatpak build` shell (no host mounts) resolves nothing; host Adwaita
+  and BaseApp `Cosmic`/`Pop` cover all names when mounted, except
+  `channel-secure-symbolic`, which only `Pop` (and Adwaita) ship — the
+  `ux.md §8`-predicted fallback-review case. Fix: vendor the 29 looked-up
+  names (20 app `from_name` literals + 9 libcosmic-widget-embedded:
+  dropdown `pan-down`, segmented `go-next/go-previous/window-close`,
+  menu `object-select/pan-end`, CSD `window-minimize/maximize/restore/close`)
+  from pinned upstreams (28 × `pop-os/cosmic-icons@343c007`,
+  1 × `pop-os/icon-theme@1a575a8` for `channel-secure`; all CC-BY-SA-4.0,
+  see `icons/fallback/SOURCES.md` for revs, hashes, attribution) and
+  install them to `hicolor/scalable/{actions,status}/`, which the runtime
+  hicolor `index.theme` lists — so the borrowed-index mechanism resolves
+  them without shipping an index. Themed hosts are unaffected (requested
+  theme is searched first). Self-maintaining: `verify.sh` fails if any
+  `src/` `*-symbolic` literal lacks a fallback file, and `smoke.sh`
+  asserts the installed set in-sandbox.
 
 ### 1.7 Examples install (P6)
 
@@ -302,7 +360,12 @@ initialization**, so they never touch a display or GPU):
 - `dmidiplayer --dump-info <file>`: print the full marker set for one file
   (same fields, single file), exit 0; same error contract on failure.
 - `smoke.sh` asserts: exit codes, marker presence per example file, error
-  contract on a corrupt fixture, and zero `panic` on stderr.
+  contract on a corrupt fixture, and zero `panic` on stderr. T14c additions:
+  `--help` under `XDG_CURRENT_DESKTOP=GNOME` / `=KDE` / unset (headless boot
+  must not depend on a COSMIC session — §3.2 inputs), and, inside the sandbox
+  only, the installed desktop (`DBusActivatable=true`), metainfo (rhythm fix),
+  all six hicolor app-icon sizes, and the fallback inventory (exact when the
+  `/repo` bind-mount is visible, else count ≥ 29 + spot names).
 
 ### 2.4 `scripts/verify.sh` (tiered QA gate, P1 + P9)
 
@@ -339,6 +402,12 @@ flatpak build --bind-mount=/repo=$PWD build-dir sh /repo/scripts/smoke.sh
 
 `check_single_instance_open.cmake` keeps running in the CMake tier until T10
 retires it after the Rust successor (forward + replace + present) is green.
+T14c additions to the `--fast` tier: the desktop-integration contract
+(`DBusActivatable` + compat-field greps, metainfo wording pins), the
+symbolic-icon fallback inventory (every `src/` literal resolves to a file in
+`icons/fallback/`), and the freedesktop validators — `desktop-file-validate`
+and `appstreamcli validate` run strictly when installed, loud-SKIP otherwise
+(CI images without them rely on `tests/desktop_integration.rs` instead).
 
 ## 3. CI
 
@@ -415,6 +484,50 @@ Headless CI clips (run everywhere): `flatpak run com.goshapps.GoshMIDI
 --help`, `--dry-run` over the examples, and the in-sandbox smoke script
 from §2.3 — all with no display.
 
+### T14c matrix inputs + Phase-3 manual recipes (clipboard, single-instance)
+
+Verified headless in T14c (evidence above, all recorded 2026-09-12):
+
+- Headless boot is DE-independent: `smoke.sh` §1b runs `--help` under
+  `XDG_CURRENT_DESKTOP=GNOME` / `=KDE` / unset with no display (all exit 0
+  with the usage marker, zero `panic`). This pins the CLI/boot path only —
+  per-row GUI rendering stays a T15 live run.
+- Icon resolution per row: COSMIC hosts mount `Cosmic`/`Pop` via
+  `/run/host/share/icons` (themed icons win); GNOME/KDE/Adwaita-only hosts
+  have no theme in the lookup chain (Adwaita is never consulted — chain is
+  requested → Inherits → `Cosmic` → `hicolor` → `gnome` → `Yaru`), so the
+  T14c hicolor fallback (§1.6) is what renders there. T15 live check per
+  row: every toolbar/prefs/dialog icon visible (no empty buttons),
+  especially `channel-secure` (lock) and the CSD window controls.
+- Single-instance static halves: bus-name == desktop-basename invariant,
+  `open`-action sending shape, and sandbox own-ID permission are pinned
+  (§1.5); only the live double-run below remains.
+- Clipboard path (with arch): lyrics Copy is
+  `Message::LyricsCopy → iced::clipboard::write(full_text())` (`app.rs`,
+  same full-buffer text as C++ `window.cpp:1811-1821`). Delivery is
+  **compositor-mediated, not portal-mediated**: Wayland data-device over
+  the existing `--socket=wayland` connection, X11 clipboard over
+  `--socket=fallback-x11` — no finish-arg or permission change needed, and
+  none was made. Nothing about the write is headless-observable (the
+  `Task` is runtime-opaque; `full_text()` content is pinned by the lyrics
+  tests), so no automated check was added — the recipe below is the check.
+
+Phase-3 manual recipe (run once per §3.2 row, on the release candidate):
+
+1. `flatpak run com.goshapps.GoshMIDI` → window renders, all icons visible.
+2. Lyrics view → load `twinkle.kar` → Copy → paste into a host app
+   (e.g. Text Editor) → full lyrics text arrives, sandbox-external paste
+   works.
+3. Second launch while running:
+   `flatpak run --file-forwarding com.goshapps.GoshMIDI @@ /host/path/song.mid @@`
+   → exits 0 immediately, running instance's playlist is REPLACED (size 1,
+   first song selected) and its window presents. Bare second
+   `flatpak run com.goshapps.GoshMIDI` → present-only, playlist untouched.
+4. `COSMIC_SINGLE_INSTANCE=false flatpak run com.goshapps.GoshMIDI` →
+   standalone second window (escape hatch).
+5. MIME launch: open a `.mid` from the host file manager → routes into the
+   running instance (replace + present), same as step 3.
+
 ## 4. Rollout checklist (first libcosmic Flatpak release)
 
 - [ ] `flatpak/com.goshapps.GoshMIDI.yml` + committed `cargo-sources.json`
@@ -422,12 +535,17 @@ from §2.3 — all with no display.
 - [ ] `scripts/verify.sh` (+`--fast`) + `scripts/smoke.sh` green locally
       and in CI (tiered gates, P1).
 - [ ] CI triggers include `cosmic-migration` + full system deps (P4a/P4b).
-- [ ] Binary `dmidiplayer` end to end: manifest `command`, `Exec`, `--help`
-      usage line, smoke test (P3).
-- [ ] `DBusActivatable=true` + bus name owned + second-`flatpak run`
-      forward verified (P8).
+- [x] Binary `dmidiplayer` end to end: manifest `command`, `Exec`, `--help`
+      usage line, smoke test (P3; exact-line `--help`/`-v` pins in
+      `tests/desktop_integration.rs`, T14c).
+- [x] `DBusActivatable=true` + bus name owned (P8, T14c: desktop landed,
+      bus-name == basename + `open`-action halves pinned, sandbox own-ID
+      probed; live second-`flatpak run` forward is a Phase-3 recipe, §3.2).
 - [ ] Examples generated + installed + asserted in-sandbox (P6).
-- [ ] Metainfo: toolkit wording + Rhythm-claim fix + `<release>` entry (P11).
+- [x] Metainfo: toolkit wording + Rhythm-claim fix (P11, T14c; `<release>`
+      entry stays T15's).
+- [x] Symbolic-icon hicolor fallback vendored + installed + inventoried
+      (T14c, §1.6; per-row visibility is a T15 live check).
 - [ ] `.flatpak` bundle verified on the §3.2 provider matrix (P12).
 - [ ] Sandbox data-migration story + stale-SoundFont UX shipped (P7, §6).
 - [ ] SoundFont story documented in-app and README (see §5 risk 2).

@@ -203,7 +203,7 @@ lead = PLAN/DECISIONS/REPORT + glue.
 - [x] T13 Piano + remaining dialogs (ux): canvas program + drawn-range clicks — DONE (suite 576/576, 22 integration tests, U3 FIX confirmed, F1/F2 + devil F1–F5 fixed, devil SIGN-OFF; 6 follow-ups → T14)
       (U12) + A3 audition rules, D3 MIDI setup + D6/D7/D8/D5/D4, song-settings
       manual actions; integration tests.
-- [ ] T14 Shortcuts + theming + integration (ux): 9 accelerators, 23-item menu
+- [x] T14 Shortcuts + theming + integration (ux): 9 accelerators, 23-item menu — DONE (suite 646/646, 22 keys_flows + 11 desktop_integration tests, D22 ruled, devil SIGN-OFF via T14f docs; 1 follow-up → T15: light dash-value contrast)
       (U1b), style mapping light/dark, desktop/MIME/icons/clipboard, a11y
       acceptance (U7), metainfo description + Rhythm-claim fix (U8/P11).
 - [ ] T15 Release hardening (pack, devil leads): full Message-variant unit

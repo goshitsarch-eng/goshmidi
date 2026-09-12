@@ -241,3 +241,17 @@ simplicity/maintainability > COSMIC conventions.
      both sides stage the font with `sfload` at open.
 - Why: each changes only an interruption/artifact, never the end state, and
   each is pinned (playing-state no-Stop e2e, both-axes OOR pins, order doc).
+
+## D22. Exactly the 9 C++ accelerators — no invented bindings (T14 G3)
+
+- Question: 11 menu actions have no keyboard path in the port (menu widget
+  is pointer-only, G2), so U7 "every action keyboard-reachable" fails for
+  them. Add extra accelerators beyond C++'s 9, or track the gap?
+- Options: (a) invent bindings for the 11 menu-only actions; (b) keep
+  exactly C++'s 9 and track G3 like D13.
+- Choice: (b).
+- Why: the priority order puts parity above accessibility, and invented
+  shortcuts are new scope with no C++ surface (same ban as the
+  per-channel visibility toggle). The a11y checklist item explicitly
+  allows gap-tracking like D13. Honest count after devil correction:
+  12/23 reachable (9 accels + Tab-Enter on Rew/Fwd/Loop button twins).

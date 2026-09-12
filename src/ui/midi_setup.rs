@@ -118,6 +118,11 @@ pub const LABEL_BROWSE: &str = SOUNDFONT_BROWSE_LABEL;
 pub const LABEL_TEST: &str = TEST_NOTE_LABEL;
 /// Button labels: aliases over the shared D3 consts (single source).
 pub const LABEL_APPLY: &str = APPLY_LABEL;
+/// Focus-on-open target (T14d G4 partial): composition focuses the D3
+/// Apply button on open (the `focus(id)` op unfocuses everything else —
+/// pinned `iced/core/src/widget/operation/focusable.rs:30-57` — so base
+/// Enter cannot fire silently under the dialog).
+pub const APPLY_ID: &str = "midi-apply";
 /// Hint aliases over the shared D3 consts (single source; the builder only
 /// carries the Test results — arch composes them after Test).
 pub const HINT_NO_DESTINATIONS: &str = NO_DESTINATIONS_HINT;
@@ -185,17 +190,23 @@ pub fn view_model(midi: &MidiState, test_status: Option<&str>) -> MidiSetupViewM
 }
 
 /// One D3 button: label + a11y name/description. `suggested` styles Apply
-/// (`window.cpp:1125`).
+/// (`window.cpp:1125`); `id` is the focus-on-open target for Apply only
+/// (`None` everywhere else — T14d G4 partial).
 fn dialog_button(
     label: &'static str,
     description: &'static str,
     on_press: Message,
     suggested: bool,
+    id: Option<&'static str>,
 ) -> Element<'static, Message> {
     let clicked = if suggested {
         button::suggested(label).on_press(on_press)
     } else {
         button::standard(label).on_press(on_press)
+    };
+    let clicked = match id {
+        Some(id) => clicked.id(cosmic::iced::core::widget::Id::new(id)),
+        None => clicked,
     };
     clicked.name(label).description(description).into()
 }
@@ -252,6 +263,7 @@ pub fn view<'a>(vm: MidiSetupViewModel) -> Element<'a, Message> {
             "Re-enumerate MIDI ports for the selected backend",
             Message::MidiBackendSelected(refresh_name),
             false,
+            None,
         ),
     ])
     .spacing(8)
@@ -293,6 +305,7 @@ pub fn view<'a>(vm: MidiSetupViewModel) -> Element<'a, Message> {
             "Choose a SoundFont file",
             Message::MidiSoundFontBrowse,
             false,
+            None,
         ),
     ])
     .spacing(8)
@@ -309,12 +322,14 @@ pub fn view<'a>(vm: MidiSetupViewModel) -> Element<'a, Message> {
                 "Play a Middle C test note",
                 Message::MidiTestNote,
                 false,
+                None,
             ),
             dialog_button(
                 LABEL_APPLY,
                 "Apply the MIDI setup and close",
                 Message::MidiApply,
                 true,
+                Some(APPLY_ID),
             ),
         ])
         .spacing(8),

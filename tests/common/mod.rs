@@ -173,15 +173,18 @@ impl Harness {
     }
 
     /// Persist the LIVE settings without touching `lastPlayList` (the
-    /// live probe): open the D3 shell and apply it unchanged — a no-change
-    /// Apply saves + closes while sending only the state-only sysex-reset
-    /// (no `Stop`, no reselect — T13g F2; unit-pinned by
-    /// `midi_apply_no_change_sends_only_sysex_reset`). Dialog switches
-    /// abandon other shells, so callers with an open prefs shell must
-    /// reopen it (and resend scratch) afterwards.
+    /// live probe): open the D2 shell and close it unchanged — commit-on-close
+    /// saves the narrowed commit, which equals live when the scratch is
+    /// unedited (the shell seeds from live; D3 keys ride from live, so no
+    /// reselect either). T14d minor d retired the old open-D3 + unchanged-Apply
+    /// probe: Apply reads the DROPDOWN, and the helper cannot feed the
+    /// steady-state refill (live fields are private), so a bare Apply would
+    /// persist the mid-refill `""` port instead of live. Callers with an open
+    /// prefs shell must reopen it (and resend scratch) afterwards — the
+    /// probe reseeds (abandoning their edits), like the old dialog switch.
     pub fn persist_live_settings(&mut self) {
-        self.upd(Message::ShowDialog(Dialog::MidiSetup));
-        self.upd(Message::MidiApply);
+        self.upd(Message::ShowDialog(Dialog::Preferences));
+        self.upd(Message::CloseDialog);
     }
 
     /// Persist via [`Harness::persist_live_settings`] (which saves the

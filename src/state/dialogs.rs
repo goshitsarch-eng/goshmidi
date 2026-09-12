@@ -111,11 +111,15 @@ pub fn loop_confirm(from: i32, to: i32, last_bar: i32) -> (u32, u32) {
     )
 }
 
-/// Cancel rule (`window.cpp:873-880`): on close, the toggle stays ON if and
-/// only if a loop is confirmed enabled — an unconfirmed toggle resets to OFF.
-pub fn loop_cancel_toggle(loop_enabled: bool) -> bool {
-    loop_enabled
-}
+// Cancel rule (`window.cpp:873-880`): on close, the toggle stays ON if and
+// only if a loop is confirmed enabled — an unconfirmed toggle resets to OFF.
+// T14a T13-minor resolution: the former `loop_cancel_toggle` identity helper
+// is removed (it had no callers — the port's toggle derives from
+// `loop_enabled`, which only `LoopSet` flips, so the rule falls out of the
+// model). The rule stays pinned at the composition arm instead:
+// `CloseDialog` (`app.rs`, "D8 cancel rule falls out of the model") +
+// `loop_dialog_cancel_resets_unconfirmed_toggle` + the `dlg-loop-x`
+// `Harness` flow in `tests/dialogs_flows.rs`.
 
 // ---------------------------------------------------------------------------
 // D6 File info (`window.cpp:749-773`)
@@ -398,11 +402,10 @@ mod tests {
         assert_eq!(loop_confirm(4, 4, 0), (1, 1));
     }
 
-    #[test]
-    fn loop_cancel_resets_unconfirmed_toggle() {
-        assert!(loop_cancel_toggle(true));
-        assert!(!loop_cancel_toggle(false));
-    }
+    // NOTE: no unit test for the D8 cancel rule at this layer anymore
+    // (T14a removed the `loop_cancel_toggle` identity helper — see above).
+    // The rule is pinned at the composition arm instead
+    // (`loop_dialog_cancel_resets_unconfirmed_toggle` in `app.rs`).
 
     #[test]
     fn file_info_field_order_matches_cpp() {

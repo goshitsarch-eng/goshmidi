@@ -4,16 +4,25 @@
 //! [`text_class`], so widgets stay theme-aware: card-local text uses the
 //! explicit style.css hex (readable on the explicit dark card in both modes,
 //! per the ux §7 ruling), while [`dash_value`] and [`dim_label`] derive from
-//! the active COSMIC theme.
+//! the active COSMIC theme. [`piano_area`] is the one non-`Theme` item: the
+//! canvas background ignores the theme entirely (same explicit-dark rule).
 //!
 //! `suggested-action` (D3 Apply, T13) maps to stock
 //! `cosmic::widget::button::suggested` / `cosmic::theme::Button::Suggested` —
 //! no custom style needed, so there is intentionally no item for it here.
 //! (The transport Tempo/Volume reset buttons stay `standard`: plain
 //! `GtkButton`s in C++, `window.cpp:1708-1709`.)
+//! `.channel-meter` (`style.css:49-51`) is dead CSS — no C++ widget carries
+//! the class (U16) — so there is intentionally no item for it either.
 //!
 //! Placement: `ui::theme` (T10b moved the declaration up from the T9
 //! `transport::theme` path-attribute hack).
+//!
+//! Light/dark verification (T14b, ux §14): every style resolves headless
+//! under both `Theme::dark()` and `Theme::light()` (see the tests —
+//! explicit-hex pins, mapping pins, dim-alpha pins, and a WCAG contrast
+//! pin for the card text); the Phase 3 manual recipe in ux §14 covers
+//! what headless builds cannot (actual pixels, both modes).
 
 use cosmic::Theme;
 use cosmic::iced::widget::{container, text};
@@ -31,6 +40,8 @@ const LAMP_REST: Color = Color::from_rgb8(0x3D, 0x38, 0x46);
 const LAMP_ON: Color = Color::from_rgb8(0x57, 0xE3, 0x89);
 /// `.rhythm-lamp.accent` fill (`style.css:38`).
 const LAMP_ACCENT: Color = Color::from_rgb8(0xF6, 0x61, 0x51);
+/// `.piano-area` background (`style.css:42`).
+const PIANO_BG: Color = Color::from_rgb8(0x24, 0x1F, 0x31);
 
 /// Plain colored text on the default selection colors.
 fn ink(color: Color) -> text::Style {
@@ -122,6 +133,13 @@ pub fn rhythm_lamp(state: RhythmLamp) -> impl Fn(&Theme) -> container::Style {
     }
 }
 
+/// `.piano-area` canvas background: explicit dark fill in both modes (ux
+/// §7 ruling — the canvas ignores the active theme like the dashboard
+/// card, so the white/black keys keep contrast in light mode too).
+pub fn piano_area() -> Color {
+    PIANO_BG
+}
+
 /// Selected-row wash alpha: the accent stays recognizable on the wash in
 /// both modes without swallowing the row text.
 const SELECTED_ROW_ALPHA: f32 = 0.28;
@@ -193,5 +211,88 @@ mod tests {
         assert_eq!((wash.r, wash.g, wash.b), (accent.r, accent.g, accent.b));
         assert!((wash.a - SELECTED_ROW_ALPHA).abs() < f32::EPSILON);
         assert!(playlist_row(false)(&theme).background.is_none());
+    }
+
+    #[test]
+    fn piano_area_matches_style_css() {
+        assert_eq!(piano_area(), Color::from_rgb8(0x24, 0x1F, 0x31));
+    }
+
+    /// WCAG relative luminance of an sRGB color (alpha ignored — all
+    /// card inks are opaque).
+    fn luminance(color: Color) -> f32 {
+        fn channel(value: f32) -> f32 {
+            if value <= 0.03928 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        }
+        0.2126 * channel(color.r) + 0.7152 * channel(color.g) + 0.0722 * channel(color.b)
+    }
+
+    /// WCAG contrast ratio (`1.0`–`21.0`).
+    fn contrast(a: Color, b: Color) -> f32 {
+        let (lighter, darker) = {
+            let (la, lb) = (luminance(a), luminance(b));
+            if la >= lb { (la, lb) } else { (lb, la) }
+        };
+        (lighter + 0.05) / (darker + 0.05)
+    }
+
+    /// Every style resolves headless under BOTH themes (T14b light/dark
+    /// verification): explicit-hex styles are identical across modes, and
+    /// theme-derived styles track their theme source in each mode.
+    #[test]
+    fn styles_resolve_in_light_and_dark() {
+        for theme in [Theme::dark(), Theme::light()] {
+            // Explicit hex (ux §7 ruling): identical in both modes.
+            assert_eq!(
+                dashboard_card(&theme).background,
+                Some(Background::Color(Color::from_rgb8(0x11, 0x11, 0x11)))
+            );
+            assert_eq!(
+                dashboard_card(&theme).text_color,
+                Some(Color::from_rgb8(0xF6, 0xF5, 0xF4))
+            );
+            assert_eq!(
+                time_display(&theme).color,
+                Some(Color::from_rgb8(0xF6, 0xF5, 0xF4))
+            );
+            assert_eq!(
+                dash_label(&theme).color,
+                Some(Color::from_rgb8(0xC0, 0xBF, 0xBC))
+            );
+            // Theme-derived: the accent ink tracks the active theme.
+            let accent: Color = theme.cosmic().accent.base.into();
+            assert_eq!(dash_value(&theme).color, Some(accent));
+            // Dim ink: theme foreground at 55% alpha (both modes).
+            let base: Color = theme.cosmic().on_bg_color().into();
+            let dimmed = dim_label(&theme).color.expect("dim ink");
+            assert_eq!((dimmed.r, dimmed.g, dimmed.b), (base.r, base.g, base.b));
+            assert!((dimmed.a - base.a * 0.55).abs() < f32::EPSILON);
+            // The wash tracks the active accent in both modes.
+            let wash = match playlist_row(true)(&theme).background {
+                Some(Background::Color(color)) => color,
+                other => panic!("expected a wash fill, got {other:?}"),
+            };
+            assert_eq!((wash.r, wash.g, wash.b), (accent.r, accent.g, accent.b));
+        }
+    }
+
+    /// Card text keeps AAA contrast on the explicit dark card in both modes
+    /// (theme-independent — both sides are explicit hex). The accent
+    /// `.dash-value` ink is pinned to the mapping only (see
+    /// `styles_resolve_in_light_and_dark`): its light-mode contrast is
+    /// dimmer by design (ux §7 note) and stays a theme-review item.
+    #[test]
+    fn card_text_keeps_aaa_contrast_in_both_modes() {
+        let ratio = contrast(CARD_TEXT, CARD_BG);
+        assert!(ratio >= 7.0, "card text on card: {ratio:.2}:1, want >= 7:1");
+        let lamp_ratio = contrast(DASH_LABEL, CARD_BG);
+        assert!(
+            lamp_ratio >= 7.0,
+            "dash label on card: {lamp_ratio:.2}:1, want >= 7:1"
+        );
     }
 }

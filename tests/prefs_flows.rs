@@ -3,12 +3,12 @@
 //! Same hermetic harness as T10c/T11c (temp HOME, per-test portable config,
 //! headless engine — no fixtures needed: the prefs shell is song-free).
 //! `App` fields are private, so scratch/live halves pin behavior through the
-//! portable config: the harness `persist_live_settings` probe (open D3 +
-//! unchanged Apply) persists the LIVE settings without touching
+//! portable config: the harness `persist_live_settings` probe (D2 open +
+//! unchanged close) persists the LIVE settings without touching
 //! `lastPlayList`, while dialog close persists the narrowed commit (the
 //! 17 D2-owned keys over live — T12 devil-BLOCKING FIX). Mid-dialog probes
-//! reopen prefs + resend scratch afterwards (dialog switches abandon
-//! shells, T13c).
+//! reopen prefs + resend scratch afterwards (the probe reseeds, abandoning
+//! their edits — T14d; was a dialog switch under the old D3 probe).
 //! Toast text, picker active flags, MIDI mirrors, and the engine reselect /
 //! announce / solo-repush sends stay unit-pinned in `app.rs` (named per
 //! test); this file pins the open/edit/close wiring plus the persisted bytes.
@@ -91,7 +91,7 @@ fn scratch_edits_isolated_until_close() {
     assert!(!h.config_exists());
 
     // Live probe: the scratch edits leaked nowhere. The probe abandons the
-    // prefs shell (dialog switch), so reopen + resend before the close.
+    // prefs shell (reseed), so reopen + resend before the close.
     h.persist_live_settings();
     assert_eq!(persisted_settings(&h, "prf-iso"), live);
     h.upd(Message::ShowDialog(Dialog::Preferences));
@@ -133,7 +133,7 @@ fn close_commits_once_with_solo_repush() {
     h.upd(Message::PrefsScratchEdited(next.clone()));
 
     // Pre-close: live solo% untouched (no premature repush). The probe
-    // abandons the prefs shell (dialog switch), so reopen + resend.
+    // abandons the prefs shell (reseed), so reopen + resend.
     h.persist_live_settings();
     assert_eq!(
         persisted_settings(&h, "prf-commit").solo_volume_reduction,

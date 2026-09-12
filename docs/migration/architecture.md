@@ -458,7 +458,35 @@ all sliders/spins/dropdowns/toggles have a message; file dialogs return
 - **`Subscription` (streams)**: engine event stream (`PlayerEvent` batch channel →
   `Message::Player`); 50 ms ticker while playing (or always, cheap); single-
   instance file-open listener (files from a second CLI invocation → `OpenFiles`);
-  window-resize events for persisting geometry.
+  window-resize events for persisting geometry; keyboard via
+  `cosmic::iced::keyboard::listen()` (ignored-status events ONLY — a focused
+  button consumes Enter and a focused text input consumes text keys, so those
+  never reach the mapping and cannot double-fire) mapped through
+  `state::keys::resolve_key` (T14a): the 9 C++ accelerators
+  (`window.cpp:1444-1452`) + plain-Enter-on-selection (`PlaylistRowActivated`,
+  U11) + Esc-dismiss + Tab/Shift+Tab (`widget::operation::focus_next` /
+  `focus_previous` — the pinned rev has no automatic Tab handling, so the
+  app must map them or Tab does nothing). Focus gate: with ANY dialog open,
+  every key except Esc/Tab resolves to `None` (T12 residual closure; C++
+  D7/D8/D3 are explicit modal windows, D6/D5/D4 modal-by-default `AdwDialog`s
+  — uniform gating is stricter than C++'s app-global accels, which would fire
+  above a modal, because the single-dialog state machine cannot stack a second
+  dialog). Esc two-step (standard UX): a focused cosmic `text_input`
+  captures the first Esc to unfocus (pinned `input.rs:2235-2243` +
+  blanket capture at `:2270`), so from D2's color/font fields or
+  D3's soundfont field only the second Esc reaches `listen()` to
+  dismiss. Composition (T14d wired the T14a proposals): `Message::Quit` →
+  `window::close(main_window_id)` (mirrors the `gain_focus` present path)
+  for `<Ctrl>q` + the File-menu Quit entry (the T14b `vm.quit` callback is
+  retired), `Message::KeyEvent` carrying the raw event with the `update`
+  arm resolving via `resolve_key` + `KeyAction::message` (`FocusNext` /
+  `FocusPrevious` return `operation` tasks directly), plus
+  `operation::focus()` of a dialog widget on every `open_dialog` path (no
+  runtime `unfocus` task wrapper exists — only the raw
+  `focusable::unfocus` op — so focus moves in, not cleared; G4 partial).
+  Lead ruling D22: exactly the 9 C++ accelerators route — no invented
+  bindings for the 11 menu-only actions (parity outranks a11y; G3 stays
+  tracked in ux §14.3).
 
 ### 2.4 Engine thread and command channel
 
@@ -844,8 +872,11 @@ src/
   app.rs             App state (§2.1), update(), view(), subscriptions
                      + T13c D3/D7/D8 dialog shells, piano/test-note arms,
                      T13 sheet wiring via `chrome::wrap_modal`
+                     + T14d keyboard/menu composition: `KeyEvent`/`Quit` arms,
+                     header-end menu bar, dialog focus-on-open, output epoch
   message.rs         Message + PlayerEvent + EngineCommand + Dialog + View enums
                      + T13c scratch/URI/test-note variants, D6 `LoadedSong` fields
+                     + T14d `KeyEvent`/`Quit` variants, test-note epoch capture
   core/
     mod.rs
     event.rs         MidiEvent, Kind, TextType, constants, factories  (events.*)
@@ -875,9 +906,14 @@ src/
                      (field order, refill preselect, port→profile, test-note
                      plan, hint strings, stop-first on reseat)
     dialogs.rs       T13a D7/D8/D6/D5/D4 pure logic: jump range + pause-jump-
-                     resume plan, loop entry/seeds/confirm/cancel (+ U3 menu
-                     FIX pin), file-info assembly, kHelpText copy, About table,
-                     manual song-settings precondition
+                     resume plan, loop entry/seeds/confirm (+ U3 menu FIX pin;
+                     the cancel rule is model-derived — T14a removed the dead
+                     `loop_cancel_toggle` helper), file-info assembly,
+                     kHelpText copy, About table, manual song-settings
+                     precondition
+    keys.rs          T14a keyboard logic: the 9 accelerators (const table +
+                     count pin), `resolve_key` (GTK-parity modifiers, dialog
+                     focus gate, Enter-play, Esc/Tab), `KeyAction::message`
   config/
     mod.rs
     paths.rs         config/data/song paths + portable mode
@@ -931,7 +967,11 @@ headless (keep/extend `tests/` golden tests against `core`).
     padding, recent-files MRU-10, window geometry + repeat mode saved on exit,
     portable-mode semantics.
 12. **App contract**: id `com.goshapps.GoshMIDI`, CLI flags, single-instance
-    forward-to-running + present, drag-drop replace-playlist, accelerators,
+    forward-to-running + present, drag-drop replace-playlist, all 9
+    accelerators (gated to Esc/Tab-only under open dialogs — T12 residual
+    closure, stricter than C++'s app-global accels by design; no invented
+    bindings per lead ruling D22), all 23 actions with message paths
+    (`Message::Quit` landed in T14d with the `window::close` arm),
     repeat/song/playlist menu structure, help/about content parity.
 
 

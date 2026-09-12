@@ -91,6 +91,14 @@ pub const LOOP_FROM_LABEL: &str = "From bar";
 pub const LOOP_TO_LABEL: &str = "To bar";
 /// D8 confirm label (`window.cpp:858`, verbatim).
 pub const LOOP_CONFIRM: &str = "Loop";
+/// Focus-on-open target (T14d G4 partial): composition focuses the D7
+/// confirm button on open (the `focus(id)` op unfocuses everything else —
+/// pinned `iced/core/src/widget/operation/focusable.rs:30-57` — so base
+/// Enter cannot fire silently under the dialog).
+pub const JUMP_CONFIRM_ID: &str = "jump-confirm";
+/// Focus-on-open target (T14d G4 partial): composition focuses the D8
+/// confirm button on open (same mechanism as [`JUMP_CONFIRM_ID`]).
+pub const LOOP_CONFIRM_ID: &str = "loop-confirm";
 
 /// Build the D7 view model: the scratch bar clamped to `1..=last_bar`
 /// (range from the shared [`jump_range`]). Pure — no `App` access;
@@ -145,6 +153,7 @@ pub fn jump_view<'a>(
         bar_spin(JUMP_LABEL, bar, last_bar, on_edit),
         button::standard(JUMP_CONFIRM)
             .on_press(Message::JumpToBar(bar))
+            .id(cosmic::iced::core::widget::Id::new(JUMP_CONFIRM_ID))
             .name(JUMP_CONFIRM)
             .description("Jump to the selected bar")
             .into(),
@@ -178,6 +187,7 @@ pub fn loop_view<'a>(
                 start: from,
                 end: to,
             })
+            .id(cosmic::iced::core::widget::Id::new(LOOP_CONFIRM_ID))
             .name(LOOP_CONFIRM)
             .description("Loop the selected bar range")
             .into(),

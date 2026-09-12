@@ -6,18 +6,20 @@
 //! T12b adds the `channels` page view + the D2 `prefs` dialog shell;
 //! T13b adds the `piano` page view, the `chrome` modal-wrap helper, the
 //! remaining dialog views (`midi_setup`, `jump_loop`, `info_dialogs`), and
-//! the `song_settings` manual-action stubs.
+//! the `song_settings` manual-action stubs (retired in T14d — the File
+//! menu entries 3–4 are their placement).
+//! T14b adds the 23-item `menu` view (the stubs' menu placement).
 
 pub mod channels;
 pub mod chrome;
 pub mod info_dialogs;
 pub mod jump_loop;
 pub mod lyrics;
+pub mod menu;
 pub mod midi_setup;
 pub mod piano;
 pub mod prefs;
 pub mod sidebar;
-pub mod song_settings;
 pub mod theme;
 pub mod transport;
 
@@ -435,16 +437,25 @@ pub struct FileInfoViewModel {
     pub body: Option<FileInfoBody>,
 }
 
-/// View model for the song-settings manual action stubs (ux §4
-/// `app.save/load-settings`): the two C++ File-menu entries as buttons.
-/// Passed BY VALUE to `ui::song_settings::view`.
+/// View model for the 23-item app menu (ux §3.2, U1b). Built fresh by
+/// composition on every `view()` and passed BY VALUE to `ui::menu::view`;
+/// ux must not reach into `App` directly.
 ///
-/// Field contract (frozen for T13; additions need arch+ux sign-off):
-/// * the buttons stay live with no song (C++ parity — the menu items are
-///   never desensitized; the arms no-op on an empty song,
-///   `window.cpp:633-635,663-665`); `has_song` is informational only.
-#[derive(Debug, Clone, Copy)]
-pub struct SongSettingsViewModel {
-    /// Whether a song is loaded (informational; gates nothing).
-    pub has_song: bool,
-}
+/// By value (not `&'a`) deliberately, same rationale as
+/// [`TransportViewModel`]: a `view(&model)` signature borrowing a fresh
+/// per-frame model cannot return its `Element` past the local, so the
+/// reference form is uncallable here — owned data moves into the widgets
+/// and the `Element` keeps the caller's lifetime (here even `'static`:
+/// everything in the menu is inventory data).
+///
+/// Field contract (frozen for T14; additions need arch+ux sign-off):
+/// * the 23 labels, 4 sections, 9 keybind hints, and all 23 fixed effects
+///   are inventory data in [`menu`][menu] (pure + unit-pinned there, never
+///   in the VM — the VM carries only what varies per frame, and nothing
+///   varies: T14d retired the T14b `quit` callback for `Message::Quit`,
+///   so the struct is currently empty — retained by value so future live
+///   values slot into the contract without re-plumbing the call sites);
+/// * repeat items are plain like C++ (no radio state,
+///   `window.cpp:1604-1606`) — the VM carries no repeat mode.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MenuViewModel {}

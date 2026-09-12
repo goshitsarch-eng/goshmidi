@@ -24,15 +24,15 @@ use dmidiplayer::message::{Dialog, LoadedSong, Message, MidiPort, PlayerEvent, S
 use dmidiplayer::state::dialogs::{
     ABOUT, FILE_INFO_FIELDS, FileInfo, HELP_TEXT, HELP_TITLE, LoopEntry, LoopEntryAction,
     assemble_file_info, clamp_jump_bar, file_info_empty, format_file_duration_ms,
-    format_initial_tempo_us, jump_allowed, jump_range, loop_cancel_toggle, loop_confirm,
-    loop_entry_action, loop_seeds, manual_song_action_allowed, plan_jump,
+    format_initial_tempo_us, jump_allowed, jump_range, loop_confirm, loop_entry_action, loop_seeds,
+    manual_song_action_allowed, plan_jump,
 };
 use dmidiplayer::state::midi::{
     MIDI_SETUP_FIELDS, MidiState, NO_DESTINATIONS_HINT, NO_MIDI_OUTPUT, TEST_NOTE_CH,
     TEST_NOTE_OFF_DELAY_MS, TEST_NOTE_PITCH, TEST_NOTE_STATUS, TEST_NOTE_VEL, plan_test_note,
     profile_for_port, refill_hint, select_refilled_port,
 };
-use dmidiplayer::ui::{chrome, info_dialogs, jump_loop, midi_setup, song_settings};
+use dmidiplayer::ui::{chrome, info_dialogs, jump_loop, menu, midi_setup};
 
 /// 16-bar snapshot (the D7/D8 tests clamp against bar 16). Titles are unique
 /// per test so parallel tests never share a song `.cfg`.
@@ -134,6 +134,16 @@ fn midi_open_seeds_scratch_from_live() {
     assert_eq!(persisted_settings(&h, "dlg-seed"), base);
 
     h.upd(Message::ShowDialog(Dialog::MidiSetup));
+    // T14d minor d: Apply reads the DROPDOWN — land the refill (ALSA echo,
+    // matching the seeded scratch) so the shown id is the live want.
+    h.upd(Message::MidiPortsRefreshed {
+        backend: "ALSA".to_string(),
+        advanced: true,
+        ports: vec![MidiPort {
+            id: "128:0".to_string(),
+            label: "Munt MT-32:Standard".to_string(),
+        }],
+    });
     h.upd(Message::MidiApply);
     assert_eq!(persisted_settings(&h, "dlg-seed"), base);
 }
@@ -265,7 +275,13 @@ fn midi_test_note_flow() {
     ));
     h.upd(Message::MidiTestNote);
     assert!(!h.config_exists(), "T13d: Test never saves");
-    h.upd(Message::MidiTestNoteOff { ch: 0, note: 60 });
+    // T14d minor c: the release carries the captured epoch (startup 1 +
+    // Test 1 = 2 — the silence asserts below hold for either path).
+    h.upd(Message::MidiTestNoteOff {
+        ch: 0,
+        note: 60,
+        epoch: 2,
+    });
     assert!(!h.config_exists());
     // Stay-open: Apply after Test still commits the scratch entry.
     h.upd(Message::MidiApply);
@@ -309,7 +325,9 @@ fn midi_test_note_flow() {
 /// so a reopen+Apply persists the committed values unchanged. Selections
 /// clamp (map 0–2, reset 0–4). (Send order
 /// `SetSysexReset → Stop → SetSoundFont → SelectOutput` (T13g F1:
-/// stop-before-font, safer than C++ `:1172-1175`) + announce:
+/// stop-before-font, behaviorally EQUIVALENT to C++ `:1172-1175` — both
+/// stage the font, `sfload` runs at open; T14d minor a rewords the old
+/// "safer" gloss) + announce:
 /// unit-pinned by `midi_apply_persists_and_announces_e2e` and
 /// `midi_apply_changed_stops_first_then_reselects_e2e`; clamps by
 /// `midi_selections_stored_and_clamped`; shell-less no-op by
@@ -328,6 +346,14 @@ fn midi_apply_commits_saves_and_closes() {
     h.upd(Message::MidiPortSelected("128:0".to_string()));
     h.upd(Message::MidiSoundFontChanged("/sf/x.sf2".to_string()));
     h.upd(Message::MidiAdvancedToggled(true));
+    // T14d minor d: the toggle cleared the ports (refill retrigger) — land
+    // the post-toggle refill (ALSA echo, advanced now true) so Apply reads
+    // the populated dropdown like C++.
+    h.upd(Message::MidiPortsRefreshed {
+        backend: "ALSA".to_string(),
+        advanced: true,
+        ports: profile_ports(),
+    });
     h.upd(Message::MidiInstrumentMapChanged(9));
     h.upd(Message::MidiResetChanged(9));
     h.upd(Message::MidiApply);
@@ -347,6 +373,13 @@ fn midi_apply_commits_saves_and_closes() {
     h.upd(Message::MidiBackendSelected("Dummy".to_string()));
     h.upd(Message::MidiInstrumentMapChanged(0));
     h.upd(Message::ShowDialog(Dialog::MidiSetup));
+    // T14d minor d: the reopen seeds empty ports (live never carries the
+    // list) — land the refill so the steady-state Apply reads 128:0.
+    h.upd(Message::MidiPortsRefreshed {
+        backend: "ALSA".to_string(),
+        advanced: true,
+        ports: profile_ports(),
+    });
     h.upd(Message::MidiApply);
     let got = persisted_settings(&h, "dlg-apply");
     assert_eq!(
@@ -369,6 +402,11 @@ fn midi_apply_map_reset_only_persists_without_reselect() {
     h.upd(Message::ShowDialog(Dialog::MidiSetup));
     h.upd(Message::MidiInstrumentMapChanged(2));
     h.upd(Message::MidiResetChanged(4));
+    // T14d minor d: land the steady-state refill (shown == want).
+    h.upd(refreshed(vec![MidiPort {
+        id: "fluidsynth".to_string(),
+        label: "FluidSynth".to_string(),
+    }]));
     h.upd(Message::MidiApply);
     let got = persisted_settings(&h, "dlg-maponly");
     assert_eq!(got.instrument_map, 2);
@@ -402,6 +440,16 @@ fn midi_output_changed_warning_with_open_shell() {
     // Close abandons the scratch edit; the warned mirrors survive in live.
     h.upd(Message::CloseDialog);
     h.upd(Message::ShowDialog(Dialog::MidiSetup));
+    // T14d minor d: land the refill (Dummy echo, matching the warned
+    // mirrors) so the steady-state Apply reads `dummy`.
+    h.upd(Message::MidiPortsRefreshed {
+        backend: "Dummy".to_string(),
+        advanced: false,
+        ports: vec![MidiPort {
+            id: "dummy".to_string(),
+            label: "Dummy (no output)".to_string(),
+        }],
+    });
     h.upd(Message::MidiApply);
     let got = persisted_settings(&h, "dlg-warn");
     assert_eq!(got.last_output_backend, "Dummy");
@@ -576,9 +624,10 @@ fn loop_seeds_no_ordering_menu_cancel() {
     let vm = jump_loop::loop_view_model(0, 999, 16);
     assert_eq!((vm.from, vm.to, vm.last_bar), (1, 16, 16));
 
-    // Cancel rule: unconfirmed resets, confirmed keeps ON.
-    assert!(!loop_cancel_toggle(false));
-    assert!(loop_cancel_toggle(true));
+    // Cancel rule (unconfirmed resets, confirmed keeps ON) is model-derived
+    // — no state helper (T14a removed the dead `loop_cancel_toggle`) — and
+    // pinned through `update` below + `loop_dialog_cancel_resets_unconfirmed_toggle`
+    // in `app.rs`.
 
     // Full confirm + cancel sequences route silently through `update`.
     let mut h = Harness::new("dlg-loop-x");
@@ -807,11 +856,19 @@ fn manual_save_load_execute_and_persist() {
     h.upd(Message::SongSettingsSave);
     assert!(song_cfg("dlg-manual-a.mid").is_file());
 
-    // The stub surface builds either way (buttons stay live with no song).
-    let _ = song_settings::view(dmidiplayer::ui::SongSettingsViewModel { has_song: true });
-    let _ = song_settings::view(dmidiplayer::ui::SongSettingsViewModel { has_song: false });
-    assert_eq!(song_settings::LABEL_LOAD, "Load song settings");
-    assert_eq!(song_settings::LABEL_SAVE, "Save song settings");
+    // The T13 stub surface is retired (T14d): File menu entries 3–4 are
+    // the placement — same labels/messages, pinned by the menu inventory
+    // tests (`labels_are_verbatim_cpp`, `messages_map_to_the_existing_variants`).
+    assert_eq!(menu::MenuAction::LoadSettings.label(), "Load song settings");
+    assert_eq!(menu::MenuAction::SaveSettings.label(), "Save song settings");
+    assert!(matches!(
+        menu::MenuAction::LoadSettings.message(),
+        Message::SongSettingsLoad
+    ));
+    assert!(matches!(
+        menu::MenuAction::SaveSettings.message(),
+        Message::SongSettingsSave
+    ));
 }
 
 /// Manual song-settings empty-name guard: with no song loaded, save writes

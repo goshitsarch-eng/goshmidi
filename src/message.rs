@@ -16,6 +16,7 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
+use cosmic::iced::keyboard::Event as KeyboardEvent;
 use cosmic::widget::color_picker::ColorPickerUpdate;
 
 use crate::core::event::MIDI_CHANNELS;
@@ -155,11 +156,19 @@ pub enum Message {
     MidiSoundFontChosen(Result<PathBuf, String>),
     MidiTestNote,
     /// Test-note release (the `MidiTestNote` arm's 400 ms sleep resolves
-    /// here): unconditional raw NoteOff via `PreviewOff`, like the C++
-    /// `g_timeout` (`window.cpp:1148-1153` — no idle gate, unlike piano).
+    /// here): raw NoteOff via `PreviewOff`, like the C++ `g_timeout`
+    /// (`window.cpp:1148-1153` — no idle gate, unlike piano). `epoch`
+    /// captures the output selection at NoteOn time (the C++ callback
+    /// captures the `MidiOutput*` itself): the arm sends the off only
+    /// when no reselect landed in between, so it always addresses the
+    /// output the NoteOn went to. A stale capture means a stop-first
+    /// reselect (Apply/prefs/test) already silenced the old output, or a
+    /// post-failure fallback reselected an output that never sounded —
+    /// either way the off is skipped, never misfired at the new current.
     MidiTestNoteOff {
         ch: u8,
         note: u8,
+        epoch: u64,
     },
     MidiApply,
 
@@ -209,6 +218,20 @@ pub enum Message {
     ViewSelected(View),
     Toast(String),
     DismissToast,
+
+    // --- keyboard (T14d composition over `state::keys::resolve_key`) ---
+    /// Ignored-status keyboard event from `keyboard::listen()` (a focused
+    /// button consumes Enter and a focused text input consumes text keys,
+    /// so those never arrive here and cannot double-fire). The arm resolves
+    /// it against the live dialog/selection context and routes via
+    /// `KeyAction::message` (`FocusNext`/`FocusPrevious` return focus
+    /// `Task`s, `Quit` routes to the `Quit` arm below).
+    KeyEvent(KeyboardEvent),
+    // --- app lifecycle ---
+    /// `app.quit` (`window.cpp:1375-1376`): close the main window (the
+    /// `<Ctrl>q` accelerator's target and the File-menu Quit entry's
+    /// message — the T14a "only gap", adopted here).
+    Quit,
 
     // --- engine → UI (replaces the 12 C++ callbacks) ---
     Player(PlayerEvent),

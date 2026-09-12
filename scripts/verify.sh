@@ -90,6 +90,70 @@ for icon in icons/dmidiplayer_24x24.png icons/dmidiplayer_32x32.png \
 done
 echo "identity ok: canonical ID present, legacy absent, 6 icon sources present"
 
+# Desktop integration contract (T14c, packaging.md §1.5/P8 + §1.6):
+# the ONLY desktop change vs the C++-shipped file is DBusActivatable=true;
+# everything else stays byte-identical for compat (P3).
+step "desktop integration contract"
+grep -q '^DBusActivatable=true$' com.goshapps.GoshMIDI.desktop \
+    || fail "desktop missing DBusActivatable=true (P8)"
+grep -q '^Exec=dmidiplayer %F$' com.goshapps.GoshMIDI.desktop \
+    || fail "desktop Exec drifted (must stay 'dmidiplayer %F', P3)"
+grep -q '^Icon=com.goshapps.GoshMIDI$' com.goshapps.GoshMIDI.desktop \
+    || fail "desktop Icon drifted"
+grep -q '^StartupWMClass=com.goshapps.GoshMIDI$' com.goshapps.GoshMIDI.desktop \
+    || fail "desktop StartupWMClass drifted"
+grep -q '^MimeType=audio/midi;audio/x-midi;audio/cakewalk;application/x-riff;$' \
+    com.goshapps.GoshMIDI.desktop \
+    || fail "desktop MimeType drifted"
+# Metainfo wording (P11 minus <release>, which is T15's): toolkit + rhythm.
+grep -q 'libcosmic/Rust' com.goshapps.GoshMIDI.metainfo.xml \
+    || fail "metainfo toolkit wording not updated (P11)"
+grep -q 'rhythm lamps' com.goshapps.GoshMIDI.metainfo.xml \
+    || fail "metainfo rhythm-claim fix missing (U8/P11)"
+if grep -q 'Rhythm, and Lyrics' com.goshapps.GoshMIDI.metainfo.xml \
+    || grep -q 'GTK4/libadwaita' com.goshapps.GoshMIDI.metainfo.xml; then
+    fail "metainfo still carries the pre-T14c description wording"
+fi
+echo "desktop ok: DBusActivatable + compat fields + metainfo wording"
+
+# Symbolic-icon fallback inventory (T14c, packaging.md §1.6): every
+# *-symbolic name referenced in src/ must have a vendored hicolor fallback
+# (icons/fallback/SOURCES.md), and the manifest must install the set.
+step "icon fallback inventory"
+[ -f icons/fallback/SOURCES.md ] || fail "icons/fallback/SOURCES.md missing"
+grep -q 'icons/fallback/actions/' flatpak/com.goshapps.GoshMIDI.yml \
+    || fail "manifest does not install icons/fallback/actions/"
+grep -q 'icons/fallback/status/' flatpak/com.goshapps.GoshMIDI.yml \
+    || fail "manifest does not install icons/fallback/status/"
+missing_icons=""
+for name in $(grep -rho '"[a-z0-9-]*-symbolic"' src/ --include='*.rs' \
+    | tr -d '"' | sort -u); do
+    if [ ! -f "icons/fallback/actions/$name.svg" ] \
+        && [ ! -f "icons/fallback/status/$name.svg" ]; then
+        missing_icons="${missing_icons:+$missing_icons }$name"
+    fi
+done
+[ -z "$missing_icons" ] \
+    || fail "no hicolor fallback for: $missing_icons"
+echo "icons ok: every src-referenced symbolic name has a fallback"
+
+# Freedesktop validators when installed (strict; CI images without them
+# rely on the committed desktop_integration test + T15 matrix instead).
+if command -v desktop-file-validate >/dev/null 2>&1; then
+    desktop-file-validate com.goshapps.GoshMIDI.desktop \
+        || fail "desktop-file-validate failed"
+    echo "desktop-file-validate ok"
+else
+    echo "WARNING: desktop-file-validate absent — skipped (install desktop-file-utils)"
+fi
+if command -v appstreamcli >/dev/null 2>&1; then
+    appstreamcli validate com.goshapps.GoshMIDI.metainfo.xml \
+        || fail "appstreamcli validate failed"
+    echo "appstreamcli validate ok"
+else
+    echo "WARNING: appstreamcli absent — skipped (install appstream)"
+fi
+
 if [ "$FAST" = "1" ]; then
     echo
     echo "verify --fast PASS"

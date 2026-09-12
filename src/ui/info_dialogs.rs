@@ -66,8 +66,8 @@
 //! [`FileInfoViewModel`]: super::FileInfoViewModel
 
 use cosmic::Element;
-use cosmic::iced::Length;
-use cosmic::widget::{button, column, container, row, scrollable, text};
+use cosmic::iced::{Alignment, Length};
+use cosmic::widget::{button, column, container, icon, row, scrollable, text};
 
 use super::{FileInfoBody, FileInfoViewModel};
 use crate::core::event::TextType;
@@ -86,6 +86,13 @@ pub const FILE_INFO_EMPTY: &str = "No file loaded";
 pub const FILE_INFO_COPYRIGHT_LABEL: &str = "Copyright";
 /// D6/D5 confirm label (`window.cpp:771,925`, verbatim).
 pub const LABEL_OK: &str = "OK";
+/// Focus-on-open target (T14d G4 partial): composition focuses the D6/D5
+/// `OK` button on open (the `focus(id)` op unfocuses everything else —
+/// pinned `iced/core/src/widget/operation/focusable.rs:30-57` — so base
+/// Enter cannot fire silently under the dialog). Shared by D6 + D5: the
+/// single-dialog machine never shows both at once, so the id is unique
+/// in every live tree.
+pub const OK_ID: &str = "dialog-ok";
 
 /// D4 license (`GTK_LICENSE_GPL_3_0`, `window.cpp:893`, display name — the
 /// shared [`ABOUT`] table carries no license field).
@@ -93,6 +100,9 @@ pub const ABOUT_LICENSE: &str = "GNU General Public License v3.0";
 /// D4 close label (C++ `AdwAboutDialog` has a stock close; the port names it
 /// `Close` like the T12 prefs sheet).
 pub const ABOUT_CLOSE: &str = "Close";
+/// Focus-on-open target (T14d G4 partial): composition focuses the D4
+/// `Close` button on open (same mechanism as [`OK_ID`]).
+pub const ABOUT_CLOSE_ID: &str = "about-close";
 
 // ---------------------------------------------------------------------------
 // D6 builder (pure over state)
@@ -187,6 +197,7 @@ pub fn file_info_view<'a>(vm: FileInfoViewModel) -> Element<'a, Message> {
         container(
             button::standard(LABEL_OK)
                 .on_press(Message::CloseDialog)
+                .id(cosmic::iced::core::widget::Id::new(OK_ID))
                 .name(LABEL_OK)
                 .description("Close the file information dialog"),
         )
@@ -224,6 +235,7 @@ pub fn help_view() -> Element<'static, Message> {
         container(
             button::standard(LABEL_OK)
                 .on_press(Message::CloseDialog)
+                .id(cosmic::iced::core::widget::Id::new(OK_ID))
                 .name(LABEL_OK)
                 .description("Close the help dialog"),
         )
@@ -252,15 +264,35 @@ fn about_link<'a>(
         .into()
 }
 
-/// D4 about dialog content: name + icon + version + developer + copyright +
+/// App-icon edge in the D4 header (the C++ `AdwAboutDialog` shows the app
+/// icon prominently; 64px matches the installed hicolor sizes).
+pub const ABOUT_ICON_SIZE: u16 = 64;
+
+/// D4 about dialog content: icon + name + version + developer + copyright +
 /// license + comments + website/support/issues links + developers +
 /// `Original application` credit + the 3 links, then `Close`
 /// (`window.cpp:884-920`).
 pub fn about_view<'a>(on_url: impl Fn(&'a str) -> Message + 'a) -> Element<'a, Message> {
     let version = format!("Version {}", env!("CARGO_PKG_VERSION"));
+    // T14b (T13 minor): the shared `ABOUT.app_icon` (`com.goshapps.GoshMIDI`,
+    // installed to hicolor per `icons/CMakeLists.txt`) renders here — the
+    // T13 view carried the field but never showed it.
+    let header = row::with_children(vec![
+        icon::from_name(ABOUT.app_icon)
+            .size(ABOUT_ICON_SIZE)
+            .icon()
+            .into(),
+        column::with_children(vec![
+            text::title3(ABOUT.app_name).into(),
+            text::body(version).into(),
+        ])
+        .spacing(2)
+        .into(),
+    ])
+    .spacing(12)
+    .align_y(Alignment::Center);
     let mut children: Vec<Element<'a, Message>> = vec![
-        text::title3(ABOUT.app_name).into(),
-        text::body(version).into(),
+        header.into(),
         text::body(ABOUT.developer).into(),
         text::body(ABOUT.copyright).into(),
         text::body(ABOUT_LICENSE).into(),
@@ -285,6 +317,7 @@ pub fn about_view<'a>(on_url: impl Fn(&'a str) -> Message + 'a) -> Element<'a, M
         container(
             button::standard(ABOUT_CLOSE)
                 .on_press(Message::CloseDialog)
+                .id(cosmic::iced::core::widget::Id::new(ABOUT_CLOSE_ID))
                 .name(ABOUT_CLOSE)
                 .description("Close the about dialog"),
         )

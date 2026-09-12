@@ -35,7 +35,7 @@ Key features
 * Transpose song tonality between -12 and +12 semitones (percussion excluded)
 * Change MIDI volume (CC7) from 0% to 200%
 * Scale song speed between 50% and 200% tempo
-* Lyrics, piano, MIDI channels, and rhythm views
+* Lyrics, piano, and MIDI channels views, plus dashboard rhythm lamps that follow the meter
 * Playlists (`.lst`): add/remove/reorder/shuffle, save/load, next/previous,
   auto-advance, repeat song or whole list
 * Supports MID/KAR/RMI (Standard MIDI Files) and WRK (Cakewalk)

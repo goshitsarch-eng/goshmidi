@@ -34,8 +34,11 @@
 //!   cannot distinguish Enter from click (both produce the same `on_press`
 //!   message — iced `widget/src/button.rs` — so a select-on-press button
 //!   would only select on Enter), and `mouse_area` is not focusable. Each
-//!   row therefore carries an explicit Play icon button whose Enter/Space
-//!   activation emits `PlaylistRowActivated(i)`. Gap vs C++: after
+//!   row therefore carries an explicit Play icon button whose Enter-only
+//!   activation emits `PlaylistRowActivated(i)` (pinned cosmic
+//!   `src/widget/button/widget.rs:862-871` handles Enter only — Space on
+//!   a focused button falls through to the subscription, T14a flag fixed
+//!   in T14d). Gap vs C++: after
 //!   click-selecting a row, Enter does not play until focus is tabbed to
 //!   that row's Play button (`GtkListBox` keeps row focus; iced has no
 //!   focusable list row in the pinned rev — `ListButton` is single-press
@@ -171,15 +174,18 @@ fn tool_button(tool: Tool) -> Element<'static, Message> {
 /// activates without selecting first (harmless: the activate arm selects).
 fn playlist_row(index: usize, basename: String, selected: bool) -> Element<'static, Message> {
     let (select, activate) = row_messages(index);
-    let play_description = format!("Play {basename}");
+    // T14b a11y: the name qualifies the row (`Play song.mid`) — N bare
+    // `Play` names would be indistinguishable to AT (channels `control_name`
+    // precedent); the visual tooltip stays the compact `Play`.
+    let play_name = format!("Play {basename}");
     let label = text::body(basename)
         .width(Length::Fill)
         .ellipsize(Ellipsize::Middle(EllipsizeHeightLimit::Lines(1)));
     let play = button::icon(icon::from_name("media-playback-start-symbolic"))
         .on_press(activate.clone())
         .tooltip("Play")
-        .name("Play")
-        .description(play_description);
+        .name(play_name.clone())
+        .description(play_name);
     let content = container(
         row::with_children(vec![label.into(), play.into()])
             .spacing(8)

@@ -81,13 +81,6 @@ use crate::state::piano::{
     highlight_rgba, note_is_black, note_label, row_height_px, show_note_name, white_width_px,
 };
 
-/// Canvas background (`.piano-area` `#241f31`, `window.cpp:1971`).
-const BG: Color = Color {
-    r: 0.14,
-    g: 0.12,
-    b: 0.19,
-    a: 1.0,
-};
 /// Unlit white key (`#f2f2ed`, `window.cpp:2007`).
 const WHITE_KEY: Color = Color {
     r: 0.95,
@@ -285,7 +278,9 @@ fn draw_keyboards(
     width: f32,
     height: f32,
 ) {
-    frame.fill_rectangle(Point::ORIGIN, Size::new(width, height), BG);
+    // Canvas background: the `.piano-area` fill, single-sourced in
+    // `ui::theme` (T14b style mapping — explicit dark in both modes).
+    frame.fill_rectangle(Point::ORIGIN, Size::new(width, height), theme::piano_area());
     let row_h = row_height_px(height as i32, vm.rows.len()) as f32;
     let ww = white_width_px(width, count_whites(vm.lo, vm.hi));
     if !ww.is_finite() || ww <= 0.0 {

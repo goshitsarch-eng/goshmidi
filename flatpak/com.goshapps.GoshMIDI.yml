@@ -74,6 +74,12 @@ modules:
       - install -Dm644 com.goshapps.GoshMIDI.metainfo.xml /app/share/metainfo/com.goshapps.GoshMIDI.metainfo.xml
       - for s in 24x24 32x32 48x48 64x64 128x128; do install -Dm644 icons/dmidiplayer_$s.png /app/share/icons/hicolor/$s/apps/com.goshapps.GoshMIDI.png; done
       - install -Dm644 icons/dmidiplayer.svgz /app/share/icons/hicolor/scalable/apps/com.goshapps.GoshMIDI.svgz
+      # T14c: hicolor fallback for every symbolic icon the app + libcosmic
+      # widgets look up (packaging.md §1.6, icons/fallback/SOURCES.md).
+      # Themed hosts still win (requested theme is searched first); these
+      # only render where no theme covers the name (e.g. GNOME/KDE hosts).
+      - for f in icons/fallback/actions/*.svg; do install -Dm644 "$f" "/app/share/icons/hicolor/scalable/actions/$(basename "$f")"; done
+      - for f in icons/fallback/status/*.svg; do install -Dm644 "$f" "/app/share/icons/hicolor/scalable/status/$(basename "$f")"; done
       # P6: replicate examples/CMakeLists.txt — generate examples.lst (*.kar
       # then *.mid basenames, sorted) and install it with the example files.
       - mkdir -p /app/share/dmidiplayer && (cd examples && for f in *.kar *.mid; do [ -e "$f" ] || continue; printf '%s\n' "$f"; done > /app/share/dmidiplayer/examples.lst) && for f in examples/*.mid examples/*.kar; do [ -e "$f" ] || continue; install -m644 "$f" /app/share/dmidiplayer/; done
