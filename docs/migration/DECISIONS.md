@@ -186,3 +186,14 @@ simplicity/maintainability > COSMIC conventions.
   CMakeLists lists C++ sources explicitly (ignores `.rs`), cargo ignores
   `.cpp`/`.cmake`, `tests/` and `examples/` coexist the same way. T15 deletes
   the C++ files; Rust paths never move.
+
+## D19. Engine protocol ownership (T7 duplication vs message.rs T1 stubs)
+
+- Options: (a) `core::player` owns `EngineCommand` + `PlayerEvent`, `message.rs`
+  re-exports them in T9; (b) `message.rs` owns them, core imports app layer;
+  (c) bridge `From` conversions between parallel definitions.
+- Choice: (a).
+- Why: the dependency rule forbids core importing app-layer types, and the
+  engine thread needs the types in `core`. Re-export kills drift with no
+  bridge code. `PreviewNote/Off` stay app-only (A3 bypass); `NoteOff` gains
+  `vel` (C++ parity) when message.rs adopts core's types in T9.

@@ -5,8 +5,8 @@
 //! `fluid_ffi.rs`/`output_alsa.rs`/`output_fluid.rs` in T6, `player.rs` in
 //! T7. Headless: no iced/libcosmic dependency allowed in this module.
 
-// T2–T3 land ahead of their T7 engine call sites, so the bin build sees
-// these modules as unused; drop the allows once the engine wires them up.
+// T2–T7 land ahead of their T9 app-shell call sites, so the bin build sees
+// these modules as unused; drop the allows once T9 wires the engine up.
 #[allow(dead_code)]
 pub mod event;
 #[allow(dead_code)]
@@ -19,6 +19,8 @@ pub mod output;
 pub mod output_alsa;
 #[allow(dead_code)]
 pub mod output_fluid;
+#[allow(dead_code)]
+pub mod player;
 #[allow(dead_code)]
 pub(crate) mod rmi;
 #[allow(dead_code)]

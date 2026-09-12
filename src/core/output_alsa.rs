@@ -65,9 +65,19 @@ pub fn port_visible(caps: PortCap, ty: PortType, advanced: bool) -> bool {
 }
 
 /// Pure `client:port` parse (output.cpp:138 `sscanf "%d:%d"`). Accepts exactly
-/// two `i32` fields; surrounding whitespace per field is tolerated (sscanf
-/// `%d` skips leading whitespace, so this is marginally more lenient on
-/// trailing space — a benign config-file robustness widening).
+/// two `i32` fields, each fully parsed after trimming. This diverges from
+/// `sscanf` in BOTH directions (C-probe verified, T7):
+/// * Rust-lenient on inner whitespace: `"14 :0"` parses here (per-field
+///   trim), while `sscanf` returns n=1 (the literal `':'` mismatches the
+///   space) so C++ rejects it into the A6b fallback.
+/// * Rust-strict on trailing garbage: `"14:0x"` / `"14:0:1"` / `"14:0xyz"`
+///   parse here as `None` (strict full-field `i32` parse → A6b fallback),
+///   while `sscanf` returns n=2 (trailing input ignored) so C++ accepts
+///   them as `14:0`.
+///
+/// Both are benign config-file robustness choices: ids the backends list
+/// are always clean `"client:port"`, so only hand-written values observe
+/// the difference, and both sides degrade to the same fallback.
 pub fn parse_port_id(id: &str) -> Option<(i32, i32)> {
     let (client, port) = id.split_once(':')?;
     if port.contains(':') {
@@ -436,6 +446,9 @@ mod tests {
         assert_eq!(parse_port_id("14:"), None);
         assert_eq!(parse_port_id(":0"), None);
         assert_eq!(parse_port_id("14:0:1"), None);
+        // Rust-strict direction: sscanf n=2 accepts these, we reject them.
+        assert_eq!(parse_port_id("14:0x"), None);
+        assert_eq!(parse_port_id("14:0xyz"), None);
         assert_eq!(parse_port_id("a:b"), None);
         assert_eq!(parse_port_id("14:x"), None);
         // sscanf-%d-compatible: negatives and surrounding space parse.

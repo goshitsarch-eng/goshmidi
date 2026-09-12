@@ -174,7 +174,7 @@ lead = PLAN/DECISIONS/REPORT + glue.
       0.6, bend remap, sandbox-aware SF search paths + bundled-SF selection
       (license/size evidence, P7), `lastError`; hardware tests gated,
       Dummy-backed + no-SF tests always green.
-- [ ] T7 Player engine (arch): scheduler (absolute/incremental, echo polling
+- [x] T7 Player engine (arch): scheduler (absolute/incremental, echo polling — DONE (41 tests, suite 175/175, fake-clock + threaded, idle-Stop fix, devil SIGN-OFF, D19 protocol ownership)
       + wakeup — A2), start sequence, mixing rules, `ResetPosition` (A1),
       command channel + `PlayerEvent` stream with per-variant backpressure
       (A13); deterministic scheduler tests (fake clock) + sparse-latency +

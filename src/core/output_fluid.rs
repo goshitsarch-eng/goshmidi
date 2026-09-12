@@ -22,10 +22,19 @@ use super::event::clamp_midi;
 use super::fluid_ffi as ffi;
 use super::output::{MidiOutput, MidiPort, OutputError};
 
-/// Audio-driver fallback order (output.cpp:306), tried in order until one
-/// constructs. Pinned by `driver_fallback_order` — do not reorder lightly:
-/// sandboxed/CI machines without PulseAudio depend on the later entries.
-pub const AUDIO_DRIVERS: [&CStr; 5] = [c"pulseaudio", c"pipewire", c"alsa", c"jack", c"sdl2"];
+/// Audio-driver fallback order (output.cpp:306 positions, SDL name corrected
+/// for the 2.6 pin), tried in order until one constructs. Pinned by
+/// `driver_fallback_order` — do not reorder lightly: sandboxed/CI machines
+/// without PulseAudio depend on the later entries.
+///
+/// DELTA vs C++ (T7 nit): the trailing entry is `sdl3`, not `sdl2`.
+/// Upstream removed the SDL2 audio driver in 2.5.0 ("Support for SDL2 has
+/// been removed - pls. use SDL3 instead", #1594; deprecated since 2.4.4),
+/// so `sdl2` can never construct against our pinned 2.6.0 (host probe:
+/// this build supports `alsa, file, jack, oss, pipewire, pulseaudio` —
+/// neither SDL name; the Flatpak module probes `sdl3` present). On builds
+/// without SDL the entry fails harmlessly like any other miss.
+pub const AUDIO_DRIVERS: [&CStr; 5] = [c"pulseaudio", c"pipewire", c"alsa", c"jack", c"sdl3"];
 
 /// Synth gain (output.cpp:300).
 pub const SYNTH_GAIN: f64 = 0.6;
@@ -47,8 +56,10 @@ pub const SYNTH_GAIN: f64 = 0.6;
 ///   T15 may substitute a smaller MIT-compatible GM set or an `.sf3`
 ///   (Ogg-compressed) variant in the flatpak module; the `/app` search
 ///   entries below keep working as long as the module installs the chosen
-///   file under one of the two `/app` paths. The driver fallback ending in
-///   `sdl2` keeps headless CI constructing (SDL dummy audio) either way.
+///   file under one of the two `/app` paths. The driver fallback keeps its
+///   trailing SDL entry (`sdl3` for the 2.6 pin, `sdl2` in C++) as the
+///   last-resort audio driver; on builds without SDL (host CI included) it
+///   simply fails like any other miss.
 pub const BUNDLED_SOUNDFONT_NAME: &str = "FluidR3_GM.sf2";
 
 /// Default SoundFont search paths: sandbox-bundled locations first (P7 —
@@ -83,7 +94,8 @@ pub fn find_default_sound_font() -> String {
 
 /// Pure `open` error accumulation (output.cpp:306-324): `None` on full
 /// success, else the `"; "`-joined message. Note the C++ driver-failure text
-/// omits `sdl2` although it is tried — preserved verbatim (display text).
+/// omits the trailing SDL driver although it is tried (`sdl2` there, `sdl3`
+/// here) — preserved verbatim (display text).
 pub fn combine_open_errors(driver_ok: bool, sf: &str, sf_ok: bool) -> Option<String> {
     let mut error = String::new();
     if !driver_ok {
@@ -351,7 +363,7 @@ mod tests {
             .iter()
             .map(|d| d.to_str().expect("driver names are ASCII"))
             .collect();
-        assert_eq!(names, ["pulseaudio", "pipewire", "alsa", "jack", "sdl2"]);
+        assert_eq!(names, ["pulseaudio", "pipewire", "alsa", "jack", "sdl3"]);
         assert_eq!(SYNTH_GAIN, 0.6);
     }
 
