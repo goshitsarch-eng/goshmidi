@@ -30,6 +30,7 @@ use crate::config::settings::Settings;
 use crate::config::song::{SongChannelSettings, SongSettings};
 use crate::core::event::{MIDI_CHANNELS, clamp_midi, is_supported_midi_file};
 use crate::core::output::MidiOutputManager;
+use crate::core::output_fluid::find_default_sound_font;
 use crate::core::player::{EngineEventReceiver, EngineHandle, spawn_engine};
 use crate::core::sequence::Sequence;
 use crate::message::{
@@ -45,8 +46,8 @@ use crate::state::lyrics::{
     AppliedLyricsPrefs, LyricsState, TYPE_OPTION_NAMES, codec_option_index, track_options,
 };
 use crate::state::midi::{
-    MidiState, NO_MIDI_OUTPUT, OutputCommit, TEST_NOTE_STATUS, plan_test_note, profile_for_port,
-    select_refilled_port,
+    MidiState, NO_MIDI_OUTPUT, OutputCommit, TEST_NOTE_STATUS, is_stale_soundfont, plan_test_note,
+    profile_for_port, select_refilled_port, stale_soundfont_toast,
 };
 use crate::state::piano::{PianoState, PreviewNote, preview_off_targets};
 use crate::state::playback::{self, PlaybackState};
@@ -492,6 +493,12 @@ impl App {
     /// SoundFont, saved-or-CLI backend/port, drums channel, SysEx reset.
     /// Recovery from a dead saved port happens in `OutputChanged` via the
     /// staged fallback chain (FluidSynth → Dummy + warning toast).
+    ///
+    /// T15-S3 stale-SF fallback (ux §15.1, packaging §6): an unreadable
+    /// configured SoundFont keeps its settings value (P7: never silently
+    /// drop) but the engine gets the bundled/default fallback instead, with
+    /// a toast naming the stale path. The live mirror keeps the stale value
+    /// so D3 shows the entry with its warning hint + Browse (D11) offer.
     fn startup_select_output(&mut self, flags: &Flags) {
         let mut backend = flags
             .backend
@@ -505,9 +512,22 @@ impl App {
             .clone()
             .unwrap_or_else(|| self.settings.last_output_connection.clone());
         if !self.settings.sound_font.is_empty() {
-            self.engine.send(EngineCommand::SetSoundFont(
-                self.settings.sound_font.clone(),
-            ));
+            if is_stale_soundfont(&self.settings.sound_font) {
+                let fallback = find_default_sound_font();
+                if fallback.is_empty() {
+                    self.engine.send(EngineCommand::SetSoundFont(
+                        self.settings.sound_font.clone(),
+                    ));
+                } else {
+                    self.engine
+                        .send(EngineCommand::SetSoundFont(fallback.clone()));
+                }
+                self.toast(stale_soundfont_toast(&self.settings.sound_font, &fallback));
+            } else {
+                self.engine.send(EngineCommand::SetSoundFont(
+                    self.settings.sound_font.clone(),
+                ));
+            }
         }
         self.midi.backend = backend.clone();
         self.midi.port = port.clone();
@@ -5700,6 +5720,62 @@ mod tests {
         assert!(app.midi.output_ok_once);
         // Startup select stays silent (no announce flag).
         assert!(app.toasts.is_empty());
+    }
+
+    /// S3 stale-SF fallback (ux §15.1, packaging §6): an unreadable configured
+    /// SoundFont keeps its settings value (P7: never silently drop) and live
+    /// mirror (so D3 shows the stale entry with its warning hint), toasts
+    /// naming the stale path, and the engine gets the bundled/default
+    /// fallback instead of the stale path. (The engine send is opaque
+    /// headless; the toast + preserved values pin the contract here, the D3
+    /// hint in `midi_setup`, the exact toast text in `state::midi`.)
+    #[test]
+    fn startup_stale_soundfont_toasts_and_preserves_stale() {
+        let (mut app, rx, _tmp) = test_app();
+        app.settings.sound_font = "/home/staleuser/sf/old-gm.sf2".to_string();
+        app.settings.last_output_backend = "Dummy".to_string();
+        app.settings.last_output_connection = "dummy".to_string();
+        app.startup_select_output(&Flags::default());
+        // Settings + mirror keep the stale path (P7 + D3 display).
+        assert_eq!(app.settings.sound_font, "/home/staleuser/sf/old-gm.sf2");
+        assert_eq!(app.midi.soundfont, "/home/staleuser/sf/old-gm.sf2");
+        // Exactly one toast, naming the stale path + MIDI Setup (the fallback
+        // half varies by machine — pinned purely in `state::midi`).
+        assert_eq!(app.toasts.len(), 1);
+        assert!(
+            app.toasts[0].contains("/home/staleuser/sf/old-gm.sf2"),
+            "stale toast must name the path: {:?}",
+            app.toasts[0]
+        );
+        assert!(
+            app.toasts[0].contains("MIDI Setup"),
+            "stale toast must offer MIDI Setup: {:?}",
+            app.toasts[0]
+        );
+        // The startup reselect still answers cleanly (Dummy ignores the font).
+        pump_until(&mut app, &rx, Duration::from_secs(5), |ev| {
+            matches!(ev, PlayerEvent::OutputChanged { .. })
+        });
+        assert!(app.midi.output_ok_once);
+    }
+
+    /// S3: a readable configured SoundFont sends verbatim with no toast —
+    /// the stale path above must not fire on fresh paths.
+    #[test]
+    fn startup_fresh_soundfont_sends_verbatim_silent() {
+        let (mut app, rx, tmp) = test_app();
+        let font = tmp.path().join("fresh-gm.sf2");
+        std::fs::write(&font, b"RIFF....sfbk").unwrap();
+        app.settings.sound_font = font.to_string_lossy().into_owned();
+        app.settings.last_output_backend = "Dummy".to_string();
+        app.settings.last_output_connection = "dummy".to_string();
+        app.startup_select_output(&Flags::default());
+        assert_eq!(app.midi.soundfont, font.to_string_lossy());
+        assert!(app.toasts.is_empty());
+        pump_until(&mut app, &rx, Duration::from_secs(5), |ev| {
+            matches!(ev, PlayerEvent::OutputChanged { .. })
+        });
+        assert!(app.midi.output_ok_once);
     }
 
     // -- T12b composition: channels page + prefs shell --------------------------

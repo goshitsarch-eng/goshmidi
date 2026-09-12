@@ -255,3 +255,23 @@ simplicity/maintainability > COSMIC conventions.
   per-channel visibility toggle). The a11y checklist item explicitly
   allows gap-tracking like D13. Honest count after devil correction:
   12/23 reachable (9 accels + Tab-Enter on Rew/Fwd/Loop button twins).
+
+## D23. Dashboard `.dash-value` per-mode ink (T15-S3 contrast fix)
+
+- Question: the T14 mapping (theme accent in both modes, ux §7) measures
+  10.45:1 (AAA) in dark mode but 2.12:1 (fails AA) in light mode on the
+  explicit `#111111` card — the light accent is a dark teal tuned for light
+  surfaces (ux §14.2 shortfall). Keep accent-only, or go per-mode?
+- Options: (a) accent in both modes (status quo — light fails AA);
+  (b) per-mode: dark accent + light C++ `#62a0ea` (6.96:1 AA);
+  (c) lighten the card in light mode (breaks the ux §7 explicit-dark-card
+  ruling that keeps time/lamps/keys contrasted).
+- Choice: (b) — `theme::dash_value` returns the theme accent base when
+  `theme.cosmic().is_dark`, else the C++ `#62a0ea` ink (`style.css:22`).
+- Why: parity + accessibility outrank theme-purity here (priority order):
+  the C++ ink is the shipped light-readable value (6.96:1 AA), the dark
+  accent stays AAA (10.45:1), and the card ruling stands. Measured on the
+  default themes (rev `7e82198`), pinned by
+  `theme::dash_value_contrast_pins` with the 2.12:1 rejection documented.
+  Full spec in ux §15.1 (which also defines the `warning_text` D3 hint ink —
+  theme warning base, no ruling needed beyond this record).

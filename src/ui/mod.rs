@@ -330,7 +330,8 @@ pub struct PianoViewModel {
 /// and the transient test status, and passed BY VALUE to
 /// `ui::midi_setup::view`; ux must not reach into `App` directly.
 ///
-/// Field contract (frozen for T13; additions need arch+ux sign-off):
+/// Field contract (frozen for T13; S3 adds `status_warning` with arch+ux
+/// sign-off — ux §15.1):
 /// * `backends` are the manager names in order; `backend_selected` is the
 ///   current backend's index (unknown → 0); `backend_name` is the selected
 ///   name the Refresh button re-emits (refill retrigger, no new variant);
@@ -338,9 +339,11 @@ pub struct PianoViewModel {
 ///   is the C++ refill preselect (last id-or-substring match, else 0;
 ///   `None` when the list is empty);
 /// * `advanced`/`map`/`reset`/`soundfont` mirror the dialog widgets
-///   (map 0–2, reset 0–4, clamped); `status` is the dim hint line (the
-///   no-destinations hint when `ports` is empty, the transient test result
-///   after Test, else empty).
+///   (map 0–2, reset 0–4, clamped); `status` is the hint line (the transient
+///   test result after Test, else the stale-SoundFont warning when the entry
+///   is stale, else the no-destinations hint when `ports` is empty, else
+///   empty); `status_warning` is true exactly when `status` is the stale
+///   warning (drives the `warning_text` style — the normal hint stays dim).
 #[derive(Debug, Clone)]
 pub struct MidiSetupViewModel {
     /// Backend names in manager order.
@@ -361,8 +364,10 @@ pub struct MidiSetupViewModel {
     pub reset: u8,
     /// SoundFont entry text (deferred commit — Test/Apply carry it).
     pub soundfont: String,
-    /// Dim status line (hints + transient test result).
+    /// Hint line (test result / stale warning / refill hint / empty).
     pub status: String,
+    /// True exactly when `status` is the stale-SoundFont warning (ux §15.1).
+    pub status_warning: bool,
 }
 
 /// View model for the D7 jump-to-bar dialog (ux D7): the spin scratch value

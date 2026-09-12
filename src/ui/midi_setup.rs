@@ -45,9 +45,11 @@
 //!   current backend retriggers enumeration arch-side with NO new message
 //!   variant. Profile inference (port change → map+reset,
 //!   `window.cpp:1078-1089`) lives arch-side too.
-//! * `status` is the dim hint line: the no-destinations hint when `ports`
-//!   is empty, the transient test result after Test, else empty (C++
-//!   `window.cpp:1055-1058,1144-1154`).
+//! * `status` is the hint line: the transient test result after Test, else
+//!   the stale-SoundFont warning when the entry is stale (ux §15.1,
+//!   `warning_text` style), else the no-destinations hint when `ports` is
+//!   empty, else empty (C++ `window.cpp:1055-1058,1144-1154` for the latter
+//!   two; the stale warning is new, dim otherwise).
 //! * Defensive clamps (lyrics precedent): dropdown selections clamp to the
 //!   nearest valid option (C++ clamps map/reset via `std::clamp`,
 //!   `window.cpp:995-996,1008-1009`; the port clamps all four, so corrupt
@@ -87,7 +89,7 @@ use crate::message::Message;
 use crate::state::midi::{
     APPLY_LABEL, MIDI_SETUP_FIELDS, MidiState, NO_DESTINATIONS_HINT, NO_MIDI_OUTPUT,
     REFRESH_PORTS_LABEL, SOUNDFONT_BROWSE_LABEL, SOUNDFONT_PLACEHOLDER, TEST_NOTE_LABEL,
-    TEST_NOTE_STATUS, refill_hint,
+    TEST_NOTE_STATUS, is_stale_soundfont, refill_hint, stale_soundfont_hint,
 };
 
 /// Dialog title (`window.cpp:950`, verbatim — composition sets it).
@@ -158,8 +160,9 @@ fn preselect_port(ports: &[crate::message::MidiPort], want: &str) -> Option<usiz
 
 /// Build the D3 view model: backend/port selections (C++ refill preselect),
 /// widget mirrors, and the status line (the transient `test_status` wins;
-/// else the no-destinations hint when `ports` is empty, else empty). Pure —
-/// no `App` access; composition calls it fresh per frame.
+/// else the stale-SoundFont warning when the entry is stale (ux §15.1); else
+/// the no-destinations hint when `ports` is empty, else empty). Pure — no
+/// `App` access; composition calls it fresh per frame.
 pub fn view_model(midi: &MidiState, test_status: Option<&str>) -> MidiSetupViewModel {
     let backend_selected = midi
         .backends
@@ -171,8 +174,10 @@ pub fn view_model(midi: &MidiState, test_status: Option<&str>) -> MidiSetupViewM
         .get(backend_selected)
         .cloned()
         .unwrap_or_else(|| midi.backend.clone());
+    let stale = test_status.is_none() && is_stale_soundfont(&midi.soundfont);
     let status = match test_status {
         Some(status) => status.to_string(),
+        None if stale => stale_soundfont_hint(&midi.soundfont),
         None => refill_hint(midi.ports.is_empty()).unwrap_or("").to_string(),
     };
     MidiSetupViewModel {
@@ -186,6 +191,7 @@ pub fn view_model(midi: &MidiState, test_status: Option<&str>) -> MidiSetupViewM
         reset: midi.sysex_reset.min(4),
         soundfont: midi.soundfont.clone(),
         status,
+        status_warning: stale,
     }
 }
 
@@ -228,6 +234,7 @@ pub fn view<'a>(vm: MidiSetupViewModel) -> Element<'a, Message> {
         reset,
         soundfont,
         status,
+        status_warning,
     } = vm;
 
     // Backend dropdown: the selected NAME travels (C++ reads the model
@@ -311,8 +318,14 @@ pub fn view<'a>(vm: MidiSetupViewModel) -> Element<'a, Message> {
     .spacing(8)
     .align_y(cosmic::iced::Alignment::Center);
 
-    // Dim wrapped status label (C++ `dim-label`, `window.cpp:1025-1030`).
-    let status_label = text::body(status).class(theme::text_class(theme::dim_label));
+    // Status label: dim (C++ `dim-label`, `window.cpp:1025-1030`), or the
+    // warning ink when it carries the stale-SoundFont hint (ux §15.1).
+    let status_style = if status_warning {
+        theme::warning_text
+    } else {
+        theme::dim_label
+    };
+    let status_label = text::body(status).class(theme::text_class(status_style));
 
     // Button row, right-aligned, spacing 8 (`window.cpp:1121-1128`).
     let button_row = container(
@@ -448,24 +461,68 @@ mod tests {
         assert_eq!(vm.map, 2);
         assert_eq!(vm.reset, 4);
         assert_eq!(vm.soundfont, "/sf/sc55.sf2");
-        assert!(vm.status.is_empty());
+        // S3: the stale entry shows its warning hint (ux §15.1), not empty.
+        assert_eq!(vm.status, stale_soundfont_hint("/sf/sc55.sf2"));
+        assert!(vm.status_warning);
         // Unknown backend → 0 (first backend name; the live-selection
         // fallback only fires when the backend list itself is empty).
         midi.backend = "Jack".to_string();
         let vm = view_model(&midi, None);
         assert_eq!(vm.backend_selected, 0);
         assert_eq!(vm.backend_name, "ALSA");
-        // Empty ports → None + the no-destinations hint.
+        // Empty ports + fresh entry → None + the no-destinations hint (the
+        // stale entry above would win over the refill hint — see
+        // `builder_stale_status_priority`).
+        midi.soundfont.clear();
         midi.ports.clear();
         let vm = view_model(&midi, None);
         assert_eq!(vm.port_selected, None);
         assert_eq!(vm.status, HINT_NO_DESTINATIONS);
-        // Transient test status wins over everything.
+        assert!(!vm.status_warning);
+        // Transient test status wins over everything (even a stale entry).
+        midi.soundfont = "/sf/sc55.sf2".to_string();
         let vm = view_model(&midi, Some(HINT_TEST_SENT));
         assert_eq!(vm.status, HINT_TEST_SENT);
+        assert!(!vm.status_warning);
         let midi = test_midi();
         let vm = view_model(&midi, Some(HINT_NO_OUTPUT));
         assert_eq!(vm.status, HINT_NO_OUTPUT);
+        assert!(!vm.status_warning);
+    }
+
+    /// S3 status priority (ux §15.1): transient test result > stale-SoundFont
+    /// warning > refill hint > empty. The warning names the stale entry and
+    /// flips the style flag; a fresh entry never warns.
+    #[test]
+    fn builder_stale_status_priority() {
+        // Stale entry + populated ports → stale warning (not empty).
+        let mut midi = test_midi();
+        midi.soundfont = "/home/staleuser/sf/old-gm.sf2".to_string();
+        let vm = view_model(&midi, None);
+        assert_eq!(
+            vm.status,
+            stale_soundfont_hint("/home/staleuser/sf/old-gm.sf2")
+        );
+        assert!(vm.status_warning);
+        // Stale entry + empty ports → stale still wins over the refill hint.
+        midi.ports.clear();
+        let vm = view_model(&midi, None);
+        assert_eq!(
+            vm.status,
+            stale_soundfont_hint("/home/staleuser/sf/old-gm.sf2")
+        );
+        assert!(vm.status_warning);
+        // Fresh empty entry + populated ports → empty, no warning.
+        let midi = test_midi();
+        let vm = view_model(&midi, None);
+        assert!(vm.status.is_empty());
+        assert!(!vm.status_warning);
+        // Fresh empty entry + empty ports → refill hint, no warning.
+        let mut midi = test_midi();
+        midi.ports.clear();
+        let vm = view_model(&midi, None);
+        assert_eq!(vm.status, HINT_NO_DESTINATIONS);
+        assert!(!vm.status_warning);
     }
 
     #[test]
@@ -479,7 +536,8 @@ mod tests {
     fn view_builds_across_contract_shapes() {
         // `view` is not introspectable, but it must build without panic
         // across the contract's shapes: populated, empty ports, empty
-        // backends, transient status, corrupt selections.
+        // backends, transient status, stale warning (both styles), corrupt
+        // selections.
         let _ = view(view_model(&test_midi(), None));
         let mut midi = test_midi();
         midi.ports.clear();
@@ -487,6 +545,11 @@ mod tests {
         let _ = view(view_model(&midi, Some(HINT_TEST_SENT)));
         midi.backends.clear();
         let _ = view(view_model(&midi, None));
+        let mut stale = test_midi();
+        stale.soundfont = "/home/staleuser/sf/old-gm.sf2".to_string();
+        let stale_vm = view_model(&stale, None);
+        assert!(stale_vm.status_warning);
+        let _ = view(stale_vm);
         let mut corrupt = view_model(&test_midi(), None);
         corrupt.backend_selected = 99;
         corrupt.port_selected = Some(99);

@@ -11,7 +11,11 @@ use std::path::{Path, PathBuf};
 
 use dmidiplayer::config::settings::Settings;
 use dmidiplayer::config::song::SongSettings;
+use dmidiplayer::state::midi::{
+    MidiState, is_stale_soundfont, stale_soundfont_hint, stale_soundfont_toast,
+};
 use dmidiplayer::state::playlist::PlaylistState;
+use dmidiplayer::ui::midi_setup;
 
 fn stale(rel: &str) -> PathBuf {
     Path::new("tests/fixtures/stale").join(rel)
@@ -111,4 +115,44 @@ fn stale_song_cfg_parses_with_dead_file_probe() {
     assert_eq!(ch.name.as_deref(), Some("Piano"));
     assert_eq!(ch.level, Some(100));
     assert!(song.channels[1..].iter().all(Option::is_none));
+}
+
+/// S3 re-prompt contract against the S2 fixture shapes (packaging §6, ux
+/// §15.1): the stale config's `soundFont` probes stale, the D3 hint and the
+/// startup toast both name it, and the D3 view model raises the warning flag
+/// (the `warning_text` style). The engine fallback send + the toast push stay
+/// unit-pinned in `app.rs` (`startup_stale_soundfont_*`).
+#[test]
+fn stale_soundfont_fixture_triggers_reprompt_contract() {
+    let mut s = Settings::new();
+    s.load_file(&stale("dmidiplayer.conf"))
+        .expect("T15: stale config must parse");
+    let stale_path = s.sound_font.clone();
+    assert_eq!(stale_path, "/home/staleuser/sf/old-gm.sf2");
+    assert!(
+        is_stale_soundfont(&stale_path),
+        "T15-S3: the fixture soundFont must probe stale"
+    );
+    // D3 hint names the stale entry + offers Browse (D11).
+    let hint = stale_soundfont_hint(&stale_path);
+    assert!(hint.contains(&stale_path), "T15-S3: hint: {hint:?}");
+    assert!(hint.contains("Browse…"), "T15-S3: hint: {hint:?}");
+    // Startup toast names the stale path + the bundled fallback + MIDI Setup.
+    let toast = stale_soundfont_toast(&stale_path, "/app/share/soundfonts/FluidR3Mono_GM.sf3");
+    assert!(toast.contains(&stale_path), "T15-S3: toast: {toast:?}");
+    assert!(
+        toast.contains("FluidR3Mono_GM.sf3"),
+        "T15-S3: toast: {toast:?}"
+    );
+    assert!(toast.contains("MIDI Setup"), "T15-S3: toast: {toast:?}");
+    // D3 view model raises the warning flag for the stale entry.
+    let mut midi = MidiState::new();
+    midi.soundfont = stale_path.clone();
+    let vm = midi_setup::view_model(&midi, None);
+    assert!(vm.status_warning, "T15-S3: D3 must flag the stale entry");
+    assert!(
+        vm.status.contains(&stale_path),
+        "T15-S3: D3 status: {:?}",
+        vm.status
+    );
 }

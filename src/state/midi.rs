@@ -11,6 +11,8 @@
 //! shell, and the refill/profile/test/apply arms landed in T13c (`app.rs`);
 //! the dialog view is `ui/midi_setup.rs` (T13b).
 
+use std::path::Path;
+
 use crate::core::instruments::infer_device_profile;
 use crate::core::output::{MidiOutputManager, MidiPort};
 
@@ -137,6 +139,43 @@ pub fn plan_test_note(backend: &str, port_id: &str, soundfont_entry: &str) -> Te
         select_output: (backend.to_string(), port_id.to_string()),
         note_on: (TEST_NOTE_CH, TEST_NOTE_PITCH, TEST_NOTE_VEL),
         off_delay_ms: TEST_NOTE_OFF_DELAY_MS,
+    }
+}
+
+/// Stale SoundFont probe (T15-S3, packaging §6, ux §15.1): a configured
+/// SoundFont path that names no existing file — the sandboxed case (a native
+/// host path invisible in-sandbox) or any deleted/moved file. Empty means "no
+/// configured font" (the engine searches its defaults) and is never stale.
+/// Directories are stale (not a SoundFont).
+pub fn is_stale_soundfont(path: &str) -> bool {
+    !path.is_empty() && !Path::new(path).is_file()
+}
+
+/// D3 stale-hint status line (ux §15.1): names the stale entry and points at
+/// Browse… (D11) to re-locate. Rendered with `theme::warning_text`; the
+/// normal hint stays dim. Claims no fallback (the entry may be an unapplied
+/// scratch edit — the engine still holds its previous font).
+pub fn stale_soundfont_hint(stale: &str) -> String {
+    format!("SoundFont not found: {stale} — Browse… to choose a new one.")
+}
+
+/// Startup stale toast (ux §15.1): names the stale configured path and the
+/// fallback the engine actually loaded (basename — in-sandbox this is the
+/// bundled file), and points at MIDI Setup to re-locate. The settings value
+/// is kept verbatim (P7: never silently drop). With no fallback anywhere,
+/// says so instead of naming one.
+pub fn stale_soundfont_toast(stale: &str, fallback: &str) -> String {
+    if fallback.is_empty() {
+        format!(
+            "SoundFont not found: {stale} — no SoundFont available. \
+             Open MIDI Setup to choose one."
+        )
+    } else {
+        let name = Path::new(fallback)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| fallback.to_string());
+        format!("SoundFont not found: {stale} — using {name}. Open MIDI Setup to re-locate.")
     }
 }
 
@@ -594,5 +633,66 @@ mod tests {
         assert!(plan.soundfont.is_empty());
         assert_eq!(plan.note_on, (TEST_NOTE_CH, TEST_NOTE_PITCH, TEST_NOTE_VEL));
         assert_eq!(plan.off_delay_ms, TEST_NOTE_OFF_DELAY_MS);
+    }
+
+    /// S3 stale probe (ux §15.1): only a non-empty path naming no file is
+    /// stale. Empty (engine searches defaults) is never stale; directories
+    /// are stale (not a SoundFont).
+    #[test]
+    fn stale_soundfont_probe_matrix() {
+        // S2 fixture path: dead by construction (stale_flows pins the prefix).
+        assert!(is_stale_soundfont("/home/staleuser/sf/old-gm.sf2"));
+        assert!(is_stale_soundfont("/nonexistent-t15-probe/missing.sf2"));
+        assert!(!is_stale_soundfont(""));
+        let manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
+        assert!(
+            !is_stale_soundfont(manifest),
+            "the package manifest must exist for this probe"
+        );
+        assert!(is_stale_soundfont(env!("CARGO_MANIFEST_DIR")));
+    }
+
+    /// S3 D3 hint (ux §15.1): names the stale entry and points at Browse…
+    /// (D11) to re-locate. Rendered with `theme::warning_text`.
+    #[test]
+    fn stale_soundfont_hint_names_path_and_browse() {
+        let hint = stale_soundfont_hint("/home/staleuser/sf/old-gm.sf2");
+        assert!(
+            hint.contains("/home/staleuser/sf/old-gm.sf2"),
+            "hint must name the stale path: {hint:?}"
+        );
+        assert!(hint.contains("Browse…"), "hint must offer Browse: {hint:?}");
+    }
+
+    /// S3 startup toast (ux §15.1): names the stale configured path and the
+    /// fallback the engine loaded (basename), and points at MIDI Setup. With
+    /// no fallback anywhere, says so instead of naming one.
+    #[test]
+    fn stale_soundfont_toast_names_stale_and_fallback() {
+        let toast = stale_soundfont_toast(
+            "/home/staleuser/sf/old-gm.sf2",
+            "/app/share/soundfonts/FluidR3Mono_GM.sf3",
+        );
+        assert!(
+            toast.contains("/home/staleuser/sf/old-gm.sf2"),
+            "toast must name the stale path: {toast:?}"
+        );
+        assert!(
+            toast.contains("FluidR3Mono_GM.sf3"),
+            "toast must name the fallback: {toast:?}"
+        );
+        assert!(
+            toast.contains("MIDI Setup"),
+            "toast must offer MIDI Setup: {toast:?}"
+        );
+        let no_fallback = stale_soundfont_toast("/home/staleuser/sf/old-gm.sf2", "");
+        assert!(
+            no_fallback.contains("/home/staleuser/sf/old-gm.sf2"),
+            "no-fallback toast must name the stale path: {no_fallback:?}"
+        );
+        assert!(
+            no_fallback.contains("no SoundFont available"),
+            "no-fallback toast must say so: {no_fallback:?}"
+        );
     }
 }

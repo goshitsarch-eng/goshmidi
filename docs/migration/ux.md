@@ -747,19 +747,19 @@ default theme): every style resolves under BOTH `Theme::dark()` and
 WCAG contrast pins (card text ≈ 15:1, dash label ≈ 10:1 — AAA in both
 modes, theme-independent).
 
-Measured shortfall (recorded, not fixed — the accent mapping is spec'd,
-ux §7): `.dash-value` accent-on-card is 10.45:1 in dark mode but
-**2.12:1 in light mode** (light accent is a dark teal tuned for light
-surfaces). Stays a theme-review item: lighten the card accent ink in
-light mode (e.g. accent hover/focus or a white mix). The manual recipe
-below covers the visual confirm.
+Measured shortfall (recorded in T14b, FIXED in T15-S3 — see §15.1):
+`.dash-value` accent-on-card was 10.45:1 in dark mode but **2.12:1 in
+light mode** (light accent is a dark teal tuned for light surfaces). The
+fix is per-mode ink (dark accent kept, light C++ `#62a0ea` at 6.96:1) —
+DECISIONS D23. The manual recipe below covers the visual confirm.
 
 Phase 3 manual recipe (theme): run the app under a light COSMIC theme
 and a dark one; check the dashboard card (dark card, bright time,
-readable tempo/volume — NOTE the dim light-mode values), rhythm lamps
-(rest/lit/accent), piano canvas (dark `#241f31`), selected playlist row
-(accent wash, text legible), status line (dim but legible), D3 Apply
-(accent suggested button); screenshot both modes for the record.
+readable tempo/volume in BOTH modes — the T14b dim-light-values note is
+resolved by §15.1), rhythm lamps (rest/lit/accent), piano canvas (dark
+`#241f31`), selected playlist row (accent wash, text legible), status
+line (dim but legible), D3 Apply (accent suggested button); screenshot
+both modes for the record.
 
 ### 14.3 A11y acceptance record (U7)
 
@@ -906,3 +906,69 @@ flow state (loaded/empty/error):
 No view-coverage gaps found: every flow state has a rendering path, and
 every corrupt/empty shape has an explicit empty state or clamp (all
 covered by `view_builds_*` / clamp unit tests).
+
+## 15. T15-S3 — dashboard contrast fix + stale-SoundFont re-prompt
+
+Slice scope (ux-owned; lead-authorized cross-boundary edits, kept minimal):
+`src/ui/theme.rs` (per-mode `dash_value` + new `warning_text`),
+`src/state/midi.rs` (stale probe + hint/toast strings — D3 dialog logic),
+`src/app.rs` (`startup_select_output` stale fallback + toast — composition),
+`src/ui/midi_setup.rs` + `src/ui/mod.rs` (D3 warning hint + `status_warning`
+VM field). No new `Message` variant, no manifest change, no driver-order
+change. This section + DECISIONS D23 are the spec the S0-held `theme.rs`
+diff was waiting on.
+
+### 15.1 Contrast + dialog spec
+
+**`.dash-value` per-mode mapping (fixes the §14.2 shortfall).** The
+dashboard card is an explicit `#111111` fill in both modes (ux §7 ruling),
+so the ink must contrast against it in both modes. Measured on the default
+themes (rev `7e82198`, WCAG relative-luminance math, pinned by
+`theme::dash_value_contrast_pins`):
+
+| mode | ink | ratio on `#111111` | verdict |
+|---|---|---|---|
+| dark | theme accent base | 10.45:1 | AAA — KEPT |
+| light | C++ `#62a0ea` (`style.css:22`) | 6.96:1 | AA — CHOSEN |
+| light | theme accent base (dark teal) | 2.12:1 | fails AA — REJECTED |
+
+`theme::dash_value` returns the theme accent base when
+`theme.cosmic().is_dark`, else the C++ ink. Rationale in DECISIONS D23.
+
+**`warning_text` dialog-hint ink.** `theme::warning_text` is the theme
+warning base in both modes (tracks `theme.cosmic().warning.base`, pinned by
+`styles_resolve_in_light_and_dark`). Exactly one surface uses it: the D3
+stale-SoundFont hint below. Every other hint stays `dim_label`.
+
+**Stale-SoundFont re-prompt UX (packaging §6).** Trigger: a non-empty
+`soundFont` (settings value or D3 entry) naming no existing file
+(`state::midi::is_stale_soundfont` — empty is never stale, directories are
+stale). Behavior:
+
+1. Startup (`app.rs::startup_select_output`): the settings value is kept
+   verbatim (P7 — never silently drop) and the live `midi.soundfont` mirror
+   keeps it too (so D3 displays the stale entry); the engine instead receives
+   `find_default_sound_font()` (in-sandbox: the bundled
+   `FluidR3Mono_GM.sf3`; host: first host hit; none: the stale path is sent
+   as-is and the existing error path handles it). One toast names the stale
+   path, the fallback basename (or "no SoundFont available"), and MIDI Setup
+   (`state::midi::stale_soundfont_toast` — exact text unit-pinned there;
+   `app.rs::startup_stale_soundfont_*` pins the push + preservation). The
+   driver fallback order is unchanged.
+2. D3 dialog (`ui/midi_setup.rs`): the status-line priority becomes transient
+   test result > stale warning > refill hint > empty. The stale warning
+   (`state::midi::stale_soundfont_hint` — "SoundFont not found: \<path\> —
+   Browse… to choose a new one.") renders in `warning_text` (VM flag
+   `status_warning`); everything else stays dim. The existing Browse… button
+   (D11, deferred commit — Test/Apply carry it) is the re-locate path: no new
+   variant, no auto-open modal, no portal launched without a click. A stale
+   scratch edit warns the same way (the hint claims no fallback — the engine
+   still holds its previous font until Test/Apply).
+3. D11 deferred commit is unchanged (C++ `:1111-1113` parity): picking a file
+   writes the entry only.
+
+Contract tests: `state::midi::stale_*` units (probe/hint/toast),
+`midi_setup::builder_stale_status_priority` + the updated
+`builder_selections_status_and_clamps`, the `app.rs` startup pair, and
+`tests/stale_flows.rs::stale_soundfont_fixture_triggers_reprompt_contract`
+(the S3 bond over the S2 fixture shapes).
