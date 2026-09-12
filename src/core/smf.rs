@@ -19,33 +19,35 @@ use crate::core::sequence::{Sequence, TimeSigRec};
 /// Byte cursor over a borrowed buffer (C++ anonymous-namespace `Reader`).
 /// Reads past the end yield 0 / empty, exactly as in C++; multi-byte
 /// integers read left-to-right (the C++ evaluation order in practice).
-struct Reader<'a> {
-    data: &'a [u8],
-    pos: usize,
+/// Shared with the T4 RMI/WRK decoders (`rmi.rs`/`wrk.rs`), which need the
+/// same leniency plus little-endian integers.
+pub(crate) struct Reader<'a> {
+    pub(crate) data: &'a [u8],
+    pub(crate) pos: usize,
 }
 
 impl<'a> Reader<'a> {
-    fn new(data: &'a [u8]) -> Self {
+    pub(crate) fn new(data: &'a [u8]) -> Self {
         Reader { data, pos: 0 }
     }
 
-    fn eof(&self) -> bool {
+    pub(crate) fn eof(&self) -> bool {
         self.pos >= self.data.len()
     }
 
-    fn remaining(&self) -> usize {
+    pub(crate) fn remaining(&self) -> usize {
         self.data.len().saturating_sub(self.pos)
     }
 
-    fn need(&self, n: usize) -> bool {
+    pub(crate) fn need(&self, n: usize) -> bool {
         self.remaining() >= n
     }
 
-    fn rest(&self) -> &'a [u8] {
+    pub(crate) fn rest(&self) -> &'a [u8] {
         &self.data[self.pos.min(self.data.len())..]
     }
 
-    fn u8(&mut self) -> u8 {
+    pub(crate) fn u8(&mut self) -> u8 {
         if !self.need(1) {
             return 0;
         }
@@ -54,16 +56,37 @@ impl<'a> Reader<'a> {
         b
     }
 
-    fn be16(&mut self) -> u16 {
+    pub(crate) fn be16(&mut self) -> u16 {
         let hi = self.u8();
         let lo = self.u8();
         ((hi as u16) << 8) | lo as u16
     }
 
-    fn be32(&mut self) -> u32 {
+    pub(crate) fn be32(&mut self) -> u32 {
         let hi = self.be16();
         let lo = self.be16();
         ((hi as u32) << 16) | lo as u32
+    }
+
+    pub(crate) fn le16(&mut self) -> u16 {
+        let lo = self.u8();
+        let hi = self.u8();
+        ((hi as u16) << 8) | lo as u16
+    }
+
+    pub(crate) fn le24(&mut self) -> u32 {
+        let b0 = self.u8() as u32;
+        let b1 = self.u8() as u32;
+        let b2 = self.u8() as u32;
+        b0 | (b1 << 8) | (b2 << 16)
+    }
+
+    pub(crate) fn le32(&mut self) -> u32 {
+        let b0 = self.u8() as u32;
+        let b1 = self.u8() as u32;
+        let b2 = self.u8() as u32;
+        let b3 = self.u8() as u32;
+        b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
     }
 
     fn vlq(&mut self) -> u32 {
@@ -81,18 +104,29 @@ impl<'a> Reader<'a> {
         v
     }
 
-    fn bytes(&mut self, n: usize) -> Vec<u8> {
+    pub(crate) fn bytes(&mut self, n: usize) -> Vec<u8> {
         let n = n.min(self.remaining());
         let out = self.data[self.pos..self.pos + n].to_vec();
         self.pos += n;
         out
     }
 
-    fn skip(&mut self, n: usize) {
+    pub(crate) fn skip(&mut self, n: usize) {
         self.pos = (self.pos + n).min(self.data.len());
     }
 
-    fn match_tag(&mut self, tag: &[u8]) -> bool {
+    /// Carve the next `n` bytes out as a sub-reader, advancing past them
+    /// (C++ `Reader chunk{r.p, r.p + ckLen}; r.p += ckLen` in `loadWrk`).
+    /// Lengths clamp to the remaining input, as in C++.
+    pub(crate) fn split(&mut self, n: usize) -> Reader<'a> {
+        let data: &'a [u8] = self.data;
+        let n = n.min(self.remaining());
+        let sub = Reader::new(&data[self.pos..self.pos + n]);
+        self.pos += n;
+        sub
+    }
+
+    pub(crate) fn match_tag(&mut self, tag: &[u8]) -> bool {
         if !self.need(tag.len()) || &self.data[self.pos..self.pos + tag.len()] != tag {
             return false;
         }
@@ -102,7 +136,8 @@ impl<'a> Reader<'a> {
 }
 
 /// Time-signature denominator exponent → power of two (C++ `fourDen`).
-fn four_den(exp: i32) -> i32 {
+/// Shared with `wrk.rs` (METER/METERKEY chunks).
+pub(crate) fn four_den(exp: i32) -> i32 {
     let mut den = 1;
     let mut i = 0;
     while i < exp && i < 8 {

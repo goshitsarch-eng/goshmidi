@@ -1,16 +1,16 @@
-//! `Sequence`: event store + timing + navigation — port of the SMF/store
-//! subset of `src/midi/sequence.{hpp,cpp}` (PLAN T3, arch §1.3).
+//! `Sequence`: event store + timing + navigation — port of
+//! `src/midi/sequence.{hpp,cpp}` (PLAN T3+T4, arch §1.3).
 //!
-//! Covers: `clear`, `loadFile` (SMF dispatch only), `sortAndFinalize`,
+//! Covers: `clear`, `loadFile` (SMF/RMI/WRK dispatch), `sortAndFinalize`,
 //! `insertBeatsToEnd`, `addMetaData` (raw storage; KAR `@`-headers), tempo
 //! math (`setTempoFactor` **rejects** out-of-range factors per arch A7 —
 //! no clamping), bar/beat navigation, `durationString`/`metadataInfo`/
-//! `loadingErrors`. `loadRmi`/`loadWrk` and charset decode land in T4
-//! (`rmi.rs`/`wrk.rs`); the T4-owned APIs are omitted here rather than
-//! stubbed, except for the `load_file` dispatch arms which record a
-//! pending error until T4 replaces them.
+//! `loadingErrors`, and the T4 text/charset layer (`feedCharset`,
+//! `detectCharset` via chardetng, `decodeText` via encoding_rs + the A10
+//! normalization spec, `getText`/`getRawText`/`extraCodecNames`).
 //!
-//! Dependency rule (arch §5): `std` only — no iced/libcosmic in `core`.
+//! Dependency rule (arch §5): `std` + detector/codec crates only — no
+//! iced/libcosmic in `core`.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -39,6 +39,25 @@ pub(crate) struct TimeSigRec {
     pub time: i64,
 }
 
+/// Per-track WRK channel/pitch/velocity offsets (C++ `TrackMapRec`),
+/// keyed by 1-based track number. `channel == -1` means "no override".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TrackMapRec {
+    pub channel: i32,
+    pub pitch: i32,
+    pub velocity: i32,
+}
+
+impl Default for TrackMapRec {
+    fn default() -> Self {
+        TrackMapRec {
+            channel: -1,
+            pitch: 0,
+            velocity: 0,
+        }
+    }
+}
+
 /// Parsed song: sorted events, tempo state, navigation cursor (C++
 /// `Sequence`). Fields are `pub(crate)` so the format decoders (`smf.rs`
 /// now, `rmi.rs`/`wrk.rs` in T4) can build the store field-wise exactly
@@ -56,6 +75,8 @@ pub struct Sequence {
     pub(crate) trk_score: BTreeMap<i32, i32>,
     pub(crate) typ_score: BTreeMap<i32, i32>,
     pub(crate) trk_channel: BTreeMap<i32, i32>,
+    pub(crate) track_map: BTreeMap<i32, TrackMapRec>,
+    pub(crate) saved_sysex: BTreeMap<i32, MidiEvent>,
     pub(crate) bars: Vec<TimeSigRec>,
     /// Raw file base name (C++ `m_currentFile`: `std::string` keeps
     /// non-UTF8 bytes verbatim). Decoded for display only.
@@ -100,6 +121,8 @@ impl Default for Sequence {
             trk_score: BTreeMap::new(),
             typ_score: BTreeMap::new(),
             trk_channel: BTreeMap::new(),
+            track_map: BTreeMap::new(),
+            saved_sysex: BTreeMap::new(),
             bars: Vec::new(),
             current_file: OsString::new(),
             current_file_full: OsString::new(),
@@ -128,6 +151,63 @@ impl Default for Sequence {
     }
 }
 
+/// True for charset labels that `g_convert`/iconv decode as true
+/// ISO-8859-1 (bytes 0x80–0x9F → U+0080–U+009F controls): the dropdown
+/// spelling plus its common aliases, ASCII-case-insensitive. WHATWG folds
+/// all of these onto WINDOWS-1252 (printable glyphs there), so
+/// `decode_text` special-cases them before `Encoding::for_label` per the
+/// A10 spec. `WINDOWS-1252` itself is deliberately absent.
+fn is_latin1_label(charset: &str) -> bool {
+    const ALIASES: &[&str] = &[
+        "iso-8859-1",
+        "iso8859-1",
+        "iso88591",
+        "iso_8859-1",
+        "iso_8859-1:1987",
+        "iso-ir-100",
+        "l1",
+        "latin1",
+        "csisolatin1",
+        "cp819",
+        "ibm819",
+    ];
+    ALIASES.iter().any(|alias| charset.eq_ignore_ascii_case(alias))
+}
+
+/// True for charset labels that `g_convert`/iconv decode as true
+/// ISO-8859-9 (latin5): the dropdown spelling plus its common aliases,
+/// ASCII-case-insensitive. WHATWG folds all of these onto WINDOWS-1254
+/// (same class of fold as latin1 → WINDOWS-1252), so `decode_text`
+/// special-cases them before `Encoding::for_label`.
+fn is_latin5_label(charset: &str) -> bool {
+    const ALIASES: &[&str] = &[
+        "iso-8859-9",
+        "iso8859-9",
+        "iso88599",
+        "iso_8859-9",
+        "iso-ir-148",
+        "l5",
+        "latin5",
+        "csisolatin5",
+    ];
+    ALIASES.iter().any(|alias| charset.eq_ignore_ascii_case(alias))
+}
+
+/// ISO-8859-9 (latin5) single-byte table: identity except the six Turkish
+/// letters (0xD0/0xDD/0xDE/0xF0/0xFD/0xFE). Bytes 0x80–0x9F are C1
+/// controls, as in every true latin table — never windows-1254 glyphs.
+fn latin5_char(byte: u8) -> char {
+    match byte {
+        0xD0 => 'Ğ',
+        0xDD => 'İ',
+        0xDE => 'Ş',
+        0xF0 => 'ğ',
+        0xFD => 'ı',
+        0xFE => 'ş',
+        _ => byte as char,
+    }
+}
+
 /// Lowercase extension bytes of `path`, mirroring C++ `lowerExt`:
 /// file name after the last `/`, extension from its *last* dot (empty
 /// when there is no dot or the dot is the first character).
@@ -149,9 +229,9 @@ impl Sequence {
         *self = Sequence::default();
     }
 
-    /// Load a song file (C++ `Sequence::loadFile`). T3 handles the SMF
-    /// path (`.mid/.midi/.kar` and any other non-RMI/WRK extension);
-    /// `.rmi`/`.wrk` record a pending error until T4 wires `rmi.rs`/`wrk.rs`.
+    /// Load a song file (C++ `Sequence::loadFile`): `.wrk` →
+    /// `wrk.rs`, `.rmi` → `rmi.rs`, anything else (`.mid/.midi/.kar`)
+    /// → the SMF decoder.
     pub fn load_file(&mut self, file_name: &Path) -> bool {
         self.clear();
         if !file_name.exists() {
@@ -164,12 +244,10 @@ impl Sequence {
             return false;
         }
         let ext = lower_ext(file_name);
-        let ok = if ext == b".wrk" || ext == b".rmi" {
-            // TODO(T4): route to `rmi.rs` / `wrk.rs`; the C++ decode and
-            // its error strings move there verbatim.
-            self.loading_errors
-                .push("RMI/WRK decoding lands in T4".to_string());
-            false
+        let ok = if ext == b".wrk" {
+            crate::core::wrk::load_wrk(self, &bytes)
+        } else if ext == b".rmi" {
+            crate::core::rmi::load_rmi(self, &bytes)
         } else {
             crate::core::smf::load_smf_bytes(self, &bytes, "SMF")
         };
@@ -201,10 +279,31 @@ impl Sequence {
         true
     }
 
-    /// T3 charset detection: every song keeps the default UTF-8.
-    /// TODO(T4): chardetng over `charset_sample` + `decode_text` port.
+    /// Accumulate raw text bytes for charset detection (C++
+    /// `Sequence::feedCharset`).
+    pub(crate) fn feed_charset(&mut self, data: &[u8]) {
+        self.charset_sample.extend_from_slice(data);
+    }
+
+    /// Detect the song charset from the accumulated text sample (C++
+    /// `Sequence::detectCharset`, uchardet → chardetng per arch §3.4).
+    /// An empty sample keeps the default UTF-8, as in C++. Otherwise the
+    /// stored name is the chardetng guess's canonical `encoding_rs` name
+    /// (e.g. `windows-1252`, `Shift_JIS`, `Big5`), which `decode_text`
+    /// resolves back via `Encoding::for_label`.
     pub(crate) fn detect_charset(&mut self) {
-        self.charset = "UTF-8".to_string();
+        if self.charset_sample.is_empty() {
+            self.charset = "UTF-8".to_string();
+            return;
+        }
+        // MIDI text is not web content, so ISO-2022-JP stays a possible
+        // guess (the email/honest-detection setting), and UTF-8 is always
+        // allowed; the TLD is unknown so detection runs unconditioned.
+        let mut detector =
+            chardetng::EncodingDetector::new(chardetng::Iso2022JpDetection::Allow);
+        detector.feed(&self.charset_sample, true);
+        let encoding = detector.guess(None, chardetng::Utf8Detection::Allow);
+        self.charset = encoding.name().to_string();
     }
 
     /// True when no events are stored (C++ `Sequence::empty`).
@@ -430,14 +529,13 @@ impl Sequence {
 
     /// Dominant-track label for `channel` (C++ `channelLabel`, owned
     /// `std::string` by value — hence owned `String` here). Stored raw
-    /// (C++ `std::string` keeps non-UTF8 bytes verbatim); decoded here.
-    // TODO(T4): decode via charset-aware `decode_text` (T4 hook) instead
-    // of lossy UTF-8, once `rmi.rs`/`wrk.rs` land the `decodeText` port.
+    /// (C++ `std::string` keeps non-UTF8 bytes verbatim); decoded here
+    /// with the current charset.
     pub fn channel_label(&self, channel: i32) -> String {
         if !(0..MIDI_CHANNELS as i32).contains(&channel) {
             return String::new();
         }
-        String::from_utf8_lossy(&self.channel_label[channel as usize]).into_owned()
+        self.decode_text(&self.channel_label[channel as usize])
     }
 
     /// Track with the most text hits (C++ `trackMaxPoints`; ties resolve
@@ -467,13 +565,12 @@ impl Sequence {
 
     /// Accumulated track/instrument name for `track` (C++ `trackName`,
     /// owned `std::string` by value — hence owned `String` here). Stored
-    /// raw (C++ `std::string` keeps non-UTF8 bytes verbatim); decoded here.
-    // TODO(T4): decode via charset-aware `decode_text` (T4 hook) instead
-    // of lossy UTF-8, once `rmi.rs`/`wrk.rs` land the `decodeText` port.
+    /// raw (C++ `std::string` keeps non-UTF8 bytes verbatim); decoded here
+    /// with the current charset.
     pub fn track_name(&self, track: i32) -> String {
         self.trk_name
             .get(&track)
-            .map(|raw| String::from_utf8_lossy(raw).into_owned())
+            .map(|raw| self.decode_text(raw))
             .unwrap_or_default()
     }
 
@@ -551,6 +648,110 @@ impl Sequence {
         if !charset.is_empty() {
             self.charset = charset.to_string();
         }
+    }
+
+    /// Decode raw text bytes with the current charset (C++ `decodeText`,
+    /// `g_convert` → encoding_rs per arch §3.4/A10):
+    ///
+    /// * `ISO-8859-1` (and its latin1 aliases) decodes byte-for-byte to
+    ///   U+0000–U+00FF — bytes 0x80–0x9F become C1 controls — exactly as
+    ///   `g_convert` does. This branch must come first: WHATWG folds every
+    ///   latin1 label onto WINDOWS-1252, where those bytes are printable
+    ///   glyphs (€, ‚, …) instead. The two labels are never normalized
+    ///   into each other.
+    /// * `ISO-8859-9` (latin5) gets the same treatment against its WHATWG
+    ///   fold target WINDOWS-1254: the true latin5 table (C1 controls +
+    ///   the six Turkish letters), never the windows-1254 glyphs.
+    /// * Any other name resolves via `Encoding::for_label`, which is
+    ///   ASCII-case-insensitive and alias-tolerant like `g_convert`, so
+    ///   detector spellings (`Shift_JIS`, `Big5`, `EUC-KR`, …) and legacy
+    ///   song-setting values (`GB2312`, `x-mac-cyrillic`, …) map onto the
+    ///   right codec.
+    /// * Malformed input under a known codec, and any input under an
+    ///   unknown name, falls back to lossy UTF-8. (C++ fails the whole
+    ///   record and returns the raw bytes verbatim; Rust `String` must be
+    ///   valid UTF-8, so lossy decode is the adaptation — byte-identical
+    ///   to C++ whenever the raw bytes are valid UTF-8, the common case
+    ///   of UTF-8 lyrics viewed under another codec.)
+    ///
+    /// Known library delta (pinned by goldens, not emulated): WHATWG
+    /// Shift_JIS maps bytes 0x5C/0x7E to U+005C/U+007E while `g_convert`
+    /// maps them to U+00A5/U+203E (¥/‾), so backslash/tilde bytes diverge
+    /// under an explicit SHIFT_JIS selection.
+    pub fn decode_text(&self, data: &[u8]) -> String {
+        if data.is_empty() {
+            return String::new();
+        }
+        if is_latin1_label(&self.charset) {
+            return data.iter().map(|&b| b as char).collect();
+        }
+        if is_latin5_label(&self.charset) {
+            return data.iter().map(|&b| latin5_char(b)).collect();
+        }
+        match encoding_rs::Encoding::for_label(self.charset.as_bytes()) {
+            Some(encoding) => {
+                let (text, _, malformed) = encoding.decode(data);
+                if malformed {
+                    String::from_utf8_lossy(data).into_owned()
+                } else {
+                    text.into_owned()
+                }
+            }
+            None => String::from_utf8_lossy(data).into_owned(),
+        }
+    }
+
+    /// Decoded payloads of every stored record of `text_type` (C++
+    /// `getText`).
+    pub fn get_text(&self, text_type: TextType) -> Vec<String> {
+        self.text_events
+            .iter()
+            .filter(|rec| rec.text_type == text_type)
+            .map(|rec| self.decode_text(&rec.text))
+            .collect()
+    }
+
+    /// Raw `(tick, bytes)` payloads filtered by track and type (C++
+    /// `getRawText`): `track <= 0` matches all tracks,
+    /// `TextType::None` matches all types.
+    pub fn get_raw_text(&self, track: i32, text_type: TextType) -> Vec<(i32, Vec<u8>)> {
+        self.text_events
+            .iter()
+            .filter(|rec| {
+                (track <= 0 || rec.track == track)
+                    && (text_type == TextType::None || rec.text_type == text_type)
+            })
+            .map(|rec| (rec.tick as i32, rec.text.clone()))
+            .collect()
+    }
+
+    /// Codec names for the lyrics Encoding dropdown (C++
+    /// `extraCodecNames`): the same 14 entries in the same order.
+    ///
+    /// Off-list rule (window.cpp:575-585, preserved for the T11 UI): the
+    /// dropdown compares case-insensitively and selects index 0 when the
+    /// detected name matches no entry, while the engine keeps decoding
+    /// with the detected `m_charset` — display ≠ decode charset.
+    pub fn extra_codec_names() -> Vec<String> {
+        [
+            "UTF-8",
+            "ISO-8859-1",
+            "WINDOWS-1252",
+            "SHIFT_JIS",
+            "GBK",
+            "BIG5",
+            "KOI8-R",
+            "EUC-KR",
+            "ISO-8859-2",
+            "ISO-8859-5",
+            "ISO-8859-9",
+            "WINDOWS-1251",
+            "WINDOWS-1250",
+            "MACINTOSH",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
     }
 
     /// Stored text records (C++ `textEvents`).
@@ -657,7 +858,7 @@ impl Sequence {
         if data.is_empty() {
             return;
         }
-        self.charset_sample.extend_from_slice(data);
+        self.feed_charset(data);
         *self.trk_score.entry(track).or_insert(0) += 1;
         *self.typ_score.entry(typ).or_insert(0) += 1;
         let mut t = TextType::try_from(typ).unwrap_or(TextType::None);
@@ -968,22 +1169,22 @@ mod tests {
     }
 
     #[test]
-    fn rmi_and_wrk_record_pending_t4_error() {
-        // T3 dispatch arms: `.rmi`/`.wrk` (any case) record a pending
-        // error until T4 wires `rmi.rs`/`wrk.rs` — no panic, no events.
+    fn rmi_and_wrk_dispatch_to_t4_decoders() {
+        // `.rmi`/`.wrk` (any case) reach the T4 decoders: garbage bytes
+        // surface each decoder's own header error (C++ oracle strings).
         let dir = tempfile::tempdir().unwrap();
-        for name in ["song.rmi", "song.wrk", "song.RMI", "song.WRK"] {
+        for (name, error) in [
+            ("song.rmi", "Not a RIFF file<br/>"),
+            ("song.RMI", "Not a RIFF file<br/>"),
+            ("song.wrk", "Invalid WRK header<br/>"),
+            ("song.WRK", "Invalid WRK header<br/>"),
+        ] {
             let path = dir.path().join(name);
-            std::fs::write(&path, b"nonempty but undecodable until T4").unwrap();
+            std::fs::write(&path, b"nonempty but not a container").unwrap();
             let mut seq = Sequence::default();
-            assert!(!seq.load_file(&path), "{name} must fail until T4");
+            assert!(!seq.load_file(&path), "{name} must fail");
             assert!(seq.empty(), "{name} must store no events");
-            assert_eq!(seq.errors_count(), 1, "{name}");
-            assert_eq!(
-                seq.loading_errors(),
-                "RMI/WRK decoding lands in T4<br/>",
-                "{name}"
-            );
+            assert_eq!(seq.loading_errors(), error, "{name}");
         }
     }
 
@@ -994,5 +1195,560 @@ mod tests {
             assert!(!seq.channel_used(ch));
             assert_eq!(seq.channel_label(ch), "");
         }
+    }
+
+    // --- T4 text/charset goldens ---
+    //
+    // Oracle: throwaway `/tmp/t4_dump` (NOT committed) built as
+    // `g++ -std=c++17 -I src /tmp/t4_dump.cpp build/libdmidi-core.a
+    // $(pkg-config --libs glib-2.0 uchardet)` and run over
+    // `examples/*.mid examples/*.kar`. Its `CODEC` rows (concatenated
+    // `g_convert` decode of every text record per codec: length + FNV-1a64)
+    // are pasted below verbatim; the Rust side must reproduce them exactly
+    // except for the pinned `DIVERGENT` cells, where the libraries
+    // genuinely differ (see each reason).
+
+    fn fnv1a64_str(s: &str) -> u64 {
+        let mut h = 14695981039346656037u64;
+        for &b in s.as_bytes() {
+            h ^= b as u64;
+            h = h.wrapping_mul(1099511628211);
+        }
+        h
+    }
+
+    /// Concatenated decode of every text record under `codec`, as the
+    /// oracle's `CODEC` rows do.
+    fn decode_all(seq: &mut Sequence, codec: &str) -> String {
+        seq.set_current_charset(codec);
+        let mut cat = String::new();
+        for rec in seq.text_events() {
+            cat.push_str(&seq.decode_text(&rec.text));
+        }
+        cat
+    }
+
+    struct CodecFixture {
+        name: &'static str,
+        /// Verbatim oracle `(decoded length, FNV-1a64)` per codec, in
+        /// `extra_codec_names` order.
+        oracle: [(usize, u64); 14],
+    }
+
+    const CODEC_FIXTURES: &[CodecFixture] = &[
+        CodecFixture {
+            name: "haendel_hallelujah.mid",
+            oracle: [
+                (1619, 0xf8b9d9e3e9414be4),
+                (1619, 0xf8b9d9e3e9414be4),
+                (1619, 0xf8b9d9e3e9414be4),
+                (1658, 0xdc13299fc2e6d49f),
+                (1619, 0xf8b9d9e3e9414be4),
+                (1619, 0xf8b9d9e3e9414be4),
+                (1619, 0xf8b9d9e3e9414be4),
+                (1619, 0xf8b9d9e3e9414be4),
+                (1619, 0xf8b9d9e3e9414be4),
+                (1619, 0xf8b9d9e3e9414be4),
+                (1619, 0xf8b9d9e3e9414be4),
+                (1619, 0xf8b9d9e3e9414be4),
+                (1619, 0xf8b9d9e3e9414be4),
+                (1619, 0xf8b9d9e3e9414be4),
+            ],
+        },
+        CodecFixture {
+            name: "lindaamiga.mid",
+            oracle: [(784, 0x79613d8e28abeffc); 14],
+        },
+        CodecFixture {
+            name: "mozart_aveverum.mid",
+            oracle: [(592, 0xd5db686a98fbdc7d); 14],
+        },
+        CodecFixture {
+            name: "mozart_diesirae.mid",
+            oracle: [(1044, 0xd0560a7b666ca263); 14],
+        },
+        CodecFixture {
+            name: "mozart_konigdernacht.mid",
+            oracle: [
+                (1168, 0xdd458106513e539a),
+                (1186, 0x6958bd8885fa8c53),
+                (1186, 0x6958bd8885fa8c53),
+                (1225, 0x7fa80732d6d1f144),
+                (1177, 0x579b2e2cd47acec3),
+                (1177, 0x55fec90125f673bd),
+                (1195, 0x27e8ac5689154629),
+                (1177, 0x591b5d573416a987),
+                (1186, 0xabf61e17137b2ef8),
+                (1186, 0x63e1dda3e96642e4),
+                (1186, 0x6958bd8885fa8c53),
+                (1186, 0x9d54a25ebf20419f),
+                (1186, 0x018f6b6f8fd210b8),
+                (1201, 0xd06ad270c2e03a63),
+            ],
+        },
+        CodecFixture {
+            name: "schubert_avemaria.mid",
+            oracle: [
+                (1426, 0x98ec118504301c92),
+                (1447, 0x4219ed8dec7d7f2a),
+                (1449, 0xa935d09b0aba881b),
+                (1462, 0x0992ff5efd9153a1),
+                (1435, 0x4a601a094d6615df),
+                (1435, 0x08214d00162703e3),
+                (1458, 0x060236a4b111befd),
+                (1435, 0x10b38c4b2b2261d3),
+                (1447, 0x8eae2eceef14cfdf),
+                (1447, 0x5549e8d4c27bee17),
+                (1447, 0x4219ed8dec7d7f2a),
+                (1448, 0x27ae34a0c8788e5a),
+                (1449, 0xabecaf13b47f4d76),
+                (1461, 0x1efad3f924c6ae0c),
+            ],
+        },
+        CodecFixture {
+            name: "Schubert_Standchen.mid",
+            oracle: [
+                (783, 0x5d9f9d58ae3ac7fd),
+                (817, 0x987f5060b8592e52),
+                (817, 0x7dbe5c152d05d3ca),
+                (846, 0xb53c39df50cadd4f),
+                (800, 0xf921b6e9029deac9),
+                (798, 0x089fe29bd0089186),
+                (831, 0x2a8de8cfa3ce2dba),
+                (798, 0x7d65bc101af5ae54),
+                (817, 0x00365bd0345ee551),
+                (817, 0xbd1af37d4a4f44c3),
+                (817, 0x987f5060b8592e52),
+                (817, 0x794ef094065a8d88),
+                (817, 0x86ffbba956720915),
+                (839, 0x320043995db5bab6),
+            ],
+        },
+        CodecFixture {
+            name: "test.mid",
+            oracle: [
+                (47, 0x7af40e2cd7665f13),
+                (49, 0xb0919b1bbec8b9f0),
+                (49, 0xb0919b1bbec8b9f0),
+                (51, 0x766f5fa2cecfb552),
+                (48, 0x3bae3e459620b8c7),
+                (48, 0xa78fe18a458bf987),
+                (49, 0xf5857202dee3b749),
+                (48, 0x34494ae4963d3f2d),
+                (49, 0xefb84f16eb836360),
+                (49, 0xe222b0c26dafac51),
+                (49, 0xb0919b1bbec8b9f0),
+                (49, 0x58d2ec192487e44b),
+                (49, 0xefb84f16eb836360),
+                (51, 0x425a9cd8564b041d),
+            ],
+        },
+        CodecFixture {
+            name: "Negra_Sombra.kar",
+            oracle: [
+                (883, 0x21bf8542ec18918a),
+                (899, 0x6a719c1e03221e0a),
+                (899, 0x6a719c1e03221e0a),
+                (920, 0x9a53fa48443c847b),
+                (891, 0xd3f1e619bd547bbd),
+                (891, 0x88d48f92fee099cb),
+                (905, 0xce3e83d1e6bacd9d),
+                (891, 0x5047c4e3636e2cf5),
+                (899, 0x363b41db2f8fbc21),
+                (899, 0x2f704eb96c9906ac),
+                (899, 0x6a719c1e03221e0a),
+                (899, 0xa3d94180af7f805b),
+                (899, 0x6c1408b6c30c834b),
+                (910, 0x4b18f19bbd7dec2b),
+            ],
+        },
+        CodecFixture {
+            name: "twinkle.kar",
+            oracle: [
+                (648, 0x34e08aa2a95b567e),
+                (648, 0x34e08aa2a95b567e),
+                (648, 0x34e08aa2a95b567e),
+                (650, 0x617ef059881a2d9c),
+                (648, 0x34e08aa2a95b567e),
+                (648, 0x34e08aa2a95b567e),
+                (648, 0x34e08aa2a95b567e),
+                (648, 0x34e08aa2a95b567e),
+                (648, 0x34e08aa2a95b567e),
+                (648, 0x34e08aa2a95b567e),
+                (648, 0x34e08aa2a95b567e),
+                (648, 0x34e08aa2a95b567e),
+                (648, 0x34e08aa2a95b567e),
+                (648, 0x34e08aa2a95b567e),
+            ],
+        },
+    ];
+
+    /// The 5 of 140 codec cells where the libraries genuinely differ (the
+    /// oracle C++ pair is recorded alongside the pinned Rust pair — both
+    /// sides are honest, neither is emulated):
+    /// * SHIFT_JIS ×4: bytes 0x5C/0x7E decode to U+00A5/U+203E (¥/‾) in
+    ///   `g_convert` but stay U+005C/U+007E in WHATWG Shift_JIS.
+    /// * EUC-KR ×1 (`/Laß `, bytes `C3 9F`): glib's strict trail range
+    ///   (`0xA1+`) errors and returns the record raw, while WHATWG EUC-KR
+    ///   accepts the low trail and decodes Hangul U+D6A9.
+    const DIVERGENT: &[(&str, &str, usize, u64)] = &[
+        ("haendel_hallelujah.mid", "SHIFT_JIS", 1619, 0xf8b9d9e3e9414be4),
+        ("mozart_konigdernacht.mid", "SHIFT_JIS", 1204, 0x0cdd3c0f50d66859),
+        ("Schubert_Standchen.mid", "EUC-KR", 800, 0x60331bb9c4ad82a2),
+        ("Negra_Sombra.kar", "SHIFT_JIS", 915, 0x0af6041f8942ff02),
+        ("twinkle.kar", "SHIFT_JIS", 648, 0x34e08aa2a95b567e),
+    ];
+
+    #[test]
+    fn lyric_decode_sweep_matches_oracle_across_fixtures_and_charsets() {
+        assert_eq!(CODEC_FIXTURES.len(), 10);
+        let codecs = Sequence::extra_codec_names();
+        assert_eq!(codecs.len(), 14);
+        let mut checked = 0;
+        for fx in CODEC_FIXTURES {
+            let path = Path::new("examples").join(fx.name);
+            let mut seq = Sequence::default();
+            assert!(seq.load_file(&path), "{}: {:?}", fx.name, seq.loading_errors);
+            for (i, codec) in codecs.iter().enumerate() {
+                let cat = decode_all(&mut seq, codec);
+                let (len, fnv) = (cat.len(), fnv1a64_str(&cat));
+                match DIVERGENT.iter().find(|(f, c, _, _)| *f == fx.name && *c == codec) {
+                    Some((_, _, rust_len, rust_fnv)) => {
+                        // Pinned library delta: assert the Rust pair, and
+                        // that it still differs from the oracle (a silent
+                        // convergence must update this table, not slip by).
+                        assert_eq!((len, fnv), (*rust_len, *rust_fnv), "{} {codec}", fx.name);
+                        assert_ne!((len, fnv), fx.oracle[i], "{} {codec} converged?", fx.name);
+                    }
+                    None => assert_eq!((len, fnv), fx.oracle[i], "{} {codec}", fx.name),
+                }
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 140);
+    }
+
+    #[test]
+    fn default_decoded_lyrics_match_oracle_except_detector_deltas() {
+        // (file, chardetng verdict, uchardet verdict, decoded length,
+        // FNV-1a64 of the concatenated default decode). chardetng reads
+        // every fixture sample as UTF-8; the decode then equals the C++
+        // default everywhere except `test.mid`, where uchardet's
+        // `MAC-CENTRALEUROPE` misdetection mojibakes (oracle pair
+        // 51/`425a9cd8564b041d`) while chardetng decodes correctly.
+        const DEFAULTS: &[(&str, &str, &str, usize, u64)] = &[
+            ("haendel_hallelujah.mid", "UTF-8", "ASCII", 1619, 0xf8b9d9e3e9414be4),
+            ("lindaamiga.mid", "UTF-8", "ASCII", 784, 0x79613d8e28abeffc),
+            ("mozart_aveverum.mid", "UTF-8", "ASCII", 592, 0xd5db686a98fbdc7d),
+            ("mozart_diesirae.mid", "UTF-8", "ASCII", 1044, 0xd0560a7b666ca263),
+            ("mozart_konigdernacht.mid", "UTF-8", "UTF-8", 1168, 0xdd458106513e539a),
+            ("schubert_avemaria.mid", "UTF-8", "UTF-8", 1426, 0x98ec118504301c92),
+            ("Schubert_Standchen.mid", "UTF-8", "UTF-8", 783, 0x5d9f9d58ae3ac7fd),
+            ("test.mid", "UTF-8", "MAC-CENTRALEUROPE", 47, 0x7af40e2cd7665f13),
+            ("Negra_Sombra.kar", "UTF-8", "UTF-8", 883, 0x21bf8542ec18918a),
+            ("twinkle.kar", "UTF-8", "ASCII", 648, 0x34e08aa2a95b567e),
+        ];
+        for (name, rust_charset, _cpp_charset, len, fnv) in DEFAULTS {
+            let path = Path::new("examples").join(name);
+            let mut seq = Sequence::default();
+            assert!(seq.load_file(&path), "{name}: {:?}", seq.loading_errors);
+            assert_eq!(seq.current_charset(), *rust_charset, "{name}");
+            let mut cat = String::new();
+            for rec in seq.text_events() {
+                cat.push_str(&seq.decode_text(&rec.text));
+            }
+            assert_eq!((cat.len(), fnv1a64_str(&cat)), (*len, *fnv), "{name}");
+        }
+        // Verbatim anchors (not just hashes): the `test.mid` copyright the
+        // C++ default mojibakes, and real KAR lyric lines.
+        let mut seq = Sequence::default();
+        assert!(seq.load_file(Path::new("examples/test.mid")));
+        assert_eq!(
+            seq.get_text(TextType::Copyright),
+            vec!["Copyright (C) 2006-2024 Pedro López-Cabanillas".to_string()]
+        );
+        let mut seq = Sequence::default();
+        assert!(seq.load_file(Path::new("examples/Negra_Sombra.kar")));
+        // Lyrics ride as Text (type 1) in these files, with KAR `@`
+        // headers remapped to Kar* types (oracle type census).
+        assert!(seq.get_text(TextType::Text).join("").contains("\\Can"));
+        assert_eq!(
+            seq.get_text(TextType::KarTitles).first().map(String::as_str),
+            Some("@TNegra Sombra")
+        );
+        assert_eq!(seq.type_max_points(), TextType::Text as i32);
+        let mut seq = Sequence::default();
+        assert!(seq.load_file(Path::new("examples/twinkle.kar")));
+        assert!(seq.get_text(TextType::Text).join("").contains("\\Twin"));
+        assert_eq!(
+            seq.get_text(TextType::KarTitles),
+            vec!["@TTwinkle, Twinkle, Little Star".to_string()]
+        );
+        assert!(!seq.get_text(TextType::KarFileType).is_empty());
+        assert!(!seq.get_text(TextType::KarVersion).is_empty());
+        assert!(!seq.get_text(TextType::KarInformation).is_empty());
+        assert!(!seq.get_text(TextType::KarLanguage).is_empty());
+    }
+
+    #[test]
+    fn a10_edge_bytes_decode_like_g_convert() {
+        // The A10 edge range 0x80–0x9F plus real UTF-8 (`é`, `€`) — the
+        // same lyric bytes as the oracle's `/tmp/t4_edge.mid` (builder
+        // hash pinned by `edge_builder_matches_oracle_fixture`).
+        let raw = b"edge:\x80\x81\x8d\x8f\x90\x9d\x9f \xc3\xa9\xe2\x82\xac";
+        let mut seq = Sequence::default();
+        // ISO-8859-1: true latin1 — C1 controls, never cp1252 glyphs.
+        // Oracle CODEC row agrees: len 30, fnv 9492badd77d024c1.
+        seq.set_current_charset("ISO-8859-1");
+        let latin1 = seq.decode_text(raw);
+        assert_eq!(
+            latin1,
+            "edge:\u{80}\u{81}\u{8d}\u{8f}\u{90}\u{9d}\u{9f} Ã©â\u{82}¬"
+        );
+        assert_eq!((latin1.len(), fnv1a64_str(&latin1)), (30, 0x9492badd77d024c1));
+        // WINDOWS-1252: WHATWG maps the undefined C1 bytes to C1 controls
+        // (no error), 0x80 → €, 0x9F → Ÿ. `g_convert` instead errors and
+        // returns the 18 raw bytes — pinned divergence (a Rust `String`
+        // cannot hold lone 0x80–0x9F bytes, so the raw fallback is
+        // unrepresentable here; the lossy path covers the cases it can).
+        seq.set_current_charset("WINDOWS-1252");
+        let cp1252 = seq.decode_text(raw);
+        assert_eq!(cp1252, "edge:€\u{81}\u{8d}\u{8f}\u{90}\u{9d}Ÿ Ã©â\u{201a}¬");
+        assert_eq!((cp1252.len(), fnv1a64_str(&cp1252)), (32, 0xda59c9526fd98b13));
+        // The A10 core: the two labels must never collapse into each other.
+        assert_ne!(latin1, cp1252);
+        seq.set_current_charset("ISO-8859-1");
+        assert_eq!(seq.decode_text(b"\x80"), "\u{80}");
+        seq.set_current_charset("WINDOWS-1252");
+        assert_eq!(seq.decode_text(b"\x80"), "€");
+        // ISO-8859-9: true latin5 (C1 controls + Turkish letters — the
+        // iconv table, verified byte-for-byte), never windows-1254 glyphs.
+        // Oracle CODEC row agrees: len 30, fnv 9492badd77d024c1.
+        seq.set_current_charset("ISO-8859-9");
+        let latin5 = seq.decode_text(raw);
+        assert_eq!(latin5, latin1);
+        assert_eq!((latin5.len(), fnv1a64_str(&latin5)), (30, 0x9492badd77d024c1));
+        assert_eq!(seq.decode_text(b"\xd0\xdd\xde\xf0\xfd\xfe"), "ĞİŞğış");
+        // Case-insensitive aliases reach the same tables.
+        for alias in ["iso-8859-1", "LATIN1", "l1", "iso88591"] {
+            seq.set_current_charset(alias);
+            assert_eq!(seq.decode_text(b"\x80"), "\u{80}", "{alias}");
+        }
+        for alias in ["iso-8859-9", "LATIN5", "l5", "iso-ir-148"] {
+            seq.set_current_charset(alias);
+            assert_eq!(seq.decode_text(b"\x80"), "\u{80}", "{alias}");
+            assert_eq!(seq.decode_text(b"\xfe"), "ş", "{alias}");
+        }
+        // Unknown names fall back to lossy UTF-8 (never panic, never empty
+        // for non-empty input).
+        seq.set_current_charset("NoSuchCodec-XYZ");
+        assert_eq!(seq.decode_text("plain".as_bytes()), "plain");
+        assert_eq!(seq.decode_text(b"\xff\xfe"), "\u{fffd}\u{fffd}");
+        assert_eq!(seq.decode_text(b""), "");
+    }
+
+    #[test]
+    fn edge_builder_matches_oracle_fixture() {
+        // Byte-identical twin of the oracle's `/tmp/t4_edge.mid`: SMF with
+        // the A10 edge lyric. Pins the builder bytes (len + FNV) and the
+        // agreed oracle CODEC cells for this lyric.
+        let lyric = b"edge:\x80\x81\x8d\x8f\x90\x9d\x9f \xc3\xa9\xe2\x82\xac";
+        let mut track = vec![0x00, 0xFF, 0x51, 0x03, 0x07, 0xA1, 0x20];
+        track.extend_from_slice(&[0x00, 0xFF, 0x05, lyric.len() as u8]);
+        track.extend_from_slice(lyric);
+        track.extend_from_slice(&[0x00, 0x90, 0x3C, 0x40, 0x83, 0x60, 0x80, 0x3C, 0x40]);
+        track.extend_from_slice(&[0x00, 0xFF, 0x2F, 0x00]);
+        let mut file = b"MThd".to_vec();
+        file.extend_from_slice(&6u32.to_be_bytes());
+        file.extend_from_slice(&0u16.to_be_bytes());
+        file.extend_from_slice(&1u16.to_be_bytes());
+        file.extend_from_slice(&120u16.to_be_bytes());
+        file.extend_from_slice(b"MTrk");
+        file.extend_from_slice(&(track.len() as u32).to_be_bytes());
+        file.extend_from_slice(&track);
+        let mut h = 14695981039346656037u64;
+        for &b in &file {
+            h ^= b as u64;
+            h = h.wrapping_mul(1099511628211);
+        }
+        assert_eq!(file.len(), 64);
+        assert_eq!(h, 0xc38412a36d65a7c7);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("edge.mid");
+        std::fs::write(&path, &file).unwrap();
+        let mut seq = Sequence::default();
+        assert!(seq.load_file(&path), "{:?}", seq.loading_errors);
+        // Oracle-agreed cells for this lyric (the remaining 7 codecs are
+        // the pinned lone-C1 divergences: `g_convert` returns the 18 raw
+        // bytes where Rust maps controls or falls back to lossy UTF-8).
+        for (codec, len, fnv) in [
+            ("ISO-8859-1", 30, 0x9492badd77d024c1u64),
+            ("ISO-8859-9", 30, 0x9492badd77d024c1u64),
+            ("ISO-8859-2", 30, 0xb8054286ce3de3fdu64),
+            ("ISO-8859-5", 30, 0xaec7c8d097b948a0u64),
+            ("KOI8-R", 38, 0xfc67f4f5808780b4u64),
+            ("WINDOWS-1251", 31, 0xfb0b9f16deec6e8eu64),
+            ("MACINTOSH", 32, 0xdb78513c670f94d5u64),
+        ] {
+            let cat = decode_all(&mut seq, codec);
+            assert_eq!((cat.len(), fnv1a64_str(&cat)), (len, fnv), "{codec}");
+        }
+    }
+
+    #[test]
+    fn charset_label_resolution_table() {
+        // `Encoding::for_label` is the detector-name mapping (arch §3.4):
+        // ASCII-case-insensitive, alias-tolerant like `g_convert`. One row
+        // per vocabulary entry: the 14 dropdown names, chardetng/uchardet
+        // spellings, legacy song-setting values, and the unknown-name
+        // fallback. (The latin1/latin5 WHATWG folds are asserted via
+        // decode behavior in `a10_edge_bytes_decode_like_g_convert`, since
+        // `decode_text` intercepts those labels before `for_label`.)
+        for (label, expected) in [
+            ("UTF-8", Some("UTF-8")),
+            ("ISO-8859-1", Some("windows-1252")), // fold: intercepted in decode_text
+            ("WINDOWS-1252", Some("windows-1252")),
+            ("SHIFT_JIS", Some("Shift_JIS")),
+            ("GBK", Some("GBK")),
+            ("BIG5", Some("Big5")),
+            ("KOI8-R", Some("KOI8-R")),
+            ("EUC-KR", Some("EUC-KR")),
+            ("ISO-8859-2", Some("ISO-8859-2")),
+            ("ISO-8859-5", Some("ISO-8859-5")),
+            ("ISO-8859-9", Some("windows-1254")), // fold: intercepted in decode_text
+            ("WINDOWS-1251", Some("windows-1251")),
+            ("WINDOWS-1250", Some("windows-1250")),
+            ("MACINTOSH", Some("macintosh")),
+            ("Shift_JIS", Some("Shift_JIS")),
+            ("Big5", Some("Big5")),
+            ("windows-1252", Some("windows-1252")),
+            ("utf-8", Some("UTF-8")),
+            ("GB2312", Some("GBK")),
+            ("x-mac-cyrillic", Some("x-mac-cyrillic")),
+            ("EUC-JP", Some("EUC-JP")),
+            ("MAC-CENTRALEUROPE", None), // legacy uchardet value → UTF-8 fallback
+            ("NoSuchCodec-XYZ", None),
+            ("", None),
+        ] {
+            let got = encoding_rs::Encoding::for_label(label.as_bytes()).map(|e| e.name());
+            assert_eq!(got, expected, "{label}");
+        }
+    }
+
+    #[test]
+    fn extra_codec_names_are_the_verbatim_14() {
+        assert_eq!(
+            Sequence::extra_codec_names(),
+            [
+                "UTF-8",
+                "ISO-8859-1",
+                "WINDOWS-1252",
+                "SHIFT_JIS",
+                "GBK",
+                "BIG5",
+                "KOI8-R",
+                "EUC-KR",
+                "ISO-8859-2",
+                "ISO-8859-5",
+                "ISO-8859-9",
+                "WINDOWS-1251",
+                "WINDOWS-1250",
+                "MACINTOSH",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn off_list_charset_still_decodes() {
+        // Off-list rule: the engine keeps decoding with the detected name
+        // even when it matches no dropdown entry (the index-0 display rule
+        // lives in the T11 UI — see the `extra_codec_names` docs).
+        assert!(!Sequence::extra_codec_names().contains(&"EUC-JP".to_string()));
+        let mut seq = Sequence::default();
+        seq.set_current_charset("EUC-JP");
+        assert_eq!(seq.current_charset(), "EUC-JP");
+        // あ U+3042 in EUC-JP is A4 A2.
+        assert_eq!(seq.decode_text(b"\xa4\xa2"), "あ");
+    }
+
+    #[test]
+    fn get_text_and_raw_text_filter_like_cpp() {
+        let mut seq = Sequence::default();
+        seq.add_meta_data(0, 1, 1, "t1".as_bytes());
+        seq.add_meta_data(10, 1, 5, "la".as_bytes());
+        seq.add_meta_data(20, 2, 5, "si".as_bytes());
+        seq.add_meta_data(30, 2, 3, "Piano".as_bytes());
+        assert_eq!(seq.get_text(TextType::Lyric), vec!["la".to_string(), "si".to_string()]);
+        assert_eq!(seq.get_text(TextType::Text), vec!["t1".to_string()]);
+        assert!(seq.get_text(TextType::Marker).is_empty());
+        // `track <= 0` matches all tracks; `None` matches all types.
+        assert_eq!(seq.get_raw_text(0, TextType::None).len(), 4);
+        assert_eq!(seq.get_raw_text(-3, TextType::None).len(), 4);
+        assert_eq!(
+            seq.get_raw_text(1, TextType::None),
+            vec![(0, b"t1".to_vec()), (10, b"la".to_vec())]
+        );
+        assert_eq!(seq.get_raw_text(0, TextType::Lyric).len(), 2);
+        assert_eq!(seq.get_raw_text(2, TextType::Lyric), vec![(20, b"si".to_vec())]);
+        assert!(seq.get_raw_text(9, TextType::None).is_empty());
+    }
+
+    #[test]
+    fn kar_headers_all_six_map_case_sensitively() {
+        let mut seq = Sequence::default();
+        for (header, mapped) in [
+            ("@KMIDI KARAOKE FILE", TextType::KarFileType),
+            ("@V0100", TextType::KarVersion),
+            ("@ITitle", TextType::KarInformation),
+            ("@LEnglish", TextType::KarLanguage),
+            ("@TSong", TextType::KarTitles),
+            ("@Wwhatever", TextType::KarWhatever),
+        ] {
+            seq.add_meta_data(0, 1, 1, header.as_bytes());
+            assert_eq!(seq.text_events().last().unwrap().text_type, mapped, "{header}");
+        }
+        // Lowercase `@k` and bare `@` keep the original meta type.
+        seq.add_meta_data(0, 1, 5, b"@knope");
+        assert_eq!(seq.text_events().last().unwrap().text_type, TextType::Lyric);
+        seq.add_meta_data(0, 1, 5, b"@");
+        assert_eq!(seq.text_events().last().unwrap().text_type, TextType::Lyric);
+        // KAR-mapped records are stored but create no playable events.
+        assert_eq!(seq.text_events().len(), 8);
+        assert_eq!(seq.events.iter().filter(|ev| ev.kind == Kind::Text).count(), 2);
+    }
+
+    #[test]
+    fn track_name_and_channel_label_follow_the_charset() {
+        // Latin-1 `Caf\xe9` stored raw; the accessors decode with the
+        // current charset (T3 raw-byte storage + T4 decode hook).
+        let mut seq = Sequence::default();
+        seq.add_meta_data(0, 1, 3, b"Caf\xe9");
+        seq.channel_label[2] = b"Caf\xe9".to_vec();
+        assert_eq!(seq.track_name(1), "Caf\u{fffd}"); // UTF-8 default
+        assert_eq!(seq.channel_label(2), "Caf\u{fffd}");
+        seq.set_current_charset("ISO-8859-1");
+        assert_eq!(seq.track_name(1), "Café");
+        assert_eq!(seq.channel_label(2), "Café");
+        seq.set_current_charset("WINDOWS-1252");
+        assert_eq!(seq.track_name(1), "Café");
+    }
+
+    #[test]
+    fn detect_charset_defaults_and_detects() {
+        // Empty sample keeps UTF-8 (C++ parity).
+        let mut seq = Sequence::default();
+        seq.detect_charset();
+        assert_eq!(seq.current_charset(), "UTF-8");
+        // Non-empty samples resolve through chardetng (pinned behavior).
+        seq.feed_charset("plain ascii lyrics here".as_bytes());
+        seq.detect_charset();
+        assert_eq!(seq.current_charset(), "UTF-8");
+        let mut seq = Sequence::default();
+        seq.feed_charset("Grüße üäö — €".as_bytes());
+        seq.detect_charset();
+        assert_eq!(seq.current_charset(), "UTF-8");
     }
 }

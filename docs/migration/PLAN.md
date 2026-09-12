@@ -161,7 +161,7 @@ lead = PLAN/DECISIONS/REPORT + glue.
       extension filter; unit tests incl. case-insensitive ext matrix.
 - [x] T3 SMF decode + `Sequence` store/timing/nav (arch): `smf.rs`, ticks↔µs, — DONE (24+ tests, suite 51+, C++ differential goldens, raw-byte label fix, devil SIGN-OFF)
       beats, bar nav, tempo reject (A7), `div==0→96`; golden tests vs C++.
-- [ ] T4 RMI/WRK + text/charset (arch): `rmi.rs`, `wrk.rs` (banked SysEx,
+- [x] T4 RMI/WRK + text/charset (arch): `rmi.rs`, `wrk.rs` (banked SysEx, — DONE (23 tests, suite 76+, C++ differential + codec sweep, deviations devil-ruled, SIGN-OFF)
       track offsets), chardetng/encoding_rs + normalization spec (A10),
       14 codecs, KAR headers, off-list dropdown rule; goldens + lyric-decode
       goldens across fixtures/charsets.

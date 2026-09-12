@@ -13,3 +13,7 @@ pub mod event;
 pub mod sequence;
 #[allow(dead_code)]
 pub(crate) mod smf;
+#[allow(dead_code)]
+pub(crate) mod rmi;
+#[allow(dead_code)]
+pub(crate) mod wrk;
