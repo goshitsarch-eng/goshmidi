@@ -210,7 +210,11 @@ spawning). Audio risks: see §5.
   against a running instance → replace + present; `--file-forwarding` is
   required because bare host paths are invisible in both sandboxes, and
   the forwarded document-portal path is valid in the first sandbox only
-  because both instances share the per-app document store.
+  because both instances share the per-app document store. S4 executed
+  the forward half in paired build sandboxes on a nested compositor
+  (displayless second instance exit 0 in 66/82 ms, receiver `openat`
+  traced — REPORT §3); the literal `flatpak run` run awaits the
+  service-file blocker slice.
 - Portal-delivered paths (`/run/user/.../doc/...`) must be accepted anywhere
   a path is accepted (open flows, playlist entries, SoundFont picker).
 
@@ -555,8 +559,9 @@ Phase-3 manual recipe (run once per §3.2 row, on the release candidate):
 
 - [ ] `flatpak/com.goshapps.GoshMIDI.yml` + committed `cargo-sources.json`
       (vendored + pinned generator, P4c/P5).
-- [ ] `scripts/verify.sh` (+`--fast`) + `scripts/smoke.sh` green locally
-      and in CI (tiered gates, P1).
+- [x] `scripts/verify.sh` (+`--fast`) + `scripts/smoke.sh` green locally
+      and in CI (tiered gates, P1; S4: full PASS locally 2026-09-12,
+      559+10+103 tests 0 failed — CI runs on merge).
 - [x] CI triggers include `cosmic-migration` + full system deps (P4a/P4b;
       T15: CMake job retired, `cosmic-build.yml` is the CI).
 - [x] Binary `dmidiplayer` end to end: manifest `command`, `Exec`, `--help`
@@ -564,15 +569,22 @@ Phase-3 manual recipe (run once per §3.2 row, on the release candidate):
       `tests/desktop_integration.rs`, T14c).
 - [x] `DBusActivatable=true` + bus name owned (P8, T14c: desktop landed,
       bus-name == basename + `open`-action halves pinned, sandbox own-ID
-      probed; live second-`flatpak run` forward is a Phase-3 recipe, §3.2).
-- [ ] Examples generated + installed + asserted in-sandbox (P6).
+      probed; S4: forward verified in a paired build-sandbox run — second
+      instance exit 0 in <0.1 s displayless, receiver open traced; the
+      literal `flatpak run` form + activation await the REPORT §4
+      service-file slice).
+- [x] Examples generated + installed + asserted in-sandbox (P6; S4 full
+      run: 10/10 `examples.lst` entries resolve).
 - [x] Metainfo: toolkit wording + Rhythm-claim fix (P11, T14c) +
       `<release>` entry for the shipped version (T15).
 - [x] Symbolic-icon hicolor fallback vendored + installed + inventoried
       (T14c, §1.6; per-row visibility is a T15 live check).
-- [ ] `.flatpak` bundle verified on the §3.2 provider matrix (P12).
-- [ ] Sandbox data-migration story + stale-SoundFont UX shipped (P7, §6;
-      T15-S2: fixtures + bundled fallback landed, re-prompt UX in S3).
+- [ ] `.flatpak` bundle verified on the §3.2 provider matrix (P12;
+      S4: BLOCKED — `build-export` fails, no D-Bus service file; plus
+      GNOME/KDE absent on the probe host — REPORT §4).
+- [x] Sandbox data-migration story + stale-SoundFont UX shipped (P7, §6;
+      S3 landed the §6 re-prompt contract against the S2 fixtures; S4
+      verified the landmarks in-tree + suite green).
 - [x] SoundFont story documented in-app and README (T15, §5 risk 2:
       bundled `FluidR3Mono_GM.sf3` + host-install advice).
 - [x] CMake retired, CMake-dependent checks replaced, gresource
