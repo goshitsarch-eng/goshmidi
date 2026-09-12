@@ -490,4 +490,195 @@ mod tests {
         assert!(plan.channels.is_empty());
         assert_eq!(plan.encoding, None);
     }
+
+    /// P10b: maximal save→load byte-equivalence — every global key plus all
+    /// 16 channel groups with mixed bool combos, patch edges, and tricky
+    /// names — must survive `to_data → parse → to_data` byte-identically.
+    #[test]
+    fn full_16_channel_save_load_is_byte_identical() {
+        let mut s = SongSettings::empty();
+        s.file = "/m/gig/ læad.mid".to_string();
+        s.encoding = Some("ISO-8859-2".to_string());
+        s.volume = Some(200);
+        s.pitch = 12;
+        s.timeskew = Some(50);
+        for ch in 0..MIDI_CHANNELS {
+            s.channels[ch] = Some(SongChannelSettings {
+                name: Some(format!("Ch{ch} ünïcodé")),
+                muted: ch % 2 == 0,
+                solo: ch % 3 == 0,
+                locked: ch % 4 == 0,
+                patch: if ch % 2 == 0 { 0 } else { 127 },
+                level: Some(1 + ch as i32),
+            });
+        }
+        // Bool-edge rows: all-false and all-true must round-trip distinctly.
+        s.channels[0].as_mut().unwrap().solo = false;
+        s.channels[0].as_mut().unwrap().locked = false;
+        s.channels[1] = Some(SongChannelSettings {
+            name: Some(String::new()),
+            muted: true,
+            solo: true,
+            locked: true,
+            patch: 64,
+            level: Some(200),
+        });
+        let disk = s.to_data();
+        // All 16 padded group headers present, in channel order.
+        for ch in 0..MIDI_CHANNELS {
+            let header = format!("[{}]\n", channel_group(ch));
+            assert!(disk.contains(&header), "missing {header:?}");
+        }
+        let back = SongSettings::parse(&disk).unwrap();
+        assert_eq!(back, s);
+        assert_eq!(back.to_data(), disk, "save→load must be byte-identical");
+        // And through a real file (the production `save`/`load` pair).
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("gig.cfg");
+        s.save(&path).unwrap();
+        let file_back = SongSettings::load(&path).unwrap();
+        assert_eq!(file_back, s);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            disk,
+            "`save` bytes must equal `to_data` bytes"
+        );
+    }
+
+    /// P10b: every structural corruption shape is `None` (caller changes
+    /// nothing — C++ `loadSongSettings` early-return, `window.cpp:667-670`).
+    #[test]
+    fn structural_corrupt_variants_are_none() {
+        for text in [
+            "garbage no group\n",
+            "[Global\npitch=0\n",
+            "[Global]\nnoequals\n",
+            ";semicolon is not a comment\n[Global]\npitch=0\n",
+            "\u{feff}[Global]\npitch=0\n", // BOM fails the whole load
+            "[]\npitch=0\n",
+            "[Global] trailing\npitch=0\n",
+            "pitch=0\n",           // key outside any group
+            "[Global]\n=pitch\n",  // empty key
+            "[MIDI Channel  1]\n", // valid shape, keeps working (control)
+        ] {
+            let parsed = SongSettings::parse(text);
+            if text.starts_with("[MIDI Channel") {
+                parsed.unwrap();
+            } else {
+                assert!(parsed.is_err(), "must be corrupt: {text:?}");
+            }
+        }
+        // Through real files too (missing file is the same `None`).
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(SongSettings::load(&tmp.path().join("nope.cfg")).is_none());
+        let bad = tmp.path().join("bad.cfg");
+        std::fs::write(&bad, "[Global] trailing\npitch=0\n").unwrap();
+        assert!(SongSettings::load(&bad).is_none());
+    }
+
+    /// P10b: invalid channel values read as the C++ getter-failure defaults
+    /// (bools `false`, `patch` 0, `name`/`level` untouched) — same as missing,
+    /// never an error, never a partial apply of the valid siblings.
+    #[test]
+    fn invalid_channel_values_read_as_defaults() {
+        let s = SongSettings::parse(
+            "[MIDI Channel  4]\n\
+             name=bad\\qescape\n\
+             muted=True\n\
+             solo=yes\n\
+             locked=2\n\
+             patch=12x\n\
+             level=high\n\
+             \n\
+             [MIDI Channel  5]\n\
+             muted=true\n\
+             solo=1\n\
+             locked=0\n\
+             patch=99999999999999999999\n\
+             level=0\n",
+        )
+        .unwrap();
+        let ch = s.channels[3].as_ref().unwrap();
+        assert_eq!(ch.name, None);
+        assert!(!ch.muted && !ch.solo && !ch.locked);
+        assert_eq!(ch.patch, 0);
+        assert_eq!(ch.level, None);
+        // Valid bools still apply next to an overflowing patch and a zero
+        // level (zero level = untouched, C++ `if (lvl)`).
+        let ch = s.channels[4].as_ref().unwrap();
+        assert!(ch.muted && ch.solo && !ch.locked);
+        assert_eq!(ch.patch, 0);
+        assert_eq!(ch.level, None);
+        assert_eq!(ch.name, None);
+    }
+
+    /// P10b/A11: unknown keys INSIDE a known channel group survive
+    /// load→save verbatim (the T8 fixture only pinned unknowns in
+    /// `[Global]` and in whole-unknown groups).
+    #[test]
+    fn unknown_keys_inside_channel_groups_preserved() {
+        let s = SongSettings::parse(
+            "[Global]\n\
+             pitch=1\n\
+             \n\
+             [MIDI Channel  2]\n\
+             name=Bass\n\
+             muted=false\n\
+             solo=false\n\
+             locked=false\n\
+             patch=33\n\
+             level=90\n\
+             vendorBlob=raw\\;bytes\\s\\tkept\n",
+        )
+        .unwrap();
+        assert_eq!(s.channels[1].as_ref().unwrap().patch, 33);
+        let disk = s.to_data();
+        assert!(
+            disk.contains("vendorBlob=raw\\;bytes\\s\\tkept\n"),
+            "unknown channel key kept verbatim: {disk}"
+        );
+        // Stable across a second round trip.
+        let s2 = SongSettings::parse(&disk).unwrap();
+        assert_eq!(s2, s);
+        assert_eq!(s2.to_data(), disk);
+    }
+
+    /// P10b: channel names with escapes, separators, and unicode round-trip
+    /// byte-stably (scalar escaping must be total over user-typed names).
+    #[test]
+    fn tricky_channel_names_round_trip_byte_stable() {
+        let names = [
+            "  lead",
+            "trail ",
+            "a;b",
+            "a\\b",
+            "a\\;b",
+            "back\\",
+            "line\nbreak",
+            "tab\there",
+            "cr\rb",
+            "café 中 🎹",
+            "=hash#semi;",
+            "",
+        ];
+        for name in names {
+            let mut s = SongSettings::empty();
+            s.channels[6] = Some(SongChannelSettings {
+                name: Some(name.to_string()),
+                muted: false,
+                solo: false,
+                locked: false,
+                patch: 0,
+                level: Some(100),
+            });
+            let disk = s.to_data();
+            let back = SongSettings::parse(&disk).unwrap();
+            assert_eq!(
+                back.channels[6].as_ref().unwrap().name,
+                Some(name.to_string()),
+                "name {name:?} must survive"
+            );
+            assert_eq!(back.to_data(), disk, "name {name:?} must be byte-stable");
+        }
+    }
 }

@@ -187,6 +187,28 @@ pub enum FinishAction {
 
 /// Pure end-of-song policy: the `onFinished` tree with the engine calls left
 /// to the caller (`app.rs`).
+///
+/// Loop interplay (P10b, verified against `player.cpp:452-526`): the loop
+/// leg lives ENTIRELY engine-side — a capturing loop re-jumps inside
+/// `playerLoop`/`play` and `Finished` never fires, so the repeat policy
+/// below is unreachable while the loop captures. Consequences, all pinned
+/// engine-side (`loop_rejump_replays_and_skips_past_end`,
+/// `loop_degenerate_range_still_recaptures`):
+/// * Loop ON + any range + beats present → infinite loop, no `Finished`,
+///   repeat/auto-advance never consulted. Even degenerate ranges (start/end
+///   past the last bar) recapture: `jump_to_bar` lands on the nearest beat
+///   (`sequence.cpp:174-187`), so `hasMoreEvents` holds and the song never
+///   exhausts. Range-independence is the point — composition must NOT gate
+///   this policy on `loop_enabled`.
+/// * Loop ON + beat-less song → the loop cannot anchor (`jumpToBar`
+///   returns null, the cursor stays exhausted) and `Finished` DOES fire;
+///   the policy below runs normally. Real song loads always synthesize
+///   beats, so this leg is theoretical — but it proves the policy must run
+///   ungated: `Finished` arrival itself proves the loop did not capture.
+/// * Loop OFF → `Finished` fires at exhaustion; the policy below decides.
+///
+/// `app.rs::on_finished` therefore calls this unconditionally — correct in
+/// every cell of the loop × repeat matrix by construction.
 pub fn finish_action(repeat: RepeatMode, auto_advance: bool, at_last: bool) -> FinishAction {
     if repeat == RepeatMode::Song {
         return FinishAction::RepeatSong;

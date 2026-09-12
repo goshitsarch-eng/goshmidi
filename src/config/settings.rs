@@ -1301,4 +1301,96 @@ mod tests {
         narrowed.commit_prefs_dialog(&scratch);
         assert_eq!(narrowed, scratch);
     }
+
+    /// P10b: constructed (not parsed) full settings — all 30 keys non-default
+    /// incl. a 10-deep MRU with separators, unicode, and leading spaces —
+    /// must survive `to_data → parse → to_data` byte-identically.
+    #[test]
+    fn constructed_full_settings_save_load_is_byte_identical() {
+        let mut s = Settings::new();
+        s.last_directory = "/home/u/MÜSIC\nlive".to_string();
+        s.last_output_backend = "ALSA".to_string();
+        s.last_output_connection = "129:0".to_string();
+        s.last_play_list = "gig/set 2.lst".to_string();
+        s.sound_font = "/home/u/sf/My GM.sf3".to_string();
+        s.language = "pt_BR".to_string();
+        s.drums_channel = 1;
+        s.solo_volume_reduction = 0;
+        s.auto_play = false;
+        s.auto_advance = false;
+        s.auto_song_settings = true;
+        s.advanced_ports = true;
+        s.sysex_reset = 4;
+        s.instrument_map = 2;
+        s.highlight_palette = 0;
+        s.velocity_color = false;
+        s.octave_subscript = true;
+        s.names_visibility = 3;
+        s.lyrics_font = "Serif Italic 9".to_string();
+        s.notes_font = "Mono 7".to_string();
+        s.future_color = "rgb(1,2,3)".to_string();
+        s.past_color = "#000000".to_string();
+        s.single_color = "#ffffff".to_string();
+        s.highlight_color = "#123456".to_string();
+        s.text_alignment = 2;
+        s.window_width = 800;
+        s.window_height = 600;
+        s.playlist_visible = false;
+        s.repeat_mode = 1;
+        s.recent_files = vec![
+            "/e/café.mid".to_string(),
+            "/b/two;live.kar".to_string(),
+            "/c/ lead.mid".to_string(),
+            "trail\\slash.rmi".to_string(),
+            "/n/new\nline.wrk".to_string(),
+            "r.lst".to_string(),
+            "/s/tab\there.mid".to_string(),
+            "/h/#hash.mid".to_string(),
+            "/q/=equals.mid".to_string(),
+            "/z/last.mid".to_string(),
+        ];
+        let disk = s.to_data();
+        // All 30 known keys serialized (C++ order starts with lastDirectory,
+        // ends with recentFiles).
+        assert!(disk.starts_with("[General]\nlastDirectory="));
+        assert!(disk.contains("\nrecentFiles="));
+        let mut back = Settings::new();
+        back.load_from_str(&disk).unwrap();
+        assert_eq!(back, s);
+        assert_eq!(back.to_data(), disk, "save→load must be byte-identical");
+    }
+
+    /// `load_file` error contract: missing / non-UTF-8 / structurally corrupt
+    /// files return `Err` and leave `self` untouched (`settings.cpp:79-84`);
+    /// only `load()` folds that into fresh defaults.
+    #[test]
+    fn load_file_errors_leave_self_untouched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("nope.conf");
+        let corrupt = tmp.path().join("corrupt.conf");
+        std::fs::write(&corrupt, "[General] trailing\nlanguage=de\n").unwrap();
+        let binary = tmp.path().join("binary.conf");
+        std::fs::write(&binary, [0xff, 0xfe, 0x0a]).unwrap();
+        for path in [&missing, &corrupt, &binary] {
+            let mut s = Settings::new();
+            s.language = "keep".to_string();
+            s.drums_channel = 3;
+            s.recent_files = vec!["/keep.mid".to_string()];
+            let err = s.load_file(path).expect_err("must fail");
+            assert!(!err.message.is_empty());
+            assert_eq!(s.language, "keep");
+            assert_eq!(s.drums_channel, 3);
+            assert_eq!(s.recent_files, vec!["/keep.mid".to_string()]);
+        }
+        // The success path applies onto `self` (per-key failures keep
+        // current, recents reset like C++).
+        let good = tmp.path().join("good.conf");
+        std::fs::write(&good, "[General]\nlanguage=de\ndrumsChannel=xx\n").unwrap();
+        let mut s = Settings::new();
+        s.recent_files = vec!["/old.mid".to_string()];
+        s.load_file(&good).unwrap();
+        assert_eq!(s.language, "de");
+        assert_eq!(s.drums_channel, 10);
+        assert!(s.recent_files.is_empty());
+    }
 }

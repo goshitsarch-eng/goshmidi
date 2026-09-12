@@ -2910,6 +2910,82 @@ mod tests {
         assert_eq!(engine.position(), 0);
     }
 
+    /// P10b loop × repeat, range-independence leg: a loop range entirely
+    /// past the last bar STILL recaptures — `jump_to_bar` lands on the
+    /// nearest beat (`sequence.cpp:174-187`), so `hasMoreEvents` holds and
+    /// `Finished` never fires. The repeat policy is unreachable for EVERY
+    /// range while beats exist, not just in-range ones (C++ `playerLoop`
+    /// `do/while`, `player.cpp:511-517` — same algorithm, same result).
+    #[test]
+    fn loop_degenerate_range_still_recaptures() {
+        let (mut engine, _) = test_engine();
+        let mut song = song_base();
+        song.events.push(at_tick(make_beat(1, 1, 4), 0, 0));
+        song.events.push(at_tick(make_beat(2, 1, 4), 120, 120));
+        song.events.push(at_tick(make_beat(3, 1, 4), 240, 120));
+        engine.install_song(song);
+        run_cmd(
+            &mut engine,
+            EngineCommand::SetLoop {
+                enabled: true,
+                start: 99,
+                end: 100,
+            },
+        );
+
+        let (mut cmds, mut sink) = trip_pair(5, is_beat, EngineCommand::Stop { reset: false });
+        let outcome = engine.play(&mut cmds, &mut sink);
+        assert_eq!(outcome, Some(PlaybackOutcome::Stopped));
+        // One full pass (no beat trips `a > 100`), then the re-jump lands
+        // on the last beat and replays bar 3 until the stop lands.
+        let bars: Vec<u32> = sink
+            .events
+            .iter()
+            .filter_map(|ev| match ev {
+                PlayerEvent::Beat { bar, .. } => Some(*bar),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(bars, vec![1, 2, 3, 3, 3]);
+        assert!(!sink.events.contains(&PlayerEvent::Finished));
+        assert_eq!(sink.events.last(), Some(&PlayerEvent::Stopped));
+    }
+
+    /// P10b loop × repeat, non-capturing leg: with loop ON but no beats in
+    /// the song, `jump_to_bar` returns null, the cursor stays exhausted,
+    /// and `Finished` DOES fire (`player.cpp:511-526` — the `while`
+    /// re-check sees no more events). Real loads always synthesize beats
+    /// (`insertBeatsToEnd` runs at least once), so this leg is theoretical —
+    /// it pins WHY composition runs the repeat policy ungated: `Finished`
+    /// arrival itself proves the loop did not capture.
+    #[test]
+    fn loop_without_beats_still_finishes() {
+        let (mut engine, _) = test_engine();
+        let mut song = song_base();
+        song.events.push(at_tick(make_tempo(500_000.0), 0, 0));
+        engine.install_song(song);
+        run_cmd(
+            &mut engine,
+            EngineCommand::SetLoop {
+                enabled: true,
+                start: 1,
+                end: 4,
+            },
+        );
+        assert!(engine.loop_enabled());
+
+        let mut events = Vec::new();
+        let outcome = engine.play(&mut VecDeque::new(), &mut events);
+        assert_eq!(outcome, Some(PlaybackOutcome::Ended));
+        assert!(
+            events
+                .iter()
+                .any(|ev| matches!(ev, PlayerEvent::Tempo { .. }))
+        );
+        assert!(events.contains(&PlayerEvent::Stopped));
+        assert_eq!(events.last(), Some(&PlayerEvent::Finished));
+    }
+
     #[test]
     fn reset_position_vs_seek_beat_cursor() {
         // A1: ResetPosition rewinds cursor + ticks + beat cursor; SeekTicks
