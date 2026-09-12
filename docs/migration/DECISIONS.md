@@ -21,6 +21,8 @@ simplicity/maintainability > COSMIC conventions.
 - Choice: (a), re-evaluate if a COSMIC runtime ships on Flathub.
 - Why: shippable today everywhere; QA must verify non-COSMIC desktops, which
   a COSMIC-only runtime would undermine.
+- Note: version amended by D16 — runtime is now 25.08 (24.08 rustc 1.89 is
+  below libcosmic MSRV 1.93). The freedesktop-over-COSMIC choice stands.
 
 ## D3. Binary and config identity
 
@@ -59,6 +61,14 @@ simplicity/maintainability > COSMIC conventions.
 - Choice: (a), with portal-delivered paths accepted everywhere.
 - Why: preserves the observable `HANDLES_OPEN` contract including CLI and
   MIME launches outside a portal context.
+
+## D8. Task granularity and DoD gating
+
+- Options: (a) walking skeleton first so full DoD (incl. Flatpak + smoke)
+  applies from T1; (b) core-first, Flatpak later with DoD waivers.
+- Choice: (a).
+- Why: unwaived DoD keeps every commit shippable and reviewable; waivers
+  would hide sandbox regressions until late.
 
 ## D9. Persistence backend — U13 contradiction (ux `cosmic-config` vs arch GKeyFile INI)
 
@@ -109,10 +119,60 @@ simplicity/maintainability > COSMIC conventions.
   records the legacy gresource-prefix grandfathering.
 - Why: bisected history stays green; retirement is explicit, not rot.
 
-## D8. Task granularity and DoD gating
+## D15. lyricsFont dead-CSS ruling (T0 arch spike report §5, empirical GTK probe)
 
-- Options: (a) walking skeleton first so full DoD (incl. Flatpak + smoke)
-  applies from T1; (b) core-first, Flatpak later with DoD waivers.
-- Choice: (a).
-- Why: unwaived DoD keeps every commit shippable and reviewable; waivers
-  would hide sandbox regressions until late.
+- Question: C++ `font: Sans 16` is invalid CSS (GtkCssProvider drops it —
+  empirically probed), so the default `lyricsFont` never applies; only
+  `16pt Sans`-shaped input works. FIX (parse + apply per T0 font spec) or
+  PRESERVE (store-only quirk)?
+- Choice: FIX — parse per spec (trailing size, px/pt rules, keyword set,
+  family remainder, Sans fallback) and apply; default `Sans 16` renders as
+  16pt Sans.
+- Why: D11 framework — the ux D2 Preferences row's evident intent is a working font setting;
+  a no-op default is a trap, and the quirk is a GTK-CSS accident, not
+  behavior. Tested per spec incl. divergent `12px` vs `12pt` cases.
+
+## D16. T0 pins (arch probe `cargo check` green; vendoring mechanism proven on synthetic probe)
+
+- libcosmic git rev `7e82198ab1aba712640b0167e58ad37bf03012ca` (master
+  2026-09-11); pop-os/iced submodule `87e1787fbb9b924576e6f6ea2ef2f45d0729e63d`
+  (iced 0.14.0, iced_widget 0.14.2); features `about` (non-default, required),
+  `single-instance`, `xdg-portal` + defaults. NEVER `rfd` + `xdg-portal`
+  together (duplicate definitions, source-verified).
+- MSRV/`rust-version = "1.93"` (libcosmic floor); CI/local toolchain 1.98.1
+  (`rust-toolchain.toml`); Flatpak runtime **25.08** (24.08 rustc 1.89 is
+  below the floor — amends D2's version and packaging.md §1.2).
+- Crates: `alsa 0.12`, `chardetng 1`, `encoding_rs 0.8`, `url 2.5`,
+  `tempfile` (dev); hand-written FluidSynth FFI (crate rejected as
+  abandonware); hand-rolled GKeyFile INI; ashpd via `cosmic::dialog::ashpd`
+  re-export; no direct rfd/zbus/tokio/dirs/serde. `--locked` from T1.
+- flatpak-cargo-generator pinned rev `1fc32195e3e60fe5c97f0af646dec7a99df5962b`,
+  vendored at `flatpak/`; regen `python3 flatpak/flatpak-cargo-generator.py
+  Cargo.lock -o flatpak/cargo-sources.json`. Never `--git-tarballs`
+  (submodules). Mechanism proven on a synthetic git+submodule probe build;
+  real-rev (libcosmic+iced) vendoring + offline check happen in T1.
+- Widget verdicts: all cited paths compile/source-verified incl. `spin_button`
+  (no `number_input`), `color_picker`, `text::Rich/Span` (no `rich_text`
+  module, though `iced::widget::rich_text()`/`span()` helper fns exist),
+  `menu::Tree` (no `MenuTree`), `nav_bar::Model`, tooltip CLEARED,
+  `cosmic::app::toaster` MISSING (use `widget::toaster`); iced checkbox is
+  1-arg `checkbox(bool).label()`.
+- `run_single_instance` verified (`Flags: CosmicFlags`, `Message:
+  Clone+Debug+Send+'static`, `dbus_activation` hook,
+  `COSMIC_SINGLE_INSTANCE=false` escape); file_chooser portal verified
+  (`FileFilter` glob/mimetype,
+  `Error::Cancelled`, `Url` results; open-dialog initial dir/file_name are
+  dead upstream — D1 `lastDirectory` wiring blocked, save names OK).
+- DnD: X11 `FileDropped` subscription + Wayland `dnd_destination`
+  (`text/uri-list` parsed manually, sandboxed `file_transfer`); portal
+  chooser stays primary; runtime-confirm COSMIC Wayland drags in T10.
+- Parsers: color = hand-rolled `gdk_rgba_parse` parity (~80 lines, NOT
+  css-color); font = T0 empirical spec. Both with rejection tests.
+
+## D17. D2 color rows — `color_picker` vs text-only (T0 verdict was "evaluate", T11 needs a ruling)
+
+- Options: (a) `widget::color_picker` bound to the text field (text stays
+  source of truth, `gdk_rgba_parse` parity); (b) text + swatch only.
+- Choice: (a), with fallback to (b) if T11 integration misbehaves.
+- Why: COSMIC-idiomatic picker with a parity-safe text path; the probe
+  compiled `ColorPickerModel::new`, so (a) is worth attempting first.

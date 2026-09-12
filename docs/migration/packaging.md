@@ -43,7 +43,7 @@ New file (Phase 2+): `flatpak/com.goshapps.GoshMIDI.yml`.
 ```yaml
 app-id: com.goshapps.GoshMIDI
 runtime: org.freedesktop.Platform
-runtime-version: "24.08"
+runtime-version: "25.08"
 sdk: org.freedesktop.Sdk
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
@@ -65,9 +65,14 @@ modules:
 
 ### 1.2 Runtime choice: org.freedesktop vs COSMIC
 
-- **Default: `org.freedesktop.Platform` + SDK `24.08`.** Available today on
+- **Default: `org.freedesktop.Platform` + SDK `25.08`.** Available today on
   Flathub and everywhere; libcosmic apps build and run fine on it (COSMIC
   apps are Wayland clients with no hard dependency on a COSMIC host).
+  T0 pack-spike correction: `24.08` ships rustc 1.89, which is below the
+  libcosmic MSRV 1.93 (DECISIONS D16); `25.08` ships rustc 1.98.1
+  (matching `rust-toolchain.toml`; T0 `rust-ext-25.08.json` evidence pins
+  rust 1.98.1 for branch 25.08 — exact SDK point release re-confirmed
+  in T1).
 - **COSMIC runtime (`org.cosmic.Platform`, if published):** prefer only once
   it is installable from Flathub alongside the freedesktop runtime, and only
   if it demonstrably shrinks the bundle or fixes theming. It must never be
@@ -86,6 +91,19 @@ modules:
 - Every cargo invocation uses `--locked` from the first Rust task on (T1,
   P5). `Cargo.lock` is committed; libcosmic rev and every crate version are
   pinned in T0 and recorded in DECISIONS.
+- Crate pins (T0, full table in DECISIONS D16; re-verified 2026-09-12
+  via the crates.io API **with a `User-Agent` header** — bare curl
+  returns empty, and the two T0 `/tmp` fetch artifacts
+  (`alsa-Cargo.toml`, `file_chooser.rs`) contain only `404: Not Found`
+  from headerless fetches): libcosmic git rev `7e82198` + pop-os/iced
+  submodule `87e1787` (features `about`, `single-instance`,
+  `xdg-portal`); `alsa 0.12.1` (2026-07-31), `chardetng 1.0.0`
+  (2026-03-30, rust 1.40), `encoding_rs 0.8.41` (2026-09-09, rust
+  1.88), `url 2.5.8` (2026-01-05), `tempfile 3.27.0` (2026-03-11,
+  dev); MSRV `rust-version = "1.93"`. `fluidsynth` crate **rejected
+  as abandonware** (verified: single release `0.0.1`, 2018-08-26)
+  → hand-written FluidSynth FFI against `libfluidsynth-dev`
+  (bindgen-free, no libclang). No direct rfd/zbus/tokio/dirs/serde.
 - flatpak-builder runs the build **offline**, so all crates — including
   **git dependencies** — must be vendored:
   1. `cargo vendor vendor/` (plain crates) or, preferred for Flatpak,
@@ -107,7 +125,22 @@ modules:
      script and `diff` against the committed file; fail on drift (see §2.4).
 - Regeneration command (documented for maintainers, run on dependency change):
   `python3 flatpak/flatpak-cargo-generator.py Cargo.lock -o
-  flatpak/cargo-sources.json` (upstream rev pinned per DECISIONS).
+  flatpak/cargo-sources.json`. Generator is pinned at upstream rev
+  `1fc32195e3e60fe5c97f0af646dec7a99df5962b`, vendored at `flatpak/`
+  (DECISIONS D16).
+- **Never `--git-tarballs`** — codeload tarballs exclude submodules and
+  would break the libcosmic → pop-os/iced dep chain. Rationale is from
+  code reading only (generator `fetch_git_repo` + flatpak-builder
+  `builder-git.c` submodule handling); unproven end-to-end until T1 runs
+  the generator against a submodule-bearing dep. Use the default
+  archive-source mode.
+- T0 pack-spike probe evidence: vendoring **mechanism proven on a
+  synthetic git+submodule pair only** — toy `cfg-if` https git dep plus
+  a local `file://` outer/inner submodule fixture, `cargo vendor` →
+  `--offline --locked` with clean `CARGO_HOME` (PASS). The pinned
+  libcosmic rev + iced submodule were never vendored or offline-checked
+  in T0, and the generator never ran against a submodule-bearing dep;
+  real-rev vendoring happens in T1.
 
 ### 1.4 Minimal finish-args (audio)
 
@@ -322,17 +355,31 @@ Keep the existing CMake job untouched during migration; add a parallel
    (`dtolnay/rust-toolchain` at the pinned toolchain + clippy).
 3. Install system deps (P4b). CMake job keeps its current set
    (`libgtk-4-dev libadwaita-1-dev` only while it still builds). The `cosmic`
-   job needs, beyond `cmake g++ pkg-config`: audio (`libasound2-dev`,
-   `libfluidsynth-dev`; no `libuchardet-dev` — the Rust port uses
-   chardetng/encoding_rs) + iced/libcosmic/wgpu stack (`libwayland-dev`,
-   `libxkbcommon-dev`, `libvulkan-dev`, `libgl1-mesa-dev`,
-   `libfontconfig1-dev`, `libfreetype6-dev`, X11 fallback headers). Trim or
-   extend from actual link errors in T1 and record the final list here.
+   job needs this full enumerated Debian set (**preliminary — derived,
+   not build-logged; finalizes when the T1 CI install goes green**):
+   `pkg-config cmake g++ libasound2-dev libfluidsynth-dev libwayland-dev
+   libxkbcommon-dev libfontconfig-dev libfreetype-dev libexpat1-dev` plus
+   generator tooling `python3 python3-aiohttp python3-tomlkit`. No
+   `libuchardet-dev` (the Rust port uses chardetng/encoding_rs). No
+   `libvulkan-dev`/`libgl1-mesa-dev`/X11 headers — no wgpu initially. No
+   `libclang` (bindgen-free: hand-written FluidSynth FFI, D16).
+   Derivation sources: libcosmic README "Dependencies" section
+   (`https://github.com/pop-os/libcosmic` — `cargo cmake just
+   libexpat1-dev libfontconfig-dev libfreetype-dev libxkbcommon-dev
+   pkgconf`) + libcosmic CI workflow
+   (`https://github.com/pop-os/libcosmic/tree/master/.github/workflows`
+   — `libxkbcommon-dev libwayland-dev`) + `alsa-sys` pkg-config need
+   (`libasound2-dev`) + FluidSynth headers (`libfluidsynth-dev`).
+   No apt/dpkg or clean-room build log exists for the exact set yet.
+   NOTE: package names are `libfontconfig-dev`/`libfreetype-dev` on current
+   Debian/Ubuntu — the old `libfontconfig1-dev`/`libfreetype6-dev` names are
+   wrong here. Trim or extend from actual link errors in T1 and record the
+   final list here.
 4. Cache `~/.cargo` keyed on `Cargo.lock`.
 5. Run `sh scripts/verify.sh` (fast tier, identity check, vendoring-freshness
    diff with the vendored generator).
 6. Flatpak job (separate, needs Flatpak action): install SDK
-   (`org.freedesktop.Sdk//24.08`, rust-stable extension), `flatpak-builder
+   (`org.freedesktop.Sdk//25.08`, rust-stable extension), `flatpak-builder
    --force-clean`, then in-sandbox `scripts/smoke.sh` (incl. P6 examples
    assertion and headless-flag checks with no display).
 

@@ -136,7 +136,7 @@ Ownership: ux = view/widget modules + ux.md; arch = core/state/config +
 architecture.md; pack = flatpak/ tests/ scripts/ + packaging.md;
 lead = PLAN/DECISIONS/REPORT + glue.
 
-- [ ] T0 Pin + API spike (arch+pack+ux, blocks all UI tasks): pin libcosmic
+- [x] T0 Pin + API spike (arch+pack+ux, blocks all UI tasks): pin libcosmic — DONE (both spikes green, pins in D16, parser specs in arch §2.6, devil SIGN-OFF, no repo code touched)
       rev, toolchain/MSRV, every crate (P5); compile-verify each cited widget
       path (`spin_button` not `number_input`, `color_picker`, about/dialog/
       menu/nav/settings/tab/segmented/text_editor/toaster/toggler/dropdown/

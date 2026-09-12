@@ -22,7 +22,7 @@ places where iced/libcosmic has no 1:1 widget.
 
 | ID | GTK implementation | Behavior | libcosmic equivalent |
 |---|---|---|---|
-| W1 Main window | `AdwApplicationWindow`, `src/ui/window.cpp:1461-1469`, default size from settings (`windowWidth` 1100 x `windowHeight` 720). NOT saved today: the destructor save (`window.cpp:272-284`) is dead code — `main.cpp` allocates `MainWindow` with `new` and never deletes it, so size + `repeatMode` are silently lost on quit. Lead ruling: FIX — save size + `repeatMode` on `close-request` (PLAN T8) | Single window. Title `Gosh MIDI Player — <file>` on song load (`window.cpp:387-388`), else `Gosh MIDI Player`. Single-instance via `G_APPLICATION_HANDLES_OPEN` (`src/main.cpp:108-114`): `activate` presents, `open` loads paths then presents. Whole-window drag-drop (`GtkDropTarget` `GDK_TYPE_FILE_LIST`, `window.cpp:2130-2132`, handler `window.cpp:80-100`): accepted suffixes = supported MIDI + `.lst`; drop replaces playlist (`openFiles(paths, true)`). Content = `AdwToastOverlay` > `AdwOverlaySplitView` (sidebar fraction 0.28) | `cosmic::Application` single window + `run_single_instance`-style guard. Header bar via `cosmic::widget::header_bar`. Layout: `row` with collapsible playlist pane (COSMIC convention: `nav_bar`/`NavBarModel`, or a `container` sidebar with toggle) + main `column`. Persist size in the same GKeyFile INI config (`architecture.md` §4). Title = app name + current file. DnD: iced has no stable system-file-drop on all backends; T0 spike must deliver a verdict on `dnd_source`/`dnd_destination` (or iced file-drop subscription) support. Closest faithful = file-drop where the spike says it works, else prominent Open/Add buttons (keep portal chooser as primary path). |
+| W1 Main window | `AdwApplicationWindow`, `src/ui/window.cpp:1461-1469`, default size from settings (`windowWidth` 1100 x `windowHeight` 720). NOT saved today: the destructor save (`window.cpp:272-284`) is dead code — `main.cpp` allocates `MainWindow` with `new` and never deletes it, so size + `repeatMode` are silently lost on quit. Lead ruling: FIX — save size + `repeatMode` on `close-request` (PLAN T8) | Single window. Title `Gosh MIDI Player — <file>` on song load (`window.cpp:387-388`), else `Gosh MIDI Player`. Single-instance via `G_APPLICATION_HANDLES_OPEN` (`src/main.cpp:108-114`): `activate` presents, `open` loads paths then presents. Whole-window drag-drop (`GtkDropTarget` `GDK_TYPE_FILE_LIST`, `window.cpp:2130-2132`, handler `window.cpp:80-100`): accepted suffixes = supported MIDI + `.lst`; drop replaces playlist (`openFiles(paths, true)`). Content = `AdwToastOverlay` > `AdwOverlaySplitView` (sidebar fraction 0.28) | `cosmic::Application` single window + `run_single_instance`-style guard. Header bar via `cosmic::widget::header_bar`. Layout: `row` with collapsible playlist pane (COSMIC convention: `nav_bar::Model` — a `segmented_button::SingleSelectModel` alias (there is no `NavBarModel`) — or a `container` sidebar with toggle) + main `column`. Persist size in the same GKeyFile INI config (`architecture.md` §4). Title = app name + current file. DnD verdict (T0): X11 window `FileDropped` subscription + Wayland `dnd_destination` with manual `text/uri-list` parsing + sandboxed `file_transfer`; portal chooser stays primary; COSMIC Wayland runtime-confirm in T10. Drop replaces playlist (`openFiles(paths, true)`) where the backend supports it, else prominent Open/Add buttons. |
 
 Screenshot reconstruction from code: left playlist sidebar with bottom icon
 toolbar; right side has a transport header bar, a dark rounded dashboard
@@ -34,10 +34,10 @@ line at the bottom. Toasts overlay everything.
 
 | ID | GTK implementation | Contents & behavior | libcosmic equivalent |
 |---|---|---|---|
-| D1 Open MIDI files | `GtkFileDialog:open_multiple`, `window.cpp:710-747`, title `Open MIDI files`, filter `MIDI / Karaoke / Cakewalk / Playlist`: `*.mid *.midi *.kar *.rmi *.wrk *.lst` | Multi-select. Result → `openFiles(paths, true)` (replace playlist; single `.lst` → playlist load, `window.cpp:351-370`). No explicit initial-folder wiring (relies on portal/GTK default; `lastDirectory` is updated on load but not passed to the dialog). | Portal file chooser (`ashpd`/`rfd` multi-select) with same 6 filters. COSMIC convention: dialog invoked from header-bar Open + playlist Add. Wire `lastDirectory` as initial folder (small improvement, keeps parity). |
-| D2 Preferences | `AdwPreferencesWindow`, `window.cpp:1189-1359`, transient for main, 3 pages, save-on-`close-request` (`window.cpp:1310-1340`): applies drums channel, SysEx reset, instrument map, lyrics refresh, `AppSettings::save()` | General page (7 rows): Percussion MIDI channel spin 1–16; Solo % reduction spin 0–100; `Start playback after loading` switch; `Advance to next playlist item` switch; `Automatically load and save song settings` switch; SysEx Reset combo (None/GM/GS SC-55/XG/MT-32); Instrument map combo (GM/GS SC-55/MT-32). Lyrics page (5 rows): Future/Past/Highlight color entries (free text parsed by `gdk_rgba_parse`, `window.cpp:39-44`: `#rgb`/`#rrggbb` + alpha variants, `rgb()/rgba()`, CSS named colors; garbage falls back to gray); Lyrics font entry (`Sans 16`); alignment combo (Left/Center/Right). Piano page (5 rows): Note highlighting combo (Single/Double/Channels/Scale); Single highlight color entry; velocity→tint switch; note-names combo (Never/Minimal/When activated/Always); octave-subscript switch. No Reset/Cancel: closing commits. | COSMIC settings window: `tab_bar` or `segmented_button` with General/Lyrics/Piano sections built from `cosmic::widget::settings::section` + `spin_button`, `toggler`, `dropdown`, `text_input` rows. Commit-on-close is KEPT (lead ruling — do NOT switch to commit-on-change); `soloVolumeReduction` applies at close along with the other General rows. Color rows: `text_input` + swatch; libcosmic HAS `widget::color_picker` — evaluate it in T0. Parser parity required: accept the same set as `gdk_rgba_parse` (hex, `rgb()/rgba()`, named colors) with gray fallback on failure, plus tests. Font rows: `text_input` (no Pango font picker; document as gap). Font-string spec: parse Pango `<family> [style] <size>` (e.g. `Sans 16`); on parse failure fall back to system sans at the default size; tests. |
-| D3 MIDI Setup | Modal `GtkWindow` 480x420, `window.cpp:929-1187`, transient+modal, destroyed on Apply; state held in local `Widgets` struct | Widgets in order: Output backend `GtkDropDown` (`backendNames()`); `Show all ports` check + `Refresh ports` button; Connection `GtkDropDown` (label list, id carried separately); Instrument map dropdown (GM/GS/MT-32); SysEx reset dropdown (`sysexResetName(0..4)`); SoundFont entry (hexpand, placeholder `Optional: your GM, MT-32, or SC-55 SoundFont`) + `Browse…` (opens D11); dim status label (wrap); button row right-aligned: `Test note` + `Apply` (suggested). Logic: `refillFn` rebuilds port list on backend/`Show all`/Refresh; preselects current/saved port by id-or-substring; empty → status `No destinations. Start mt32emu-qt (Munt) or Nuked-SC55, then Refresh.`; port change auto-sets map+reset via `inferDeviceProfile(label)`; Test: saves SoundFont, `connectOutput(backend, portId)`, sends Middle C ch1 96 for 400 ms, status `Sent Middle C on channel 1` / `No MIDI output`; Apply: saves soundFont/advancedPorts/map/reset, `setSysexReset`, `setSoundFont`, `connectOutput`, `applyInstrumentMap`, `save()`, destroy. | Modal `cosmic::widget::dialog` with same field order and button row. Backend/connection/map/reset → `dropdown`. `Show all ports` → `checkbox`; Refresh → `button`. SoundFont → `text_input` + Browse button. Status → dim `text`. Keep refill + profile-inference + test-note + suggested-Apply semantics exactly. Backend names come from the Rust MIDI layer (ALSA/FluidSynth/Dummy equivalents). |
-| D4 About | `AdwAboutDialog`, `window.cpp:884-920` | App name `Gosh MIDI Player`, icon `com.goshapps.GoshMIDI`, version `VERSION`, developer `Pedro López-Cabanillas`, copyright `© 2006–2026 …`, license GPL-3.0, website `github.com/goshitsarch-eng/goshmidi`, support `dmidiplayer.sourceforge.io`, issues `…/goshmidi/issues`, comments noting GTK4 rewrite + original + `dmidiplayer` command/settings compat, developers list (original + contributors), credit section `Original application`, 3 links (SourceForge, GitHub, docs). | `cosmic::widget::about`-style dialog (or `dialog` with `about` content): same strings/links. COSMIC convention: About lives in app menu footer. |
+| D1 Open MIDI files | `GtkFileDialog:open_multiple`, `window.cpp:710-747`, title `Open MIDI files`, filter `MIDI / Karaoke / Cakewalk / Playlist`: `*.mid *.midi *.kar *.rmi *.wrk *.lst` | Multi-select. Result → `openFiles(paths, true)` (replace playlist; single `.lst` → playlist load, `window.cpp:351-370`). No explicit initial-folder wiring (relies on portal/GTK default; `lastDirectory` is updated on load but not passed to the dialog). | Portal file chooser (`ashpd` multi-select over xdg-portal; NEVER `rfd`) with same 6 filters. COSMIC convention: dialog invoked from header-bar Open + playlist Add. T0 BLOCKED: `lastDirectory`-as-initial-folder is blocked upstream — open-dialog `directory`/`file_name` builders are dead (`#[allow(dead_code)]`, ignored); save-dialog initial names work. Keep carrying `lastDirectory` until upstream fixes open. |
+| D2 Preferences | `AdwPreferencesWindow`, `window.cpp:1189-1359`, transient for main, 3 pages, save-on-`close-request` (`window.cpp:1310-1340`): applies drums channel, SysEx reset, instrument map, lyrics refresh, `AppSettings::save()` | General page (7 rows): Percussion MIDI channel spin 1–16; Solo % reduction spin 0–100; `Start playback after loading` switch; `Advance to next playlist item` switch; `Automatically load and save song settings` switch; SysEx Reset combo (None/GM/GS SC-55/XG/MT-32); Instrument map combo (GM/GS SC-55/MT-32). Lyrics page (5 rows): Future/Past/Highlight color entries (free text parsed by `gdk_rgba_parse`, `window.cpp:39-44`: `#rgb`/`#rrggbb` + alpha variants, `rgb()/rgba()`, CSS named colors; garbage falls back to gray); Lyrics font entry (`Sans 16`); alignment combo (Left/Center/Right). Piano page (5 rows): Note highlighting combo (Single/Double/Channels/Scale); Single highlight color entry; velocity→tint switch; note-names combo (Never/Minimal/When activated/Always); octave-subscript switch. No Reset/Cancel: closing commits. | COSMIC settings window: `tab_bar` or `segmented_button` with General/Lyrics/Piano sections built from `cosmic::widget::settings::section` + `spin_button`, `toggler`, `dropdown`, `text_input` rows (T0: `toggler` is a private mod — use the `cosmic::widget` root re-export, not `widget::toggler::…`; `widget::stack` does NOT exist — use `cosmic::iced::widget::Stack` as the green probe did, main.rs:163). Commit-on-close is KEPT (lead ruling — do NOT switch to commit-on-change); `soloVolumeReduction` applies at close along with the other General rows. Color rows: ruling D17 — use `widget::color_picker` bound to the `text_input`; the text field stays source of truth with `gdk_rgba_parse` parity; fallback to text-only if T11 integration fails. Parser parity required: accept the same set as `gdk_rgba_parse` (hex, `rgb()/rgba()`, named colors) with gray fallback on failure, plus tests. Font rows: `text_input` (no Pango font picker; document as gap). Font-string spec: parse Pango `<family> [style] <size>` (e.g. `Sans 16`); on parse failure fall back to system sans at the default size; tests. Lead ruling D15 FIX: the C++ `lyricsFont` default is dead CSS (invalid `font:` provider string, dropped by GTK) — the port parses + applies per this spec. |
+| D3 MIDI Setup | Modal `GtkWindow` 480x420, `window.cpp:929-1187`, transient+modal, destroyed on Apply; state held in local `Widgets` struct | Widgets in order: Output backend `GtkDropDown` (`backendNames()`); `Show all ports` check + `Refresh ports` button; Connection `GtkDropDown` (label list, id carried separately); Instrument map dropdown (GM/GS/MT-32); SysEx reset dropdown (`sysexResetName(0..4)`); SoundFont entry (hexpand, placeholder `Optional: your GM, MT-32, or SC-55 SoundFont`) + `Browse…` (opens D11); dim status label (wrap); button row right-aligned: `Test note` + `Apply` (suggested). Logic: `refillFn` rebuilds port list on backend/`Show all`/Refresh; preselects current/saved port by id-or-substring; empty → status `No destinations. Start mt32emu-qt (Munt) or Nuked-SC55, then Refresh.`; port change auto-sets map+reset via `inferDeviceProfile(label)`; Test: saves SoundFont, `connectOutput(backend, portId)`, sends Middle C ch1 96 for 400 ms, status `Sent Middle C on channel 1` / `No MIDI output`; Apply: saves soundFont/advancedPorts/map/reset, `setSysexReset`, `setSoundFont`, `connectOutput`, `applyInstrumentMap`, `save()`, destroy. | Modal `cosmic::widget::dialog` with same field order and button row. Backend/connection/map/reset → `dropdown`. `Show all ports` → `checkbox(bool).label(…)` (T0: iced checkbox is 1-arg); Refresh → `button`. SoundFont → `text_input` + Browse button. Status → dim `text`. Keep refill + profile-inference + test-note + suggested-Apply semantics exactly. Backend names come from the Rust MIDI layer (ALSA/FluidSynth/Dummy equivalents). |
+| D4 About | `AdwAboutDialog`, `window.cpp:884-920` | App name `Gosh MIDI Player`, icon `com.goshapps.GoshMIDI`, version `VERSION`, developer `Pedro López-Cabanillas`, copyright `© 2006–2026 …`, license GPL-3.0, website `github.com/goshitsarch-eng/goshmidi`, support `dmidiplayer.sourceforge.io`, issues `…/goshmidi/issues`, comments noting GTK4 rewrite + original + `dmidiplayer` command/settings compat, developers list (original + contributors), credit section `Original application`, 3 links (SourceForge, GitHub, docs). | `cosmic::widget::about`-style dialog (or `dialog` with `about` content; T0: `widget::about` needs the non-default `about` feature): same strings/links. COSMIC convention: About lives in app menu footer. |
 | D5 Help | `AdwAlertDialog(Help, kHelpText)`, `window.cpp:922-927`, text `window.cpp:23-37` + OK | Static multi-paragraph help: views, supported extensions, playback/transpose/tempo/volume, `.lst` format + drag-drop + repeat, backends + MIDI Setup, Munt/Nuked start order + port names + companion `.syx`, song-settings path `~/.dmidiplayer/<song>.cfg`. | `dialog` with `scrollable` + `text`. Same copy (update paths if Rust build changes config locations; keep `~/.dmidiplayer/<song>.cfg` until decided). |
 | D6 File info | `AdwAlertDialog(File information, body)`, `window.cpp:749-773` + OK | Body is dynamic Pango markup: `No file loaded`, else File/Format/Duration/Initial tempo/Tracks/Division + `metadataInfo()` + per-copyright lines. Source: `Sequence` getters (`currentFile`, `fileFormat`, `durationString`, `initialTempo`, `getNumTracks`, `division`). | `dialog` with header + `scrollable` metadata list. Same fields in same order. |
 | D7 Jump to bar | Modal `GtkWindow`, `window.cpp:775-829`, transient+modal, no-op when song empty | `Bar number:` label + `GtkSpinButton` range 1..`lastBar()` (min 1) + `Jump` button. Click: pause if running, `jumpToBar(bar)`, resume if was running, destroy. | Modal `dialog` with `spin_button` 1..lastBar + Jump/Cancel. Same pause-jump-resume semantics. |
@@ -55,7 +55,8 @@ Toasts (`AdwToastOverlay`, `window.cpp:1465-1469`, helper `window.cpp:286-289`),
 <backend> <port>` (`window.cpp:347`) on `connectOutput`, `Could not load <file>`
 (`window.cpp:379`) and `Warning: non-standard or damaged file`
 (`window.cpp:381`) on `loadCurrent` failure. Map to
-`cosmic::app::toaster` / `widget::toaster` with the same strings and triggers.
+`cosmic::widget::toaster` (there is no `cosmic::app::toaster`) with the same
+strings and triggers.
 
 ## 3. Widgets — main window by region
 
@@ -75,7 +76,8 @@ Toasts (`AdwToastOverlay`, `window.cpp:1465-1469`, helper `window.cpp:286-289`),
   playlist (`document-open-symbolic` → D9), Save playlist
   (`document-save-symbolic` → D10).
 - libcosmic: sidebar `container` + `scrollable` + `column` of `button`/`list`
-  rows (or `NavBarModel` items if the playlist fits nav-bar idiom; a custom
+  rows (or `nav_bar::Model` (= `segmented_button::SingleSelectModel`)
+  items if the playlist fits nav-bar idiom; a custom
   list keeps basename+selection+reorder fidelity better). Toolbar →
   `row` of `button::icon`. Keep order, tooltips, and the
   click-select vs double-click/Enter-play mapping, with a test. COSMIC
@@ -99,7 +101,8 @@ Toasts (`AdwToastOverlay`, `window.cpp:1465-1469`, helper `window.cpp:286-289`),
   (`media-playlist-repeat-symbolic`, tooltip `Loop`).
 - libcosmic: header bar with the same 8 transport buttons + loop toggle
   (`button::icon`, loop uses `selected` style). Menu → `cosmic::widget::menu`
-  (`MenuBar`/`MenuTree`) with the same 4 groups, or COSMIC app-menu + context
+  (`menu::bar` + `menu::root`/`menu::items` over `menu::Tree` — there is no
+  `menu::MenuTree`) with the same 4 groups, or COSMIC app-menu + context
   drawer split (File/Playback in menu, MIDI Setup/Preferences/Help/About in
   app-menu footer). External links via `open::that`/portal `open_uri`.
 
@@ -141,7 +144,8 @@ Toasts (`AdwToastOverlay`, `window.cpp:1465-1469`, helper `window.cpp:286-289`),
   not a stack page — parity target follows code (3 pages); both wordings
   are doc bugs in fix scope.
 - libcosmic: `segmented_button` (COSMIC convention for view switching) or
-  `tab_bar` + content `stack`; same 3 pages, icons, and order.
+  `tab_bar` + content `cosmic::iced::widget::Stack` (there is no
+  `widget::stack`; green probe main.rs:163); same 3 pages, icons, and order.
 
 ### 3.6 Lyrics page (`window.cpp:1755-1869`)
 
@@ -157,7 +161,9 @@ Toasts (`AdwToastOverlay`, `window.cpp:1465-1469`, helper `window.cpp:286-289`),
   `ScrolledWindow` vexpand. `refreshLyrics` (`window.cpp:550-629`) prefills
   filtered events (non-lyric records get trailing newline), applies `future`
   tag to all, justification from `textAlignment`, font CSS from `lyricsFont`
-  (`Sans 16` default). Live `onText` (`window.cpp:157-179`): un-highlights
+  (`Sans 16` default; T0: the C++ `font:` provider string is invalid CSS and
+  dropped by GTK, so the effective default is the 16pt `.lyrics-view` rule).
+  Live `onText` (`window.cpp:157-179`): un-highlights
   old `current`, marks all `past`, appends decoded text as `current`,
   scrolls to mark. Copy writes whole buffer to clipboard. QUIRK (lead
   ruling: PRESERVE + test): `refreshLyrics` prefills every filtered event
@@ -165,8 +171,10 @@ Toasts (`AdwToastOverlay`, `window.cpp:1465-1469`, helper `window.cpp:286-289`),
   lines duplicate (prefill + live append). Preserve the duplication.
 - libcosmic: toolbar `row` with 3 `dropdown`s + 3 icon buttons; body
   `scrollable` + styled text. No `TextView` tag equivalent: faithful
-  alternative is a `text_editor` (read-only) or a `column` of `rich_text`
-  spans rebuilt on filter/live events, with future/past/current colors,
+  alternative is a `text_editor` (read-only) or a `column` of `text::Rich`
+  (`text::Span`) runs rebuilt on filter/live events (there is no `rich_text`
+  module, but the `iced::widget::rich_text()`/`span()` helpers exist —
+  helpers.rs:1208), with future/past/current colors,
   alignment, and auto-scroll-to-latest. Keep preselect rules, filter
   semantics, copy/save/print triggers, and the prefill+append duplication
   (with a test).
@@ -214,7 +222,7 @@ Toasts (`AdwToastOverlay`, `window.cpp:1465-1469`, helper `window.cpp:286-289`),
   `lowestNote-2..highestNote+2` (`window.cpp:1981-1983`), so clicks miss
   under Tighten. Lead ruling: FIX — clicks map within the drawn range.
 - libcosmic: `canvas` widget with a `Program` implementing the same layout
-  + mouse `press/release` handling. Toolbar → `checkbox` + 2 `button`s.
+  + mouse `press/release` handling. Toolbar → `checkbox(bool).label(…)` + 2 `button`s.
   Keep tighten/show/hide, palette/velocity/names rules, and audition
   semantics; clicks quantize to white keys within the drawn (possibly
   tightened) range. Colors come from theme + settings, not hardcoded CSS.
@@ -273,7 +281,7 @@ schema, unknown keys preserved); `cosmic-config` is NOT used.
 
 | Key | Type / default (`settings.hpp`) | UI surface today | libcosmic (GKeyFile INI, same keys) |
 |---|---|---|---|
-| `lastDirectory` | string / "" | Updated on song load; not wired to D1 initial folder | Same key; wire as chooser initial folder |
+| `lastDirectory` | string / "" | Updated on song load; not wired to D1 initial folder | Same key; carry only — initial-folder wiring BLOCKED per D1 (open-dialog directory dead upstream) |
 | `lastOutputBackend` | string / `FluidSynth` | D3 backend; startup select + `-d` override | Same |
 | `lastOutputConnection` | string / `fluidsynth` | D3 connection; startup select + `-c` override | Same |
 | `lastPlayList` | string / "" | Loaded at startup; set by D1(`.lst`)/D9/D10 | Same |
@@ -284,14 +292,14 @@ schema, unknown keys preserved); `cosmic-config` is NOT used.
 | `autoPlay` | bool / true | D2 switch; gates `loadCurrent(auto)` | `toggler` |
 | `autoAdvance` | bool / true | D2 switch; gates `onFinished → nextSong` | `toggler` |
 | `autoSongSettings` | bool / false | D2 switch; gates auto save (next/finish) + auto load | `toggler` |
-| `advancedPorts` | bool / false | D3 check (`Show all ports`) | `checkbox` |
+| `advancedPorts` | bool / false | D3 check (`Show all ports`) | `checkbox(bool).label(…)` |
 | `sysexReset` | int 0–4 / 1 (GM) | D2 combo + D3 combo + auto-profile | `dropdown` (None/GM/GS/XG/MT-32) |
 | `instrumentMap` | int 0–2 / 0 (GM) | D2 combo + D3 combo + auto-profile → patch model rebuild | `dropdown` (GM/GS/MT-32) |
 | `highlightPalette` | int / 2 (Channels) | D2 Piano combo (Single/Double/Channels/Scale; only `0` changes rendering today) | `dropdown`, same 4 items; preserve current rendering semantics |
 | `velocityColor` | bool / true | D2 Piano switch → channel-color scaling | `toggler` |
 | `octaveSubscript` | bool / false | D2 Piano switch (no-op in cairo text today) | `toggler`; keep flag even though render is unchanged |
 | `namesVisibility` | int 0–3 / 1 (Minimal) | D2 Piano combo | `dropdown` |
-| `lyricsFont` | string / `Sans 16` | D2 entry → lyrics CSS | `text_input` → text style |
+| `lyricsFont` | string / `Sans 16` | D2 entry → lyrics CSS (default is dead CSS, dropped) | `text_input` → parsed + applied text style (D15 FIX) |
 | `notesFont` | string / `Sans 9` | NONE (stored, never applied; piano uses 9px Sans literal) | Carry the key headless; do NOT wire to piano note labels (lead ruling — wiring dropped) |
 | `futureColor`/`pastColor`/`singleColor`/`highlightColor` | strings / `#888888` `#1c71d8` `#f6d32d` `#e01b24` | D2 entries (single = piano single mode) | `text_input` + swatch; `gdk_rgba_parse` parity (hex, `rgb()/rgba()`, named colors, gray fallback) + tests |
 | `textAlignment` | int 0–2 / 0 (Left) | D2 combo → `GtkJustification` | `dropdown` → iced alignment |
@@ -337,7 +345,7 @@ designed; keep manual + auto paths.
 | `.dash-label` / `.dash-value` | label `#c0bfbc` 12px; value `#62a0ea` semibold | Dim `text` 12px + accent `text` semibold (theme accent, closest to `#62a0ea`) |
 | `.rhythm-lamp` / `.on` / `.accent` | 14px circle; rest `#3d3846`, beat `#57e389`, downbeat `#f66151` | Circular dot `container`s with 3 background styles; same hex until theme review |
 | `.piano-area` | `#241f31` bg | Canvas background fill `#241f31` (or theme dark surface) |
-| `.lyrics-view` | 16pt (plus runtime `font: <lyricsFont>` provider) | Base 16pt text style overridden by `lyricsFont` setting |
+| `.lyrics-view` | 16pt (plus runtime `font: <lyricsFont>` provider — invalid CSS, dropped by GTK) | Base 16pt text style; `lyricsFont` parsed + applied (D15 FIX) |
 | Ad-hoc classes | `flat` (icon buttons), `toolbar`, `navigation-sidebar`, `dim-label`, `suggested-action` (D3 Apply) | COSMIC `button::icon`, toolbar row spacing, sidebar style, dim text style, `button::suggested` |
 
 COSMIC follows the system theme (light/dark) automatically; hardcoded dark
@@ -377,7 +385,7 @@ contrast. Spacing convention: 4/8/12/16/18px as in code (controls 4, toolbar
 2. `GtkLevelBar` channel meters: use `progress_bar` on a ~50 ms tick or a
    tiny custom `canvas`; keep peak-set + `*=0.82` decay.
 3. `GtkTextView` tags (future/past/current) + Pango justification + font CSS:
-   use read-only `text_editor` or rebuilt `rich_text` spans; keep 3 colors,
+   use read-only `text_editor` or rebuilt `text::Rich` (`text::Span`) runs; keep 3 colors,
    alignment, preselect/filter rules, append + autoscroll.
 4. `GtkDrawingArea` + cairo + click gestures (piano): use `canvas` `Program`
    + mouse events; reimplement the §3.8 layout math as-is.
@@ -385,11 +393,14 @@ contrast. Spacing convention: 4/8/12/16/18px as in code (controls 4, toolbar
    through save + `xdg-open` and/or the `ashpd` print portal.
 6. Font picker: none used today (D2 uses text entries), so a Pango-string
    `text_input` + the parse/fallback spec (see D2) is faithful. Color
-   picker: libcosmic HAS `widget::color_picker` — evaluate it in T0; keep
-   `text_input` + swatch as the fallback with `gdk_rgba_parse` parity (hex,
-   `rgb()/rgba()`, named colors, gray fallback) + tests.
-7. System file-drop onto the window: backend-dependent in iced; keep portal
-   choosers primary and add drop only where the backend supports it.
+   picker: ruling D17 — `widget::color_picker` bound to the text field
+   (text field stays source of truth); fallback to text-only if T11
+   integration fails; keep `gdk_rgba_parse` parity (hex, `rgb()/rgba()`,
+   named colors, gray fallback) + tests.
+7. System file-drop onto the window: T0 verdict — X11 window
+   `FileDropped` subscription + Wayland `dnd_destination` with manual
+   `text/uri-list` parsing + sandboxed `file_transfer`; portal choosers stay
+   primary; COSMIC Wayland runtime-confirm in T10.
 8. Headless settings (`language`, `notesFont`, `recentFiles`,
    `playlistVisible`): carried in config; surface only the COSMIC-approved
    ones (sidebar toggle, optional recent list), never drop stored data.
@@ -397,7 +408,7 @@ contrast. Spacing convention: 4/8/12/16/18px as in code (controls 4, toolbar
 ## 10. Parity checklist
 
 Windows:
-- [ ] W1 main window: size + `repeatMode` persist on close-request (destructor-save FIX, PLAN T8), title with file, single-instance open/present, DnD replace-playlist (T0 `dnd_source`/`dnd_destination` verdict), toast overlay
+- [ ] W1 main window: size + `repeatMode` persist on close-request (destructor-save FIX, PLAN T8), title with file, single-instance open/present, DnD replace-playlist (T0 verdict: X11 `FileDropped` + Wayland `dnd_destination` w/ manual `text/uri-list` + sandboxed `file_transfer`; T10 COSMIC Wayland confirm), toast overlay
 
 Dialogs:
 - [ ] D1 open files: 6 filters, multi-select, `.lst`-vs-songs branching
@@ -464,6 +475,6 @@ Port requirements (libcosmic/iced):
   text equivalents — piano keeps click-audition + toolbar keyboard paths;
   lamps/meters duplicate state already shown in `bar:beat` / time / volume
   labels, so no information is pointer-only.
-- T0 verification: confirm libcosmic tooltip support for icon buttons and
-  record the verdict here; tooltips on all icon buttons are a parity
-  requirement, not optional polish.
+- T0 verdict: tooltip at-risk CLEARED — verified via the
+  `cosmic::widget::tooltip` wrapper; tooltips on all icon buttons remain a
+  parity requirement, not optional polish.

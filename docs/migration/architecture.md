@@ -410,17 +410,39 @@ all sliders/spins/dropdowns/toggles have a message; file dialogs return
     repeat-song → engine reset+play; repeat-list → advance w/ wrap; else
     autoAdvance-next; autoSongSettings save before leaving the song.
   - Dialog-launching messages return file-chooser `Task`s via
-    `cosmic::dialog::file_chooser` (provider: `xdg-portal`/ashpd — pin the
-    `xdg-portal` feature, not `rfd`; same open-multi/save/browse roles as the
-    current `GtkFileDialog` calls, incl. the MIDI/playlist glob filters in
-    `openDialog`). Results come back as `PlaylistLoaded / PlaylistSaved /
-    LyricsSaved` etc. after converting each result `Url` to `PathBuf`
-    (`Url::to_file_path`, percent-decoding included); a non-file `Url` is a
-    load error, not a panic. `Error::Cancelled` is a silent no-op (no state
-    change, no toast) — it must be distinguishable from real I/O errors.
+    `cosmic::dialog::file_chooser` (provider: `xdg-portal`/ashpd — T0-confirmed,
+    pin the `xdg-portal` feature, not `rfd`; NEVER enable `rfd` + `xdg-portal`
+    together — duplicate definitions, source-verified per DECISIONS D16; same
+    open-multi/save/browse roles as the current `GtkFileDialog` calls, incl. the
+    MIDI/playlist glob filters in `openDialog`; `FileFilter::mimetype` is
+    source-verified in ashpd 0.12.3 (`file_chooser.rs:127` — the ashpd rev
+    libcosmic pins, `Cargo.toml:177`; the 0.11.1 copy in the lockfile belongs
+    to rejected `rfd`) though the T0 probe compile-touched `.glob()` only
+    (probe `main.rs:191-195`), so mimetype is a source-verified backup, not
+    the primary filter). Results come back as
+    `PlaylistLoaded / PlaylistSaved / LyricsSaved` etc. after converting each
+    result `Url` to `PathBuf` (`Url::to_file_path`, percent-decoding included);
+    a non-file `Url` is a load error, not a panic. `Error::Cancelled` is a
+    silent no-op (no state change, no toast) — it must be distinguishable from
+    real I/O errors. T0 spike caveat: open-dialog initial dir / `file_name`
+    are dead upstream (ignored by the portal binding), so `lastDirectory`
+    wiring into the open dialog is blocked — save-dialog names still work.
     Tests: multi-open returns several `Url`s → several `PathBuf`s; cancel →
     no message side effects; non-file `Url` → error message.
   - `Tick` decays `channels[].level *= 0.82` and refreshes the clock label.
+  - DnD contract (T0-confirmed per DECISIONS D16, portal chooser stays
+    primary): on X11 subscribe `cosmic::iced::window::Event::FileDropped` /
+    `FileHovered` (probe compile-touched both); on Wayland wrap the drop
+    target in `widget::dnd_destination(child, vec!["text/uri-list"])` +
+    `.on_drop(..)` (probe compile-touched; `dnd_destination<'a, Message:
+    'static>(child, mimes)`, libcosmic `widget/dnd_destination.rs:16`), parse
+    the `text/uri-list` payload manually (`Url` → `PathBuf` each, same
+    percent-decoding/non-file-`Url` rules as the chooser path), and accept
+    sandboxed drops via the portal file transfer
+    (`FILE_TRANSFER_MIME = "application/vnd.portal.filetransfer"`,
+    `#[cfg(xdg_portal)]`). Every dropped `.mid/.midi/.kar/.rmi/.wrk/.lst`
+    maps to `Message::OpenFiles(paths, replace=true)` — the §1.7
+    replace-playlist contract. Runtime-confirm COSMIC Wayland drags in T10.
 - **`view()`**: builds the widget tree from `&self`: sidebar playlist, transport
   header, dashboard (time/tempo/volume/pitch/rhythm/bar), position + tempo +
   volume sliders, Lyrics/Channels/Piano views, status line, active dialog, toasts.
@@ -481,14 +503,165 @@ enum EngineCommand {
 Do **not** hand-roll zbus name acquisition. Boot with
 `cosmic::app::run_single_instance::<App>(settings, flags)` (libcosmic
 `single-instance` feature), which owns the `com.goshapps.GoshMIDI` D-Bus name:
-a second launch forwards its argv to the running instance and exits. The running
-instance maps forwarded file args to `Message::OpenFiles(paths, replace=true)`
-+ window present — the same contract as `on_open` today (§1.6). CLI parsing
-(`-p/-f/-d/-c`, files) stays in `main.rs` before app boot; `-d/-c` (both-or-
-neither, §1.6) become the initial `SelectOutput` command instead of
-`connectOutput`. Escape hatch: `COSMIC_SINGLE_INSTANCE=false` disables the
-single-instance path (second process runs standalone) — document it for
-debugging and multi-window testing.
+a second launch forwards its argv to the running instance and exits. T0 spike
+correction (DECISIONS D16): `Flags: cosmic::app::CosmicFlags` and `Message:
+Clone + Debug + Send + 'static` are required bounds (`run_single_instance`,
+app/mod.rs:198; same bound on `Application::Message`, app/mod.rs:334);
+`init`/`update` return `cosmic::app::Task`, which is
+`iced::Task<cosmic::Action<M>>` — wrap every app message via
+`cosmic::Action::App`. The running instance overrides
+`fn dbus_activation(&mut self, msg: crate::dbus_activation::Message) ->
+Task<Self::Message>` (app/mod.rs:502, `#[cfg(feature = "single-instance")]`,
+default `Task::none()`) to receive the forwarded launch:
+`Message { activation_token: Option<String>, desktop_startup_id:
+Option<String>, msg: Details }` with `Details::{Activate | Open { url:
+Vec<Url> } | ActivateAction { action, args } }` (dbus_activation.rs:93-108,
+generic over `Action = String, Args = Vec<String>`); the override maps
+`Open`/`ActivateAction` file args to `Message::OpenFiles(paths,
+replace=true)` + window present — the same contract as `on_open` today
+(§1.6). CLI parsing (`-p/-f/-d/-c`,
+files) stays in `main.rs` before app boot; `-d/-c` (both-or-neither, §1.6)
+become the initial `SelectOutput` command instead of `connectOutput`.
+Escape hatch: `COSMIC_SINGLE_INSTANCE=false` disables the single-instance
+path (second process runs standalone) — document it for debugging and
+multi-window testing.
+
+**T0 pins pointer**: libcosmic rev `7e82198a`, iced 0.14.0 / iced_widget
+0.14.2, MSRV 1.93, features `about` + `single-instance` + `xdg-portal`.
+Full pin table lives in DECISIONS D16 — the single source of truth; this doc
+only references it.
+
+### 2.6 Color + font parser specs (T0 empirical; feeds `ui/theme.rs`)
+
+`parseColor` (window.cpp:40-45) is `gdk_rgba_parse` over a gray init; the
+lyric font string follows `pango_font_description_from_string` semantics
+(DECISIONS D15: FIX — parse per this spec and apply, so default `Sans 16`
+renders as 16pt Sans). Both parsers are **hand-rolled** in Rust: color is a
+~80-line `gdk_rgba_parse` parity port, explicitly NOT the `css-color` crate
+(DECISIONS D16). Evidence: `/tmp/t0-arch/parity`, `parity2`, `parity3`
+re-run 2026-09-12 (src P1/P2/P3 below), plus follow-up probes `parity4`
+(stretch/variant, src P4) and `parity5` (hsla, src P5). Every `ok=0` row
+preserved the `(9,9,9,9)` sentinel, i.e. failure leaves the value untouched.
+
+**Color spec** — applies to `futureColor`/`pastColor`/`highlightColor`/
+`singleColor` (defaults `#888888`/`#1c71d8`/`#e01b24`/`#f6d32d`,
+settings.hpp:33-36):
+
+- Hex `#3/#4/#6/#8` only (`#88`, `#88g` fail): each nibble ×17, then /255
+  (`#888` → 0.5333×3); alpha defaults 1.0; case-insensitive (`#aBcDeF` ok).
+- `rgb()`/`rgba()` names are lowercase-only (`RGB()` fails); comma-separated
+  (`rgb(255 0 0)` fails); inner spaces ok; every component clamped
+  (`rgb(300,0,0)` → 1.0, `rgb(-10,0,0)` → 0.0, alpha `2` → 1.0, `-1` → 0.0);
+  `rgb()` `%` components ok, but `rgba()` `%` alpha FAILS.
+- `hsl()`/`hsla()` accepted (`hsl(0,100%,50%)` → red), lowercase-only too
+  (`HSL()` fails).
+- Named CSS table, case-insensitive (`red`/`Red`/`RED`), incl `grey` + `gray`
+  (both 0.5020) and `rebeccapurple` (0.4,0.2,0.6); NO `transparent`; NO
+  outer-trim (`'  #fff  '`, `' transparent '` fail).
+- Any failure (unknown name, bad arity, bad length, empty/blank) leaves the
+  value untouched, so the gray `(0.5,0.5,0.5,1.0)` init survives
+  (window.cpp:41).
+
+| src | input | ok | observed rgba |
+|---|---|---|---|
+| P1 | `#888` | 1 | 0.5333,0.5333,0.5333,1.0000 |
+| P1 | `#8888` | 1 | 0.5333,0.5333,0.5333,0.5333 |
+| P1 | `#888888` | 1 | 0.5333,0.5333,0.5333,1.0000 |
+| P1 | `#88888888` | 1 | 0.5333,0.5333,0.5333,0.5333 |
+| P1 | `#88` | 0 | untouched |
+| P1 | `#ffff` | 1 | 1.0000,1.0000,1.0000,1.0000 |
+| P1 | `#FFF` | 1 | 1.0000,1.0000,1.0000,1.0000 |
+| P1 | `'  #fff  '` | 0 | untouched (no outer-trim) |
+| P1 | `rgb(255,0,0)` | 1 | 1.0000,0.0000,0.0000,1.0000 |
+| P1 | `rgba(255,0,0,0.5)` | 1 | 1.0000,0.0000,0.0000,0.5000 |
+| P1 | `rgb(100%,0%,0%)` | 1 | 1.0000,0.0000,0.0000,1.0000 |
+| P1 | `rgba(100%,0%,0%,50%)` | 0 | untouched (%-alpha fails) |
+| P1 | `rgb(300,0,0)` | 1 | clamped 1.0000,0.0000,0.0000,1.0000 |
+| P1 | `rgb(255,0)` | 0 | untouched (bad arity) |
+| P1 | `rgb(255 0 0)` | 0 | untouched (commas required) |
+| P1 | `red` / `Red` / `RED` | 1 | 1.0000,0.0000,0.0000,1.0000 |
+| P1 | `transparent` | 0 | untouched (not in table) |
+| P1 | `notacolor` / `""` / `"   "` | 0 | untouched |
+| P1 | `grey` / `gray` | 1 | 0.5020,0.5020,0.5020,1.0000 |
+| P1 | `rebeccapurple` | 1 | 0.4000,0.2000,0.6000,1.0000 |
+| P2 | `rgba(255,0,0,2)` | 1 | alpha clamped 1.0000 |
+| P2 | `rgba(255,0,0,-1)` | 1 | alpha clamped 0.0000 |
+| P2 | `rgb(255, 0, 0)` | 1 | inner spaces ok |
+| P2 | `RGB(255,0,0)` | 0 | untouched (lowercase-only) |
+| P2 | `rgb(-10,0,0)` | 1 | clamped 0.0000,0.0000,0.0000,1.0000 |
+| P2 | `hsl(0,100%,50%)` | 1 | 1.0000,0.0000,0.0000,1.0000 |
+| P2 | `rgba(255, 0, 0, 0.5)` | 1 | ok |
+| P2 | `#aBcDeF` | 1 | 0.6706,0.8039,0.9373,1.0000 |
+| P2 | `#abcd` | 1 | 0.6667,0.7333,0.8000,0.8667 |
+| P5 | `hsla(0,100%,50%,0.5)` | 1 | 1.0000,0.0000,0.0000,0.5000 |
+| P5 | `HSL(0,100%,50%)` | 0 | untouched (lowercase-only) |
+| P5 | `' transparent '` | 0 | untouched (no outer-trim) |
+| P5 | `#88g` | 0 | untouched (bad hex) |
+
+**Font spec** — defaults lyrics `Sans 16`, notes `Sans 9`
+(settings.hpp:31-32; `notesFont` stays a headless carried key per D13 —
+parse it the same, apply nothing):
+
+- Trailing float > 0 = size in pt (Pango units = pt×1024: `16` → 16384,
+  `10.5` → 10752); `Sans 0` → size 0 = no size → default size; `Sans -5` →
+  absorbed into the family.
+- `12px` suffix = absolute px size (abs=1); `12pt` = literal family text
+  (family `Sans 12pt`, no size). Divergent by design — pin both.
+- Keywords are case-insensitive (`sans bold 12` → weight 700): style
+  Italic/Oblique, weight incl Semi-Bold 600 / Bold 700 / Ultra-Bold 800,
+  stretch Condensed…Expanded, Small-Caps variant; numeric weights ignored
+  (`Sans 600 12` → family `Sans 600`, weight 400).
+- Family = remainder verbatim: spaces kept (`DejaVu Sans Mono`), commas kept
+  (`Sans,Serif`); when resolving a concrete typeface, the first
+  comma-separated entry wins.
+- Empty string / bare number (`16` → family null) → `Sans` fallback; `!!!`
+  → family text, default size.
+- Convert pt sizes to iced logical px with `px = pt × 96/72`.
+
+| src | input | family | size (Pango units) | attrs |
+|---|---|---|---|---|
+| P1 | `Sans 16` | Sans | 16384 = 16pt | weight 400 |
+| P1 | `Sans Bold 12` | Sans | 12288 = 12pt | weight 700 |
+| P1 | `Sans Italic Bold 10.5` | Sans | 10752 = 10.5pt | weight 700, Italic |
+| P1 | `Sans` | Sans | 0 (none → default) | — |
+| P1 | `16` | (null → Sans) | 16384 = 16pt | bare number |
+| P1 | `""` | (null → Sans) | 0 (none → default) | — |
+| P1 | `!!!` | `!!!` | 0 (none → default) | family text |
+| P1 | `Monospace 9` | Monospace | 9216 = 9pt | — |
+| P1 | `Sans,Serif 12` | `Sans,Serif` | 12288 = 12pt | comma kept |
+| P1 | `'  Sans   16  '` | Sans | 16384 = 16pt | outer space tolerated |
+| P1 | `Cantarell Semi-Bold 11` | Cantarell | 11264 = 11pt | weight 600 |
+| P1 | `Sans 0` | Sans | 0 (none → default) | zero is not a size |
+| P1 | `Sans -5` | `Sans -5` | 0 (none → default) | negative absorbed |
+| P3 | `sans bold 12` | sans | 12288 = 12pt | weight 700, ci keywords |
+| P3 | `Sans 12pt` | `Sans 12pt` | 0 (none → default) | pt = family text |
+| P3 | `Sans 12px` | Sans | 12288 absolute | px = absolute |
+| P3 | `Sans 600 12` | `Sans 600` | 12288 = 12pt | weight 400, numeric ignored |
+| P3 | `DejaVu Sans Mono Bold Oblique 9` | DejaVu Sans Mono | 9216 = 9pt | weight 700, Oblique |
+| P4 | `Sans Condensed 12` | Sans | 12288 = 12pt | stretch Condensed |
+| P4 | `Sans Small-Caps 12` | Sans | 12288 = 12pt | variant Small-Caps |
+| P4 | `Sans Expanded Bold Italic 12` | Sans | 12288 = 12pt | 700, Italic, Expanded |
+| P4 | `Sans Ultra-Bold 12` | Sans | 12288 = 12pt | weight 800 |
+| P4 | `Sans Oblique 12` | Sans | 12288 = 12pt | Oblique |
+| P4 | `DejaVu Sans, Sans 12` | `DejaVu Sans,Sans` | 12288 = 12pt | first entry wins |
+
+CSS-shaping evidence (P2, backs the D15 FIX ruling — `font: Sans 16` as the
+C++ emits it is invalid CSS, so the setting is a no-op there):
+
+| rule | parsing errors |
+|---|---|
+| `.lyrics-view { font: Sans 16; }` | 1 (`Expected a number`) |
+| `.lyrics-view { font: 16pt Sans; }` | 0 |
+| `.lyrics-view { font: Bold 12px Sans; }` | 0 |
+| `.lyrics-view { font: Sans; }` | 1 (`Expected a number`) |
+
+**Rejection / divergence tests** (unit-test every row): `RGB(255,0,0)` →
+Err; `' transparent '` → Err (bare `transparent` too); `rgba(100%,0%,0%,
+50%)` → Err; bad arity `rgb(255,0)` / `rgb(255 0 0)` / `#88` / `#88g` /
+`""` / `"   "` → Err with the value untouched; `'Sans 12px'` → absolute
+12px vs `'Sans 12pt'` → family `Sans 12pt` + default size; `'Sans 600 12'`
+→ family `Sans 600`, weight 400, 12pt; `'!!!'` → family `!!!`, default
+size, no crash.
 
 ---
 
@@ -535,7 +708,10 @@ one async model, and eliminates the current data races.
   (or app id — decide once; tests may pin it). Tests (mock the port list):
   `type==0` port visible in non-advanced mode; unparsable id → first advanced
   port; unknown backend selects ALSA; `-d` without `-c` is ignored.
-- **FluidSynth**: bind `libfluidsynth` (`fluidsynth` crate or minimal `bindgen`):
+- **FluidSynth**: hand-written FFI over `libfluidsynth` — FINAL per the T0
+  pack spike (DECISIONS D16). The `fluidsynth` 0.0.1 crate is 2018 abandonware
+  and is rejected; no `bindgen` (avoids a libclang build dependency). Scope is
+  small (~17 functions, 3 opaque types: settings, synth, audio driver):
   settings/synth/audio-driver creation with the same driver fallback order and
   gain 0.6, `sfload`, note/cc/program/pressure/bend/sysex calls, pitch-bend range
   remap. Keep default-SoundFont search paths and `lastError` accumulation.
