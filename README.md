@@ -1,7 +1,7 @@
 Gosh MIDI Player
 ================
 
-A MIDI file player for Linux with a GTK4 and libadwaita interface. This is a
+A MIDI file player for Linux with a libcosmic/Rust interface. This is a
 display-name fork of **[dmidiplayer](https://sourceforge.net/p/dmidiplayer/)**
 (Drumstick MIDI File Player) by Pedro López-Cabanillas. The command and compatible settings paths remain
 `dmidiplayer`, `~/.config/dmidiplayer`, and `~/.dmidiplayer`; Gosh Apps releases
@@ -11,7 +11,7 @@ It reads **.MID** / **.MIDI** (Standard MIDI Files), **.KAR** (Karaoke),
 **.RMI** (RIFF RMID), and **.WRK** (Cakewalk) files, and sends MIDI events to
 ALSA sequencer ports or to an embedded FluidSynth backend.
 
-This GTK4 rewrite keeps playback at parity with the original Qt UI, and
+This libcosmic/Rust port keeps playback at parity with the GTK4 UI, and
 **playlists are a first-class sidebar**.
 
 ![App Screenshot](https://p.kagi.com/proxy/screenshot.png?c=IVBIz-djrqhBdoI1kAYWuIGdBLzVdwgu0RO3DCOd_o3wHzM7zafCPDhPaFUe6FuRQx3eskzbUvHhtBSisKAaDPlR2o8sJArato3jLu0QNpAYAUg84hhh9hbq0oz6KTK3)
@@ -43,25 +43,31 @@ Key features
 Build requirements
 ------------------
 
-* C++17 compiler
-* GTK 4.14+ and libadwaita 1.5+
-* ALSA, FluidSynth, uchardet
-* CMake 3.16+
+* Rust 1.93+ (see `rust-toolchain.toml`; libcosmic MSRV floor)
+* ALSA + FluidSynth dev libraries, Wayland/XKB/fontconfig dev libraries,
+  `pkg-config`, `cmake`, `g++`, Python 3 (full list: `docs/migration/packaging.md` §3.1)
 
 ```
-$ sudo apt install cmake g++ pkg-config libgtk-4-dev libadwaita-1-dev \
-        libasound2-dev libfluidsynth-dev libuchardet-dev
-$ cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
-$ cmake --build build
-$ cmake --install build
+$ sudo apt install pkg-config cmake g++ libasound2-dev libfluidsynth-dev \
+        libwayland-dev libxkbcommon-dev libfontconfig-dev libfreetype-dev \
+        libexpat1-dev python3 python3-aiohttp python3-tomlkit
+$ cargo build --locked
+$ sh scripts/verify.sh --fast     # inner loop: build, clippy, fmt, tests, pins
 ```
+
+The Flatpak is the release vehicle (`flatpak/com.goshapps.GoshMIDI.yml`,
+freedesktop runtime 25.08); `sh scripts/verify.sh` runs the full gate
+including the Flatpak build and the in-sandbox smoke test.
 
 Run `dmidiplayer --help` for command-line options (`-d`/`--driver`,
 `-c`/`--connection`, portable settings, and files that become a temporary
 playlist).
 
-For sound without an external synth, install a GM SoundFont (for example
-`fluid-soundfont-gm`) and select the **FluidSynth** backend in MIDI Setup.
+For sound without an external synth, select the **FluidSynth** backend in
+MIDI Setup. The Flatpak bundles a GM SoundFont (`FluidR3Mono_GM.sf3`, MIT),
+so a fresh install plays audibly with no setup; on a native build, install
+a GM SoundFont (for example `fluid-soundfont-gm`) or pick your own `.sf2`
+/ `.sf3` file in MIDI Setup.
 To use your own module (Roland MT-32 / [Munt](https://github.com/munt/munt),
 SC-55 / [Nuked-SC55](https://github.com/PanykSystem/Nuked-SC55-GUI-Float), USB MIDI):
 

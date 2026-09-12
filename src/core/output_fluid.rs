@@ -39,36 +39,35 @@ pub const AUDIO_DRIVERS: [&CStr; 5] = [c"pulseaudio", c"pipewire", c"alsa", c"ja
 /// Synth gain (output.cpp:300).
 pub const SYNTH_GAIN: f64 = 0.6;
 
-/// Bundled SoundFont file name (T6 selection, P7; bundling mechanics land in
-/// the T15 flatpak module — T6 only picks the file and wires the search path).
+/// Bundled SoundFont file name (T15 choice, P7 — the T6-recorded `.sf3`
+/// substitution for the 141.5 MiB `FluidR3_GM.sf2`: same Fluid R3 GM set,
+/// Ogg-compressed mono build at one-tenth the size).
 ///
-/// Choice: **FluidR3_GM.sf2** (Fluid Release 3, General MIDI).
+/// Choice: **FluidR3Mono_GM.sf3** v2.312 (Fluid Release 3, General MIDI,
+/// mono), installed by the `soundfont` flatpak module to
+/// `/app/share/soundfonts/FluidR3Mono_GM.sf3` (full provenance in the
+/// manifest comments + packaging.md §6).
 ///
-/// - License: **MIT** — evidence: Fedora `fluid-soundfont-gm-3.1-36.fc44`
-///   RPM metadata (`License: MIT`), upstream FluidSynth/fluid-soundfont.
-/// - Size: **148,398,306 bytes (~141.5 MiB)** — evidence: local install at
-///   `/usr/share/soundfonts/FluidR3_GM.sf2` (2008-02-24 build, still shipped).
-/// - Why: permissively licensed; ships in Fedora `fluid-soundfont-gm` (and
-///   Debian `fluid-soundfont-gm`); is the *first* C++ search-path hit, so the
-///   host fallback already resolves it on dev machines; full GM coverage
-///   including the drum bank, matching the player's GM/MT-32/SC-55 support.
-/// - Size tradeoff (recorded, not solved here): 141.5 MiB is heavy to bundle.
-///   T15 may substitute a smaller MIT-compatible GM set or an `.sf3`
-///   (Ogg-compressed) variant in the flatpak module; the `/app` search
-///   entries below keep working as long as the module installs the chosen
-///   file under one of the two `/app` paths. The driver fallback keeps its
-///   trailing SDL entry (`sdl3` for the 2.6 pin, `sdl2` in C++) as the
-///   last-resort audio driver; on builds without SDL (host CI included) it
-///   simply fails like any other miss.
-pub const BUNDLED_SOUNDFONT_NAME: &str = "FluidR3_GM.sf2";
+/// - License: **MIT** — evidence: `FluidR3Mono_License.md` in
+///   LibreScore/sf3 (Frank Wen 2000-2002/2008 + Michael Cowgill 2014-16
+///   mono version, full COPYING text; installed next to the file in-sandbox).
+/// - Size: **14,563,174 bytes (~13.9 MiB)** — evidence: two identical
+///   downloads (sha256 pinned in the manifest), `RIFF....sfbk` magic with a
+///   consistent size field.
+/// - Decode: **proven** — host FluidSynth 2.6.0 (the flatpak pin) renders
+///   `examples/test.mid` through it to 121,408 non-silent stereo frames.
+/// - Why: full GM coverage incl. the drum bank (the player supports
+///   GM/MT-32/SC-55); the `.sf3` the D11 chooser already accepts; the
+///   driver fallback keeps its trailing `sdl3` last-resort entry (C++ had
+///   `sdl2`), which fails harmlessly on builds without SDL.
+pub const BUNDLED_SOUNDFONT_NAME: &str = "FluidR3Mono_GM.sf3";
 
-/// Default SoundFont search paths: sandbox-bundled locations first (P7 —
+/// Default SoundFont search paths: the sandbox-bundled file first (P7 —
 /// host `/usr` is invisible inside Flatpak), then the 8 host paths in exact
 /// C++ order (output.cpp:403-414).
 pub fn default_sound_font_paths() -> Vec<String> {
     [
-        "/app/share/sounds/sf2/FluidR3_GM.sf2",
-        "/app/share/soundfonts/FluidR3_GM.sf2",
+        "/app/share/soundfonts/FluidR3Mono_GM.sf3",
         "/usr/share/sounds/sf2/FluidR3_GM.sf2",
         "/usr/share/soundfonts/FluidR3_GM.sf2",
         "/usr/share/sounds/sf2/default-GM.sf2",
@@ -420,14 +419,13 @@ mod tests {
     #[test]
     fn search_path_order_sandbox_first_then_cpp() {
         let paths = default_sound_font_paths();
-        assert_eq!(paths.len(), 10);
-        // P7: /app bundled entries lead, using the selected T6 file name.
-        assert_eq!(paths[0], "/app/share/sounds/sf2/FluidR3_GM.sf2");
-        assert_eq!(paths[1], "/app/share/soundfonts/FluidR3_GM.sf2");
+        assert_eq!(paths.len(), 9);
+        // P7: the bundled T15 file leads, at the manifest's install path.
+        assert_eq!(paths[0], "/app/share/soundfonts/FluidR3Mono_GM.sf3");
         assert!(paths[0].ends_with(BUNDLED_SOUNDFONT_NAME));
         // Then the 8 host paths in exact C++ order (output.cpp:403-414).
         assert_eq!(
-            &paths[2..],
+            &paths[1..],
             [
                 "/usr/share/sounds/sf2/FluidR3_GM.sf2",
                 "/usr/share/soundfonts/FluidR3_GM.sf2",

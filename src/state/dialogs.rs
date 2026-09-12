@@ -251,8 +251,8 @@ pub const HELP_TEXT: &str = "Gosh MIDI Player is a MIDI file player with lyrics,
 // ---------------------------------------------------------------------------
 
 /// About dialog content: every string, the credit section, and the 3 links
-/// (`window.cpp:884-920`). The version rides `VERSION` (1.7.5,
-/// `CMakeLists.txt:9`) — composition reads `env!("CARGO_PKG_VERSION")`;
+/// (`window.cpp:884-920`). The version rides `VERSION` (1.8.0,
+/// `Cargo.toml`) — composition reads `env!("CARGO_PKG_VERSION")`;
 /// the license is GPL-3.0 (`GTK_LICENSE_GPL_3_0`, `window.cpp:893`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AboutInfo {

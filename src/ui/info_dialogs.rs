@@ -47,8 +47,8 @@
 //!   the 2 developers, the `Original application` credit section, and all 6
 //!   URLs (website + support + issues + the 3 links). The license display
 //!   name + the close label live here (the table carries neither).
-//! * Version is `env!("CARGO_PKG_VERSION")` (1.7.5 — the same
-//!   `PROJECT_VERSION` the C++ `VERSION` macro expands).
+//! * Version is `env!("CARGO_PKG_VERSION")` (1.8.0 — the crate version,
+//!   successor of the C++ `PROJECT_VERSION` the `VERSION` macro expanded).
 //! * Hand-built, not `widget::about`: the stock widget has no
 //!   website/support/issues fields and would drop them. Link buttons use
 //!   the `link` style with names + descriptions.
@@ -479,8 +479,8 @@ mod tests {
             ]
         );
         assert_eq!(ABOUT_CLOSE, "Close");
-        // C++ `VERSION` macro == crate version (same `1.7.5`).
-        assert_eq!(env!("CARGO_PKG_VERSION"), "1.7.5");
+        // Crate version == shipped release (T15: 1.8.0, first libcosmic).
+        assert_eq!(env!("CARGO_PKG_VERSION"), "1.8.0");
     }
 
     #[test]

@@ -1,3 +1,8 @@
+2026-09-12
+    * Release 1.8.0: first libcosmic/Rust build; GTK4/C++ sources retired
+    * Flatpak bundles the FluidR3Mono GM SoundFont, so fresh installs play audibly
+    * Stale config/playlist paths load verbatim; re-prompt UX to follow
+
 2026-08-23
     * Display name is Gosh MIDI Player; binary and settings paths stay dmidiplayer
     * About dialog credits original dmidiplayer (Drumstick MIDI File Player)

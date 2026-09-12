@@ -95,7 +95,28 @@ if [ -d /app/share/applications ]; then
                 | grep -q . || fail "installed fallback missing spot name: $spot"
         done
     fi
+    # T15: the bundled GM SoundFont the engine searches first
+    # (output_fluid.rs BUNDLED_SOUNDFONT_NAME) must be installed,
+    # plausibly sized, and really a SoundFont (RIFF....sfbk magic) with
+    # its MIT license alongside. (Host runs skip the whole block: the
+    # file only exists in-sandbox — but in-sandbox it is REQUIRED, so a
+    # missing soundfont module fails here rather than skipping.)
+    SF=/app/share/soundfonts/FluidR3Mono_GM.sf3
+    [ -f "$SF" ] || fail "bundled SoundFont missing: $SF"
+    size="$(stat -c%s "$SF")"
+    [ "$size" -ge 10000000 ] \
+        || fail "bundled SoundFont implausibly small: $size bytes"
+    head -c 4 "$SF" | od -An -c | grep -q 'R   I   F   F' \
+        || fail "bundled SoundFont lacks RIFF magic: $SF"
+    dd if="$SF" bs=1 skip=8 count=4 2>/dev/null | od -An -c \
+        | grep -q 's   f   b   k' \
+        || fail "bundled SoundFont lacks sfbk magic: $SF"
+    LIC=/app/share/soundfonts/FluidR3Mono_License.md
+    [ -f "$LIC" ] || fail "bundled SoundFont license missing: $LIC"
+    grep -q 'MIT license' "$LIC" \
+        || fail "bundled SoundFont license lacks the MIT grant: $LIC"
     pass "installed desktop/metainfo/app-icons/fallback inventory"
+    pass "bundled SoundFont ($size bytes, sfbk magic, MIT license)"
 fi
 
 # Collect .mid/.kar fixtures (sh has no nullglob; filter non-matches).

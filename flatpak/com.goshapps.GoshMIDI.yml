@@ -55,6 +55,38 @@ modules:
       - /lib/cmake
       - /share/doc
       - /share/man
+  # Bundled GM SoundFont (T15, packaging.md §5 risk 2 / §6; the T6-recorded
+  # .sf3 substitution — same Fluid R3 GM set at one-tenth the size of the
+  # 141.5 MiB stereo .sf2). The host's /usr/share SoundFonts are invisible
+  # in the sandbox, so this file is what makes fresh-profile FluidSynth
+  # playback audible with zero host setup. The engine searches it first
+  # (output_fluid.rs BUNDLED_SOUNDFONT_NAME + default_sound_font_paths).
+  # Pinned `type: file` sources (sha256 verified by two downloads, 2026-09-12):
+  #   FluidR3Mono_GM.sf3 v2.312 (2016-12-05, 14,563,174 bytes, MIT —
+  #   FluidR3Mono_License.md: Frank Wen 2000-2002/2008 + Michael Cowgill
+  #   2014-16, full COPYING text; the file shipped in MuseScore 2.0):
+  #     url https://raw.githubusercontent.com/LibreScore/sf3/3a6eda823dac2ec3e134d38544ca839217358f08/FluidR3Mono_GM.sf3.wasm
+  #     sha256 cfcd66d89e8386823400eca64934b14fbea7bf48ba1f00d21189af1262794ec2
+  # The `.wasm` suffix is upstream's web-compression alias (LibreScore/sf3
+  # v0.6.0 rename); the bytes are the .sf3 (RIFF....sfbk magic, consistent
+  # size field — verified). `dest-filename` restores the play-ready name.
+  # The license file installs alongside (MIT attribution requirement).
+  # Decode proven pre-merge: host FluidSynth 2.6.0 (this manifest's pin)
+  # renders examples/test.mid through it to 121,408 non-silent frames.
+  - name: soundfont
+    buildsystem: simple
+    build-commands:
+      - install -Dm644 FluidR3Mono_GM.sf3 /app/share/soundfonts/FluidR3Mono_GM.sf3
+      - install -Dm644 FluidR3Mono_License.md /app/share/soundfonts/FluidR3Mono_License.md
+    sources:
+      - type: file
+        url: https://raw.githubusercontent.com/LibreScore/sf3/3a6eda823dac2ec3e134d38544ca839217358f08/FluidR3Mono_GM.sf3.wasm
+        sha256: cfcd66d89e8386823400eca64934b14fbea7bf48ba1f00d21189af1262794ec2
+        dest-filename: FluidR3Mono_GM.sf3
+      - type: file
+        url: https://raw.githubusercontent.com/LibreScore/sf3/3a6eda823dac2ec3e134d38544ca839217358f08/FluidR3Mono_License.md
+        sha256: c21ed6be2fea862673953977c616befc28d1b20dfa60349e4461b97c759db6ca
+        dest-filename: FluidR3Mono_License.md
   - name: dmidiplayer
     buildsystem: simple
     build-options:

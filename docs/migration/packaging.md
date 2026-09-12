@@ -21,8 +21,10 @@ build deps.
 ## 0. QA gates (tiered, P1 — user's DoD kept literally)
 
 - **Inner loop** `scripts/verify.sh --fast`: `cargo build --locked`,
-  `cargo clippy --locked -- -D warnings`, `cargo test --locked`, plus
-  CMake configure/build/ctest green (until T15 retires CMake).
+  `cargo clippy --locked -- -D warnings`, `cargo fmt --check`,
+  `cargo test --locked`, plus the CMake-retirement gate, the Rust count
+  pins, and the identity/desktop/icon/soundfont contract checks (T15
+  end-state — the CMake tier is retired, D14/P9).
 - **Pre-commit gate** (every task from T1 on, no waivers): full
   `verify.sh` — fast tier plus `flatpak-builder` + in-sandbox
   `scripts/smoke.sh`. Incremental rebuilds keep this cheap after T1;
@@ -30,9 +32,11 @@ build deps.
 - **Release gate** (T15 + every RC): DE matrix (§3.2/P12), fresh-profile
   audible playback with zero host setup, second-`flatpak run`
   single-instance forward (§1.5/P8).
-- No task breaks CMake CI until T15 (P9). `check_single_instance_open.cmake`
-  retires in T10 only **after** its Rust successor test is green
-  (sequenced retirement, P1) — there is never a commit with neither check.
+- No task broke CMake CI until T15 (P9). `check_single_instance_open.cmake`
+  retired in T10 only **after** its Rust successor test was green
+  (sequenced retirement, P1) — there was never a commit with neither
+  check. T15 retired the remaining C++ build the same way: every
+  CMake-dependent check has a Rust/`verify.sh` successor (D14).
 
 ## 1. Flatpak design
 
@@ -59,6 +63,7 @@ finish-args:
 modules:
   - shared-modules/gl.json  # if needed, Flathub shared-modules style include
   - fluidsynth.json         # build from release tarball if not in SDK/runtime
+  - soundfont               # T15: bundled GM SoundFont .sf3 (§5 risk 2, §6)
   - cargo-sources.json      # generated, committed (see §1.3)
   - dmidiplayer.json        # cargo --offline --locked build of this repo
 ```
@@ -237,13 +242,12 @@ Reuse as-is; the app ID is stable and tested:
   `appstreamcli validate` passes (2026-09-12, appstream 1.1.3; sole note is
   the pedantic grandfathered `cid-contains-uppercase-letter` — the app ID is
   decided, P3/D3); `verify.sh` runs it strictly when installed.
-- `icons/`: keep the `icons/CMakeLists.txt` pattern of installing
-  `dmidiplayer_*` sources renamed to `${GOSH_APP_ID}` under
-  `icons/hicolor/<size>/apps` (+ scalable `.svgz`). The Flatpak module must
-  install the same set; the `check_identity.cmake` successor in
-  `scripts/verify.sh` asserts the canonical ID present, legacy
-  `net.sourceforge.dmidiplayer` absent, and installed icon filenames —
-  without depending on CMake (P9, §2.4).
+- `icons/`: the `dmidiplayer_*` sources install renamed to the app ID
+  under `icons/hicolor/<size>/apps` (+ scalable `.svgz`) — the retired
+  `icons/CMakeLists.txt` pattern, now performed by the Flatpak module.
+  The `check_identity.cmake` successor in `scripts/verify.sh` asserts the
+  canonical ID present, legacy `net.sourceforge.dmidiplayer` absent, and
+  installed icon filenames — without depending on CMake (P9, §2.4).
 - **T14c symbolic-icon hicolor fallback** (`icons/fallback/`, 29 SVGs).
   Why: icon lookup (`cosmic-freedesktop-icons`, pinned via libcosmic)
   searches requested-theme → Inherits → `Cosmic` → `hicolor` → `gnome` →
@@ -378,9 +382,23 @@ set -eu
 # --- fast tier (also runs as the first half of the full gate) ---
 cargo build --locked
 cargo clippy --locked -- -D warnings
+cargo fmt --check
 cargo test --locked
-# CMake stays green until T15 retirement (P9):
-cmake -B build -DBUILD_DOCS=OFF -DBUILD_TESTING=ON && cmake --build build && ctest --test-dir build
+# CMake/C++ retirement gate (P9/D14, T15): every path below is gone.
+for retired in CMakeLists.txt cmake docs/CMakeLists.txt \
+    examples/CMakeLists.txt icons/CMakeLists.txt \
+    tests/check_identity.cmake tests/test_sequence.cpp \
+    data/dmidiplayer.gresource.xml src/main.cpp src/midi \
+    src/ui/window.cpp src/ui/window.hpp src/app/settings.cpp \
+    src/app/settings.hpp src/app/playlist.cpp src/app/playlist.hpp \
+    src/app/instruments.hpp .github/workflows/linux-build.yml; do
+    [ ! -e "$retired" ]  # fail on resurrection
+done
+# Count pins, Rust successors (PLAN §1/U1):
+grep -q 'pub const ALL: \[MenuAction; 23\]' src/ui/menu.rs      # 23 actions+menu
+grep -q 'const KNOWN_KEYS: \[&str; 30\]' src/config/settings.rs # 30 keys
+grep -q 'pub const ACCELERATORS: \[Accelerator; 9\]' src/state/keys.rs
+grep -q 'Message::Toast(text) => self.toast(text)' src/app.rs   # toast funnel
 [ "${1:-}" = "--fast" ] && exit 0
 # Identity/metadata contract (successor of check_identity.cmake):
 # NOTE: no CMake-dependent greps (P9) — check shipped files, not build inputs.
@@ -388,10 +406,9 @@ grep -q 'com.goshapps.GoshMIDI' com.goshapps.GoshMIDI.desktop \
   com.goshapps.GoshMIDI.metainfo.xml
 ! grep -q 'net.sourceforge.dmidiplayer' com.goshapps.GoshMIDI.desktop \
   com.goshapps.GoshMIDI.metainfo.xml
-# Installed-icon check reads the install manifest / datadir, never icons/CMakeLists.txt.
-# Grandfathered until T15 (P9): data/dmidiplayer.gresource.xml keeps the legacy
-# prefix "/net/sourceforge/dmidiplayer" (line 3) while the C++ UI lives; the
-# identity check must not flag this known-legacy string as a failure.
+# Installed-icon check reads the install manifest / datadir, never the
+# retired icons/CMakeLists.txt. The legacy gresource prefix
+# ("/net/sourceforge/dmidiplayer") is resolved by removal with its file.
 # Vendoring freshness (vendored + pinned generator, P4c):
 python3 flatpak/flatpak-cargo-generator.py Cargo.lock -o /tmp/cargo-sources.check.json
 diff -u flatpak/cargo-sources.json /tmp/cargo-sources.check.json
@@ -400,30 +417,36 @@ flatpak-builder --force-clean --user build-dir flatpak/com.goshapps.GoshMIDI.yml
 flatpak build --bind-mount=/repo=$PWD build-dir sh /repo/scripts/smoke.sh
 ```
 
-`check_single_instance_open.cmake` keeps running in the CMake tier until T10
-retires it after the Rust successor (forward + replace + present) is green.
+`check_single_instance_open.cmake` ran in the CMake tier until T10 retired
+it after the Rust successor (forward + replace + present) went green; the
+file itself is deleted with the T15 retirement.
 T14c additions to the `--fast` tier: the desktop-integration contract
 (`DBusActivatable` + compat-field greps, metainfo wording pins), the
 symbolic-icon fallback inventory (every `src/` literal resolves to a file in
 `icons/fallback/`), and the freedesktop validators — `desktop-file-validate`
 and `appstreamcli validate` run strictly when installed, loud-SKIP otherwise
 (CI images without them rely on `tests/desktop_integration.rs` instead).
+T15 additions: the retirement gate + Rust count pins above, the metainfo
+`<release>` pin (shipped `Cargo.toml` version must have an entry), the
+bundled-SoundFont manifest pin (code-side `BUNDLED_SOUNDFONT_NAME` installed
+from sha256-pinned sources — font + MIT license, both pinned in `verify.sh`
+and `desktop_integration.rs`), and the in-sandbox SoundFont presence/magic
+assertion in `smoke.sh`.
 
 ## 3. CI
 
-### 3.1 Workflow (extends `.github/workflows/linux-build.yml`)
+### 3.1 Workflow (`cosmic-build.yml`; the CMake job is retired)
 
-Keep the existing CMake job untouched during migration; add a parallel
-`cosmic` job:
+The CMake job (`linux-build.yml`) ran untouched during migration next to
+the parallel `cosmic` job; T15 deleted it with the C++ retirement, so
+`cosmic-build.yml` is the whole CI:
 
-1. **Fix triggers (P4a).** `linux-build.yml` `on.push`/`on.pull_request`
-   branches currently list only `devel` and `master` (verified) — add
-   `cosmic-migration` so both the CMake job and the new `cosmic` job run on
-   the migration branch (keep `devel` for the later merge).
+1. **Triggers (P4a).** `cosmic-migration` is listed on `push`/`pull_request`
+   alongside `devel` and `master` (verified) — keep `devel` for the later
+   merge.
 2. `actions/checkout`, install Rust stable pinned per T0/P5
    (`dtolnay/rust-toolchain` at the pinned toolchain + clippy).
-3. Install system deps (P4b). CMake job keeps its current set
-   (`libgtk-4-dev libadwaita-1-dev` only while it still builds). The `cosmic`
+3. Install system deps (P4b). The `cosmic`
    job needs this full enumerated Debian set (**preliminary — derived,
    not build-logged; finalizes when the T1 CI install goes green**):
    `pkg-config cmake g++ libasound2-dev libfluidsynth-dev libwayland-dev
@@ -534,7 +557,8 @@ Phase-3 manual recipe (run once per §3.2 row, on the release candidate):
       (vendored + pinned generator, P4c/P5).
 - [ ] `scripts/verify.sh` (+`--fast`) + `scripts/smoke.sh` green locally
       and in CI (tiered gates, P1).
-- [ ] CI triggers include `cosmic-migration` + full system deps (P4a/P4b).
+- [x] CI triggers include `cosmic-migration` + full system deps (P4a/P4b;
+      T15: CMake job retired, `cosmic-build.yml` is the CI).
 - [x] Binary `dmidiplayer` end to end: manifest `command`, `Exec`, `--help`
       usage line, smoke test (P3; exact-line `--help`/`-v` pins in
       `tests/desktop_integration.rs`, T14c).
@@ -542,14 +566,16 @@ Phase-3 manual recipe (run once per §3.2 row, on the release candidate):
       bus-name == basename + `open`-action halves pinned, sandbox own-ID
       probed; live second-`flatpak run` forward is a Phase-3 recipe, §3.2).
 - [ ] Examples generated + installed + asserted in-sandbox (P6).
-- [x] Metainfo: toolkit wording + Rhythm-claim fix (P11, T14c; `<release>`
-      entry stays T15's).
+- [x] Metainfo: toolkit wording + Rhythm-claim fix (P11, T14c) +
+      `<release>` entry for the shipped version (T15).
 - [x] Symbolic-icon hicolor fallback vendored + installed + inventoried
       (T14c, §1.6; per-row visibility is a T15 live check).
 - [ ] `.flatpak` bundle verified on the §3.2 provider matrix (P12).
-- [ ] Sandbox data-migration story + stale-SoundFont UX shipped (P7, §6).
-- [ ] SoundFont story documented in-app and README (see §5 risk 2).
-- [ ] CMake retired, CMake-dependent checks replaced, gresource
+- [ ] Sandbox data-migration story + stale-SoundFont UX shipped (P7, §6;
+      T15-S2: fixtures + bundled fallback landed, re-prompt UX in S3).
+- [x] SoundFont story documented in-app and README (T15, §5 risk 2:
+      bundled `FluidR3Mono_GM.sf3` + host-install advice).
+- [x] CMake retired, CMake-dependent checks replaced, gresource
       grandfathering resolved by removal (P9, T15).
 
 ## 5. Risks
@@ -564,14 +590,14 @@ Phase-3 manual recipe (run once per §3.2 row, on the release candidate):
 2. **FluidSynth SoundFont access.** The host's
    `/usr/share/sounds/sf2/*.sf2` (e.g. `fluid-soundfont-gm`) is **not**
    visible in the sandbox, so a fresh install has no GM SoundFont and the
-   README's "install fluid-soundfont-gm" advice stops working. Mitigations:
-   bundle a fallback GM SoundFont selected in T6 on **license + size**
-   criteria (P7 — redistributable license compatible with Flathub
-   distribution, minimal size for GM coverage; evidence recorded in T6);
-   sandbox-aware SF search paths (bundled dir, sandbox data dir,
-   portal-persisted picks — never host `/usr/share`); portal picker with
-   persisted access; re-prompt UX when the configured SoundFont is stale
-   (§6). QA: fresh profile → audible FluidSynth playback with zero host setup.
+   README's "install fluid-soundfont-gm" advice stops working. Mitigations
+   (T15, §6): bundled fallback `FluidR3Mono_GM.sf3` v2.312 (MIT,
+   14,563,174 bytes — the T6-recorded `.sf3` substitution, full
+   provenance in the manifest comments); sandbox-aware SF search paths
+   (bundled file first, then host paths — never host `/usr/share`
+   in-sandbox); portal picker with persisted access; re-prompt UX when the
+   configured SoundFont is stale (S3). QA: fresh profile → audible
+   FluidSynth playback with zero host setup (S4 gate).
 3. **Vendoring drift / git-dep availability.** Any `Cargo.toml`/`Cargo.lock`
    change without regenerating `cargo-sources.json` breaks the offline
    Flatpak build; yanked crates or force-pushed git revs break it later.
@@ -605,15 +631,33 @@ Story (UX-led, no silent auto-copy across the sandbox boundary):
   values, `.cfg` paths, playlist entries pointing at unreadable absolute
   paths) and offers per-path **re-prompt UX** ("re-locate" via the portal
   picker) instead of silently dropping them.
-- **Stale absolute `soundFont` → re-prompt UX:** on load, an unreadable
+- **Stale absolute `soundFont` → re-prompt UX (S3):** on load, an unreadable
   configured SoundFont falls back to the bundled SF (with a toast naming the
   stale path) and offers the D11 chooser; the driver fallback order is
-  otherwise unchanged.
-- **Sandbox-aware SF search paths (T6):** bundled `/app/share/sounds/sf2`,
-  sandbox data dir, portal-persisted picks — never host `/usr/share`.
-- **Bundled-SF selection criteria (T6):** license must allow redistribution
-  via Flathub alongside GPL-3.0-or-later code, and size must be minimal for
-  full GM coverage; T6 records the candidate, license, and size evidence.
-- QA: scripted stale-path fixtures (config + `.cfg` + `.lst` with dead
-  absolute paths) → app stays usable, every stale path surfaces a re-prompt,
-  fresh profile still plays audibly with zero host setup.
+  otherwise unchanged. S2 lands the fixture shapes + the bundled file this
+  contract builds on; S3 wires the UX against them.
+- **Sandbox-aware SF search paths:** bundled
+  `/app/share/soundfonts/FluidR3Mono_GM.sf3` first (P7 — host `/usr` is
+  invisible in-sandbox), then the 8 host paths in C++ order
+  (`output_fluid.rs::default_sound_font_paths`).
+- **Bundled-SF choice (T15, per the T6 criteria — license must allow
+  redistribution via Flathub alongside GPL-3.0-or-later code, size minimal
+  for full GM coverage):** `FluidR3Mono_GM.sf3` v2.312 (2016-12-05) —
+  the T6-recorded `.sf3` substitution for the 141.5 MiB `FluidR3_GM.sf2`.
+  License **MIT** (`FluidR3Mono_License.md`: Frank Wen 2000-2002/2008 +
+  Michael Cowgill 2014-16 mono version, full COPYING text; a `type: file`
+  source installs it next to the font in-sandbox). Size **14,563,174
+  bytes (~13.9 MiB)**. Upstream LibreScore/sf3 at pinned commit
+  `3a6eda8` (v0.8.0), sha256
+  `cfcd66d8…2794ec2` (two identical downloads, 2026-09-12; the `.wasm`
+  suffix is upstream's web-compression alias for the same `.sf3` bytes —
+  `RIFF....sfbk` magic verified). Decode proven pre-merge: host
+  FluidSynth 2.6.0 (the manifest pin) renders `examples/test.mid`
+  through it to 121,408 non-silent stereo frames. Full provenance in the
+  `soundfont` module comments; the code↔manifest bond is pinned by
+  `desktop_integration::bundled_soundfont_manifest_matches_code` and the
+  `verify.sh` soundfont pin, in-sandbox presence/magic by `smoke.sh`.
+- QA: scripted stale-path fixtures (`tests/fixtures/stale/`: config +
+  `.cfg` + `.lst` with dead absolute paths, pinned by `tests/stale_flows.rs`
+  — verbatim load, no drops, no panics) → S3 re-prompt UX on every stale
+  path → S4 gate: fresh profile plays audibly with zero host setup.

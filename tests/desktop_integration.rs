@@ -368,3 +368,91 @@ fn single_instance_flags_forward_files_as_open_action() {
     assert_eq!(idle.action(), None);
     assert!(idle.args().is_empty());
 }
+
+/// T15 (D14/P9): the C++ build is retired — no CMake inputs, no C++ sources,
+/// no legacy gresource prefix file, no CMake-only CI job. Mirrors the
+/// `verify.sh` retirement gate so `cargo test` alone catches a resurrection.
+#[test]
+fn cmake_build_is_retired() {
+    for rel in [
+        "CMakeLists.txt",
+        "cmake",
+        "docs/CMakeLists.txt",
+        "examples/CMakeLists.txt",
+        "icons/CMakeLists.txt",
+        "tests/check_identity.cmake",
+        "tests/test_sequence.cpp",
+        "data/dmidiplayer.gresource.xml",
+        "src/main.cpp",
+        "src/midi",
+        "src/ui/window.cpp",
+        "src/ui/window.hpp",
+        "src/app/settings.cpp",
+        "src/app/settings.hpp",
+        "src/app/playlist.cpp",
+        "src/app/playlist.hpp",
+        "src/app/instruments.hpp",
+        ".github/workflows/linux-build.yml",
+    ] {
+        assert!(
+            !Path::new(rel).exists(),
+            "T15: retired C++/CMake path still present: {rel}"
+        );
+    }
+}
+
+/// T15 (P11): the first libcosmic release carries a `<release>` entry whose
+/// version is the shipped crate version. (T14c rhythm-claim fix re-verified
+/// by `metainfo_toolkit_and_rhythm_wording` in the same file.)
+#[test]
+fn metainfo_first_libcosmic_release() {
+    let rel = "com.goshapps.GoshMIDI.metainfo.xml";
+    let text = repo_file(rel);
+    let version = env!("CARGO_PKG_VERSION");
+    let pin = format!("<release version=\"{version}\"");
+    assert!(
+        text.contains(&pin),
+        "T15: {rel} lacks a <release> for the shipped version {version}"
+    );
+}
+
+/// T15 (P7): the Flatpak manifest installs the exact SoundFont file the
+/// engine searches for — the bonded pair is `BUNDLED_SOUNDFONT_NAME` in
+/// `src/core/output_fluid.rs` (code side) and the `soundfont` module (pack
+/// side). Both `type: file` sources (font + MIT license) are sha256-pinned.
+/// Presence in-sandbox is asserted by `scripts/smoke.sh`.
+#[test]
+fn bundled_soundfont_manifest_matches_code() {
+    let code = repo_file("src/core/output_fluid.rs");
+    let marker = "pub const BUNDLED_SOUNDFONT_NAME: &str = \"";
+    let start = code
+        .find(marker)
+        .expect("T15: BUNDLED_SOUNDFONT_NAME missing from output_fluid.rs")
+        + marker.len();
+    let end = code[start..]
+        .find('"')
+        .expect("T15: BUNDLED_SOUNDFONT_NAME unterminated")
+        + start;
+    let name = &code[start..end];
+    assert!(
+        name.ends_with(".sf2") || name.ends_with(".sf3"),
+        "T15: unexpected bundled SoundFont name: {name}"
+    );
+    let yml = repo_file("flatpak/com.goshapps.GoshMIDI.yml");
+    assert!(
+        yml.contains(name),
+        "T15: manifest does not install the code-side bundled SoundFont {name}"
+    );
+    assert!(
+        yml.contains("/app/share/soundfonts/"),
+        "T15: manifest does not install into /app/share/soundfonts/"
+    );
+    assert!(
+        yml.contains("sha256: cfcd66d89e8386823400eca64934b14fbea7bf48ba1f00d21189af1262794ec2"),
+        "T15: manifest soundfont sha256 drifted (re-verify the pinned file)"
+    );
+    assert!(
+        yml.contains("sha256: c21ed6be2fea862673953977c616befc28d1b20dfa60349e4461b97c759db6ca"),
+        "T15: manifest soundfont license sha256 drifted (re-verify the pinned file)"
+    );
+}

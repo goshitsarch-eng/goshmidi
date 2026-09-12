@@ -762,7 +762,7 @@ fn help_about_static_content() {
     assert!(HELP_TEXT.contains("~/.dmidiplayer/<song>.cfg"));
 
     assert_eq!(ABOUT.app_name, "Gosh MIDI Player");
-    assert_eq!(env!("CARGO_PKG_VERSION"), "1.7.5");
+    assert_eq!(env!("CARGO_PKG_VERSION"), "1.8.0");
     assert_eq!(ABOUT.website, "https://github.com/goshitsarch-eng/goshmidi");
     assert_eq!(ABOUT.support_url, "https://dmidiplayer.sourceforge.io/");
     assert_eq!(

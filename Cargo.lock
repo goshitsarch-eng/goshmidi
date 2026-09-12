@@ -1277,7 +1277,7 @@ dependencies = [
 
 [[package]]
 name = "dmidiplayer"
-version = "1.7.5"
+version = "1.8.0"
 dependencies = [
  "alsa",
  "chardetng",
