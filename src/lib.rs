@@ -4,9 +4,12 @@
 //! The binary and the test harness use this single copy of the code; no
 //! module is duplicated between targets.
 
-pub mod app;
+pub mod application;
+pub mod commands;
 pub mod config;
 pub mod core;
-pub mod message;
+#[cfg(feature = "desktop")]
+pub mod frontend;
+pub mod models;
+pub mod platform;
 pub mod state;
-pub mod ui;

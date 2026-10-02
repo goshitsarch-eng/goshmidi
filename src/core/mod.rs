@@ -16,6 +16,7 @@ pub mod instruments;
 #[allow(dead_code)]
 pub mod output;
 #[allow(dead_code)]
+#[cfg(target_os = "linux")]
 pub mod output_alsa;
 #[allow(dead_code)]
 pub mod output_fluid;

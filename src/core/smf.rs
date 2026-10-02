@@ -473,7 +473,7 @@ mod tests {
         ] {
             let mut seq = Sequence::default();
             assert!(!load_smf_bytes(&mut seq, &data, "SMF"), "{name}");
-            assert_eq!(seq.loading_errors(), "Missing MThd header<br/>", "{name}");
+            assert_eq!(seq.loading_errors(), "Missing MThd header\n", "{name}");
         }
         // Header length below 6 is rejected (C++ oracle: edge_badhdrlen).
         let mut data = b"MThd".to_vec();
@@ -481,7 +481,7 @@ mod tests {
         data.extend_from_slice(&[0; 4]);
         let mut seq = Sequence::default();
         assert!(!load_smf_bytes(&mut seq, &data, "SMF"));
-        assert_eq!(seq.loading_errors(), "Invalid header length<br/>");
+        assert_eq!(seq.loading_errors(), "Invalid header length\n");
         // ...while extra header bytes are skipped (len > 6).
         let mut data = b"MThd".to_vec();
         data.extend_from_slice(&8u32.to_be_bytes());
@@ -506,7 +506,7 @@ mod tests {
         assert_eq!(seq.division(), 96);
         assert_eq!(
             seq.loading_errors(),
-            "SMPTE time division is not fully supported<br/>"
+            "SMPTE time division is not fully supported\n"
         );
         // div == 0: silent 96, no error (arch A7).
         let data = smf_file(0, &[end_of_track()]);
@@ -522,7 +522,7 @@ mod tests {
         let mut seq = Sequence::default();
         assert!(!seq.load_file(&path));
         assert_eq!(seq.division(), 96);
-        assert_eq!(seq.loading_errors(), "No playable MIDI events<br/>");
+        assert_eq!(seq.loading_errors(), "No playable MIDI events\n");
     }
 
     #[test]
@@ -551,7 +551,7 @@ mod tests {
         let data = smf_file(120, &[track]);
         let mut seq = Sequence::default();
         assert!(!load_smf_bytes(&mut seq, &data, "SMF"));
-        assert_eq!(seq.loading_errors(), "Invalid running status<br/>");
+        assert_eq!(seq.loading_errors(), "Invalid running status\n");
     }
 
     #[test]

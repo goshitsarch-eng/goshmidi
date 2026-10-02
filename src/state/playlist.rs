@@ -87,10 +87,10 @@ impl PlaylistState {
     pub fn save(&mut self, path: &Path) -> bool {
         let mut buf = Vec::new();
         for item in &self.items {
-            buf.extend_from_slice(path_bytes(item));
+            buf.extend_from_slice(&path_bytes(item));
             buf.push(b'\n');
         }
-        match std::fs::write(path, buf) {
+        match crate::platform::persistence::write_atomic(path, buf) {
             Ok(()) => {
                 self.source = Some(path.to_path_buf());
                 self.dirty = false;
@@ -369,14 +369,14 @@ fn bytes_to_path(bytes: &[u8]) -> PathBuf {
 }
 
 #[cfg(unix)]
-fn path_bytes(path: &Path) -> &[u8] {
+fn path_bytes(path: &Path) -> std::borrow::Cow<'_, [u8]> {
     use std::os::unix::ffi::OsStrExt;
-    path.as_os_str().as_bytes()
+    std::borrow::Cow::Borrowed(path.as_os_str().as_bytes())
 }
 
 #[cfg(not(unix))]
-fn path_bytes(path: &Path) -> &[u8] {
-    path.to_string_lossy().as_bytes()
+fn path_bytes(path: &Path) -> std::borrow::Cow<'_, [u8]> {
+    std::borrow::Cow::Owned(path.to_string_lossy().into_owned().into_bytes())
 }
 
 // ---------------------------------------------------------------------------

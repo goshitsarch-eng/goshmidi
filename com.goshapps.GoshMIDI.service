@@ -1,3 +1,0 @@
-[D-BUS Service]
-Name=com.goshapps.GoshMIDI
-Exec=/app/bin/dmidiplayer

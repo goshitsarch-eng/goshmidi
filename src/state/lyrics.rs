@@ -3,8 +3,8 @@
 //! The C++ twin is the lyrics page (`src/ui/window.cpp:1755-1869`):
 //! track/type/encoding dropdowns, the filtered static body (`refreshLyrics`,
 //! `window.cpp:550-629`) plus the live `onText` tail (`window.cpp:157-179`)
-//! — including the prefill+append duplication quirk, which is PRESERVED
-//! (U10). T11a owns the state + recompute + prefs-apply half; T11b renders
+//! — exports use the static filtered body once, without duplicating sung text.
+//! T11a owns the state + recompute + prefs-apply half; T11b renders
 //! it (dropdowns, `text::Rich` runs, autoscroll snap, D2 Lyrics rows).
 //!
 //! C++ snap-back FIX (lead-directed, T11): `refreshLyrics` rebuilds the
@@ -286,8 +286,7 @@ impl LyricsState {
     /// anything was appended. Exact `onText` port (`window.cpp:163-178`):
     /// the previous `current` becomes `past`, the new text becomes
     /// `current` — no trailing-newline rule on the live path (unlike the
-    /// static prefill). U10: the sung line stays in [`Self::body`] too, so
-    /// [`Self::full_text`] duplicates it, exactly like the C++ buffer.
+    /// static prefill). Static exports retain their original body once.
     pub fn append_live(&mut self, track: u32, text_type: i32, text: &str) -> bool {
         if !self.passes_filter(track, text_type) {
             return false;
@@ -304,11 +303,13 @@ impl LyricsState {
         format!("{}{}", self.live_past, self.live_current)
     }
 
-    /// Whole lyrics text, static + live (`gtk_text_buffer_get_text` twin):
-    /// what Copy/Save/Print export. U10 concatenation PRESERVED incl. the
-    /// prefill+append duplication.
+    /// Whole lyrics text without duplicating the static prefill during playback.
     pub fn full_text(&self) -> String {
-        format!("{}{}{}", self.body, self.live_past, self.live_current)
+        if self.body.is_empty() {
+            self.live_tail()
+        } else {
+            self.body.clone()
+        }
     }
 }
 
@@ -971,6 +972,19 @@ impl Default for AppliedLyricsPrefs {
     }
 }
 
+/// KAR lyric syllables are joined; slash starts a line and backslash a verse.
+/// Other metadata keeps the usual one-record-per-line presentation.
+pub fn display_record(record: &TextRec, codec: &str, kar: bool) -> String {
+    let mut text = Sequence::decode_with_charset(&record.text, codec);
+    if kar && matches!(record.text_type, TextType::Text | TextType::Lyric) {
+        return text.replace('\\', "\n\n").replace('/', "\n");
+    }
+    if !text.is_empty() && !text.ends_with('\n') && record.text_type != TextType::Lyric {
+        text.push('\n');
+    }
+    text
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1184,17 +1198,16 @@ mod tests {
         assert_eq!(l.live_seq, 2);
     }
 
-    /// U10: the static body holds every filtered event AND live appends
-    /// duplicate the sung ones — `full_text` preserves the duplication.
+    /// Static prefill already contains sung records; export them only once.
     #[test]
-    fn full_text_duplicates_sung_lines_u10() {
+    fn full_text_does_not_duplicate_sung_lines() {
         let texts = vec![rec(1, TextType::Lyric, b"la ")];
         let mut l = LyricsState::new();
         l.codec = "UTF-8".to_string();
         l.refresh_body(&texts);
         assert_eq!(l.body, "la ");
         assert!(l.append_live(1, 5, "la "));
-        assert_eq!(l.full_text(), "la la ");
+        assert_eq!(l.full_text(), "la ");
     }
 
     fn rgba(r: f32, g: f32, b: f32, a: f32) -> Rgba {

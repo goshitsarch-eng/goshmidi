@@ -338,7 +338,18 @@ mod tests {
     #[test]
     fn defaults_match_cpp_settings() {
         let m = MidiState::new();
-        assert_eq!(m.backends, vec!["ALSA", "FluidSynth", "Dummy"]);
+        assert_eq!(
+            m.backends,
+            vec![
+                if cfg!(target_os = "linux") {
+                    "ALSA"
+                } else {
+                    "MIDI"
+                },
+                "FluidSynth",
+                "Dummy"
+            ]
+        );
         assert_eq!(m.backend, "FluidSynth");
         assert_eq!(m.port, "fluidsynth");
         assert!(!m.advanced);

@@ -6,7 +6,7 @@
 //! `onFinished` decision tree (`src/ui/window.cpp:194-214`).
 
 use crate::core::event::tempo_to_bpm;
-use crate::message::{RepeatMode, Status};
+use crate::models::{RepeatMode, Status};
 
 /// Tempo slider range, UI percent (`window.cpp:1700-1703`).
 pub const TEMPO_MIN_PCT: u32 = 50;

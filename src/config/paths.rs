@@ -1,13 +1,14 @@
-//! Config/data path resolution (arch §4.1, `settings.cpp` path helpers).
+//! Native config/data paths and compatibility with the original key-file data.
 //!
-//! Mirrors the C++ path contract:
+//! Current path contract:
 //!
 //! | Item | Path |
 //! |---|---|
-//! | Global config | `$XDG_CONFIG_HOME/dmidiplayer/dmidiplayer.conf` |
+//! | Global config | OS config directory + `dmidiplayer/dmidiplayer.conf` |
 //! | Portable config | `./dmidiplayer.conf` (`-p`) or `-f FILE` (parent = config dir) |
-//! | Data dir | `~/.dmidiplayer/` (unchanged by portable mode) |
-//! | Song settings | `~/.dmidiplayer/<song-file-name>.cfg` |
+//! | Data dir | OS local-data directory + `dmidiplayer` |
+//! | Song settings | Full-path hash under the data directory |
+//! | Legacy song settings | Read-only `~/.dmidiplayer/<song-file-name>.cfg` fallback |
 //! | Last playlist | path stored verbatim in config (`lastPlayList`) |
 //! | Examples fallback | DATADIR, `$XDG_DATA_HOME`, `/usr/share`, `./examples/` |
 //!
@@ -20,8 +21,7 @@
 //! directories as a side effect of *every* call, even on read paths. Here
 //! every getter is pure; directory creation happens only through
 //! [`Paths::ensure_config_dir`] / [`Paths::ensure_data_dir`], which the save
-//! paths call. First-run save still always succeeds; read-only runs leave no
-//! directories behind.
+//! paths call. Permission and other IO failures are returned to the caller.
 
 use std::path::{Path, PathBuf};
 
@@ -43,15 +43,24 @@ impl Env {
     /// `g_get_user_config_dir` / `g_get_user_data_dir` apply (empty XDG values
     /// count as unset, per the XDG base-directory spec).
     pub fn from_os() -> Self {
-        let home = std::env::var_os("HOME")
-            .map(PathBuf::from)
+        let native = crate::platform::native_directories();
+        let home = native
+            .as_ref()
+            .map(|dirs| dirs.0.clone())
+            .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
             .unwrap_or_else(|| {
                 // Degenerate (no passwd lookup without libc): keep resolving under
                 // `/` rather than failing; tests always inject a real home.
                 PathBuf::from("/")
             });
-        let config_home = xdg_or(&home, "XDG_CONFIG_HOME", ".config");
-        let data_home = xdg_or(&home, "XDG_DATA_HOME", ".local/share");
+        let config_home = native
+            .as_ref()
+            .map(|dirs| dirs.1.clone())
+            .unwrap_or_else(|| xdg_or(&home, "XDG_CONFIG_HOME", ".config"));
+        let data_home = native
+            .as_ref()
+            .map(|dirs| dirs.2.clone())
+            .unwrap_or_else(|| xdg_or(&home, "XDG_DATA_HOME", ".local/share"));
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         Self {
             home,
@@ -165,9 +174,9 @@ impl Paths {
         std::fs::create_dir_all(dir)
     }
 
-    /// Data directory `~/.dmidiplayer/` (identical in portable mode).
+    /// OS local-data directory plus `dmidiplayer` (identical in portable mode).
     pub fn data_dir(&self) -> PathBuf {
-        self.env.home.join(".dmidiplayer")
+        self.env.data_home.join("dmidiplayer")
     }
 
     /// Create the data directory (and parents) if missing. Called by save
@@ -176,13 +185,40 @@ impl Paths {
         std::fs::create_dir_all(self.data_dir())
     }
 
-    /// Song-settings file `~/.dmidiplayer/<song_name>.cfg`.
+    /// Basename settings helper under the current data directory.
     ///
     /// `song_name` is the song's file name (no separators; callers pass the
-    /// equivalent of C++ `currentFile()`). The name is joined verbatim with
-    /// no sanitization, mirroring `AppSettings::songSettingsPath`.
+    /// equivalent of C++ `currentFile()`). Separators are replaced so the result
+    /// stays under the data directory. New saves use `song_settings_for_file`.
     pub fn song_settings_path(&self, song_name: &str) -> PathBuf {
-        self.data_dir().join(format!("{song_name}.cfg"))
+        let safe = song_name.replace(['/', '\\'], "_");
+        self.data_dir().join(format!("{safe}.cfg"))
+    }
+
+    pub fn legacy_song_settings_path(&self, song_name: &str) -> PathBuf {
+        let safe = song_name.rsplit(['/', '\\']).next().unwrap_or("song");
+        self.env
+            .home
+            .join(".dmidiplayer")
+            .join(format!("{safe}.cfg"))
+    }
+
+    /// A stable path hash prevents equal basenames in different folders from
+    /// overwriting each other's settings. Legacy files remain read-only fallbacks.
+    pub fn song_settings_for_file(&self, path: &Path) -> PathBuf {
+        let name = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .replace(['/', '\\'], "_");
+        let hash = path
+            .as_os_str()
+            .as_encoded_bytes()
+            .iter()
+            .fold(0xcbf29ce484222325u64, |hash, byte| {
+                (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+            });
+        self.data_dir().join(format!("{name}-{hash:016x}.cfg"))
     }
 
     /// Ordered `examples.lst` fallback candidates (`window.cpp:247-257`):
@@ -233,10 +269,10 @@ mod tests {
             Path::new("/home/u/.config/dmidiplayer/dmidiplayer.conf")
         );
         assert_eq!(p.config_dir(), Path::new("/home/u/.config/dmidiplayer"));
-        assert_eq!(p.data_dir(), Path::new("/home/u/.dmidiplayer"));
+        assert_eq!(p.data_dir(), Path::new("/home/u/.local/share/dmidiplayer"));
         assert_eq!(
             p.song_settings_path("song.mid"),
-            Path::new("/home/u/.dmidiplayer/song.mid.cfg")
+            Path::new("/home/u/.local/share/dmidiplayer/song.mid.cfg")
         );
     }
 
@@ -248,7 +284,7 @@ mod tests {
         // Parent of a bare file name is "" (mirrors C++ parent_path("")).
         assert_eq!(p.config_dir(), Path::new(""));
         // Data dir is unchanged by portable mode.
-        assert_eq!(p.data_dir(), Path::new("/home/u/.dmidiplayer"));
+        assert_eq!(p.data_dir(), Path::new("/home/u/.local/share/dmidiplayer"));
     }
 
     #[test]
@@ -315,7 +351,7 @@ mod tests {
         // Real environment: only the well-known suffixes are asserted.
         let p = Paths::from_env();
         assert!(p.config_file().ends_with("dmidiplayer/dmidiplayer.conf"));
-        assert!(p.data_dir().ends_with(".dmidiplayer"));
+        assert!(p.data_dir().ends_with("dmidiplayer"));
         let pp = Paths::portable_from_env(None);
         assert!(pp.portable());
         assert_eq!(pp.config_file(), Path::new("dmidiplayer.conf"));

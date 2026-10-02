@@ -1,33 +1,47 @@
 [package]
 name = "dmidiplayer"
-version = "1.8.0"
+version = "2.0.0-alpha.1"
 edition = "2024"
 rust-version = "1.93"
+license = "GPL-3.0-or-later"
+description = "Cross-platform MIDI and karaoke player built with Rust and Dioxus Desktop"
+repository = "https://github.com/goshitsarch-eng/goshmidi"
 
 [workspace]
+
+[features]
+default = ["desktop"]
+ui-test = ["desktop"]
+desktop = ["dep:dioxus", "dep:rfd", "dep:arboard", "dep:opener", "dep:tokio", "dep:gtk", "dep:image"]
 
 [[bin]]
 name = "dmidiplayer"
 path = "src/main.rs"
 
 [dependencies]
-libcosmic = { git = "https://github.com/pop-os/libcosmic.git", rev = "7e82198ab1aba712640b0167e58ad37bf03012ca", features = ["about", "single-instance", "xdg-portal"] }
-alsa = "0.12"
+dioxus = { version = "=0.7.10", default-features = false, features = ["lib", "desktop"], optional = true }
+midir = "0.11"
+libloading = "0.9"
+directories = "6"
+getrandom = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tempfile = "3"
+rfd = { version = "0.17", optional = true }
+arboard = { version = "3", default-features = false, optional = true }
+opener = { version = "0.8", features = ["reveal"], optional = true }
+tokio = { version = "1", features = ["time", "rt", "sync"], optional = true }
+image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+futures-util = "0.3"
 chardetng = "1"
 encoding_rs = "0.8"
 url = "2.5"
 
-[dev-dependencies]
-tempfile = "3"
+[target.'cfg(target_os = "linux")'.dependencies]
+alsa = "0.11"
+gtk = { version = "0.18", optional = true }
 
-# Unblock vendoring: libcosmic pins this repo at 32283d7 while its iced
-# workspace pins c0cff4d, and neither flatpak-cargo-generator nor
-# `cargo vendor` can stage two revs of one git repo as a single source.
-# Patch both dependents onto one rev (c0cff4d: 5 iced dependents vs
-# libcosmic's 1). The `git@` userinfo makes this a distinct source ID from
-# the dependents' plain URL (same repo, same commit); cargo rejects
-# same-source patches, and crates.io 0.2.0 matches neither rev (both git
-# revs are newer). cosmic-protocols follows via cctk's path dep, so only
-# cctk is patched. Revisit when upstreams align.
-[patch."https://github.com/pop-os/cosmic-protocols"]
-cosmic-client-toolkit = { git = "https://git@github.com/pop-os/cosmic-protocols", rev = "c0cff4db14c37ed954983158e4055aa94c7741d9" }
+[profile.dev]
+debug = 1

@@ -1,81 +1,103 @@
-Gosh MIDI Player
-================
+# Gosh MIDI Player
 
-A MIDI file player for Linux with a libcosmic/Rust interface. This is a
-display-name fork of **[dmidiplayer](https://sourceforge.net/p/dmidiplayer/)**
-(Drumstick MIDI File Player) by Pedro López-Cabanillas. The command and compatible settings paths remain
-`dmidiplayer`, `~/.config/dmidiplayer`, and `~/.dmidiplayer`; Gosh Apps releases
-use the permanent application ID `com.goshapps.GoshMIDI`.
+A MIDI and karaoke player written in Rust with Dioxus Desktop. It reads MID,
+MIDI, KAR, RIFF RMID and Cakewalk WRK files, and sends MIDI to FluidSynth or
+native external MIDI ports. The executable retains the name `dmidiplayer`.
 
-It reads **.MID** / **.MIDI** (Standard MIDI Files), **.KAR** (Karaoke),
-**.RMI** (RIFF RMID), and **.WRK** (Cakewalk) files, and sends MIDI events to
-ALSA sequencer ports or to an embedded FluidSynth backend.
+**2.0.0-alpha.1 is a prerelease.** Linux desktop, native dialogs, real audio,
+clipboard, printing and Linux packages have been exercised. Windows desktop
+code and both macOS core targets compile, but native Windows/macOS acceptance
+and an installed Flatpak remain unverified. See [validation](docs/VALIDATION.md)
+for evidence and remaining release gates.
 
-This libcosmic/Rust port keeps playback at parity with the GTK4 UI, and
-**playlists are a first-class sidebar**.
+![Karaoke in the Linux desktop](docs/screenshots/linux-karaoke.png)
 
-![App Screenshot](https://p.kagi.com/proxy/screenshot.png?c=IVBIz-djrqhBdoI1kAYWuIGdBLzVdwgu0RO3DCOd_o3wHzM7zafCPDhPaFUe6FuRQx3eskzbUvHhtBSisKAaDPlR2o8sJArato3jLu0QNpAYAUg84hhh9hbq0oz6KTK3)
+## Features
 
+- Play, pause, resume, stop, seek, bar steps, jump, loops and song/playlist repeat.
+- Tempo, volume and transpose; percussion remains untransposed.
+- Playlists with add, remove, reorder, shuffle, recent files and unsaved-change protection.
+- Reachable Lyrics, Channels and Piano tabs; channel mute, solo, program lock,
+  instrument, name, level and meters; piano audition and note highlighting.
+- Lyrics track/type/charset filters, karaoke line formatting, follow position,
+  native clipboard, text export and system printing.
+- MIDI setup, port refresh, test note, GM/GS/MT-32 maps, resets, companion SysEx,
+  SF2/SF3 SoundFonts and an explicit silent Dummy output.
+- Apply/Cancel preferences, compatible settings and per-song mixes, live
+  System/Light/Dark appearance, saved window geometry and local file activation.
 
+The original GPL application and its authors remain credited. The baseline
+behavior and intentional fixes are documented in [MIGRATION_AUDIT.md](MIGRATION_AUDIT.md).
+The application uses WebView2 on Windows, WKWebView on macOS and WebKitGTK on
+Linux. GTK hosts the Linux WebView and native integrations. No Node runtime is used.
 
-Original project
-----------------
+## Build and run
 
-* Homepage: [dmidiplayer.sourceforge.io](https://dmidiplayer.sourceforge.io/)
-* SourceForge: [sourceforge.net/p/dmidiplayer](https://sourceforge.net/p/dmidiplayer/)
-* GitHub (upstream): [pedrolcl/dmidiplayer](https://github.com/pedrolcl/dmidiplayer)
+Install stable Rust with rustfmt and clippy; `rust-toolchain.toml` pins the tested
+compiler. Use the checked-in Cargo.lock.
 
-Key features
-------------
+Linux (Debian/Ubuntu):
 
-* MIDI output to ALSA hardware/soft-synth ports (MT-32, SC-55, USB MIDI, Munt),
-  FluidSynth with your own SoundFont, or a dummy sink
-* Instrument maps and SysEx resets for GM, GS (SC-55), XG, and MT-32
-* Automatic companion `.syx` loading (same name as the MIDI file, or `Folder.syx`)
-* Transpose song tonality between -12 and +12 semitones (percussion excluded)
-* Change MIDI volume (CC7) from 0% to 200%
-* Scale song speed between 50% and 200% tempo
-* Lyrics, piano, and MIDI channels views, plus dashboard rhythm lamps that follow the meter
-* Playlists (`.lst`): add/remove/reorder/shuffle, save/load, next/previous,
-  auto-advance, repeat song or whole list
-* Supports MID/KAR/RMI (Standard MIDI Files) and WRK (Cakewalk)
-
-Build requirements
-------------------
-
-* Rust 1.93+ (see `rust-toolchain.toml`; libcosmic MSRV floor)
-* ALSA + FluidSynth dev libraries, Wayland/XKB/fontconfig dev libraries,
-  `pkg-config`, `cmake`, `g++`, Python 3 (full list: `docs/migration/packaging.md` §3.1)
-
-```
-$ sudo apt install pkg-config cmake g++ libasound2-dev libfluidsynth-dev \
-        libwayland-dev libxkbcommon-dev libfontconfig-dev libfreetype-dev \
-        libexpat1-dev python3 python3-aiohttp python3-tomlkit
-$ cargo build --locked
-$ sh scripts/verify.sh --fast     # inner loop: build, clippy, fmt, tests, pins
+```sh
+sudo apt-get update
+sudo apt-get install libwebkit2gtk-4.1-dev libgtk-3-dev libxdo-dev \
+  libayatana-appindicator3-dev libasound2-dev libfluidsynth3 \
+  xdg-desktop-portal xdg-desktop-portal-gtk
 ```
 
-The Flatpak is the release vehicle (`flatpak/com.goshapps.GoshMIDI.yml`,
-freedesktop runtime 25.08); `sh scripts/verify.sh` runs the full gate
-including the Flatpak build and the in-sandbox smoke test.
+Use your desktop's portal provider, such as the GTK or KDE provider. macOS needs
+Xcode Command Line Tools; `brew install fluidsynth` supplies a development audio
+runtime. Windows needs Visual Studio C++ Build Tools with the Windows SDK,
+MSVC Rust, and the Microsoft WebView2 Runtime. The release workflow supplies
+FluidSynth DLLs through the pinned vcpkg manifest.
 
-Run `dmidiplayer --help` for command-line options (`-d`/`--driver`,
-`-c`/`--connection`, portable settings, and files that become a temporary
-playlist).
+```sh
+cargo build --locked
+cargo run --locked -- examples/twinkle.kar
+# GUI without an audio device:
+cargo run --locked -- --driver Dummy --connection dummy examples/test.mid
+# Decode actual inputs without starting a desktop:
+cargo run --locked -- --dry-run examples/test.mid
+cargo run --locked -- --dump-info examples/twinkle.kar
+```
 
-For sound without an external synth, select the **FluidSynth** backend in
-MIDI Setup. The Flatpak bundles a GM SoundFont (`FluidR3Mono_GM.sf3`, MIT),
-so a fresh install plays audibly with no setup; on a native build, install
-a GM SoundFont (for example `fluid-soundfont-gm`) or pick your own `.sf2`
-/ `.sf3` file in MIDI Setup.
-To use your own module (Roland MT-32 / [Munt](https://github.com/munt/munt),
-SC-55 / [Nuked-SC55](https://github.com/PanykSystem/Nuked-SC55-GUI-Float), USB MIDI):
+A missing synthesizer or output device is reported in the UI. Select an external
+MIDI port or a valid SoundFont in MIDI Setup. Packaged builds carry a verified
+MIT-licensed GM SoundFont. Development builds can point to any accessible SF2/SF3.
 
-1. Start the emulator so it appears as an ALSA sequencer port
-   (`mt32emu-qt` → `MT-32:Standard`; Nuked-SC55 → `Virtual SC55` / similar).
-2. Open **MIDI Setup**, choose **ALSA**, pick that port, and Apply.
-   Named ports select the matching instrument map and SysEx reset.
-3. Optionally send a companion `.syx` dump by placing it next to the `.mid` file.
+## Checks and packages
 
-Both emulators must be running **before** you connect; use **Refresh ports** if
-you started them after opening MIDI Setup.
+```sh
+sh scripts/verify.sh
+cargo build --locked --release
+python3 scripts/fetch-resources.py
+cargo fetch --locked
+python3 scripts/package-native.py
+```
+
+The packager produces Linux `.deb`/`.tar.gz`, Windows MSI/portable ZIP, or a
+macOS `.app` ZIP on the corresponding OS. Artifacts and SHA256SUMS go to `dist/`.
+The Linux archive requires the documented system WebView/audio libraries.
+macOS bundles currently use ad-hoc signing; certificate signing/notarization
+and Windows application signing require a release identity and remain release gates.
+
+For live WebView acceptance:
+
+```sh
+cargo build --locked --features ui-test
+# Linux in a private test desktop:
+xvfb-run -a dbus-run-session -- python3 scripts/desktop-qa.py target/debug/dmidiplayer
+# macOS/Windows in their native desktop sessions:
+python3 scripts/desktop-qa.py target/debug/dmidiplayer
+```
+
+The opt-in harness operates real DOM controls inside the native application.
+It does not replace native dialog, external MIDI, or installed-package checks.
+Normal builds exclude the harness.
+
+See [platform build instructions](BUILDING.md), [support matrix](PLATFORM_SUPPORT.md),
+[contributing](CONTRIBUTING.md), [changes](CHANGELOG.md),
+[development](docs/DEVELOPMENT.md), [platforms and packaging](docs/PLATFORMS.md),
+[release procedure](docs/RELEASE.md), [architecture](ARCHITECTURE.md), and
+[third-party notices](THIRD_PARTY_NOTICES.md). Older translated manuals and
+`docs/migration/` describe historical implementations, not current build instructions.

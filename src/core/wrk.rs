@@ -1045,7 +1045,8 @@ mod tests {
         // offsets); the `0x91` LYRICS note lands on channel 0 (track
         // override, not the event nibble); TRKVOL 200 becomes 1 (`/0x80`
         // arm); the `0xF0` reference replays SYSEX2 bank 1 at tick 840.
-        let rows: Vec<(Kind, i64, i32, i32, i32, i32, i32, u64, String)> = seq
+        type TraceRow = (Kind, i64, i32, i32, i32, i32, i32, u64, String);
+        let rows: Vec<TraceRow> = seq
             .events()
             .iter()
             .map(|ev| {
@@ -1245,7 +1246,7 @@ mod tests {
         let path = dir.path().join("varonly.wrk");
         std::fs::write(&path, &file).unwrap();
         assert!(!seq.load_file(&path));
-        assert_eq!(seq.loading_errors(), "No playable MIDI events<br/>");
+        assert_eq!(seq.loading_errors(), "No playable MIDI events\n");
     }
 
     #[test]
@@ -1280,7 +1281,7 @@ mod tests {
         let mut seq = Sequence::default();
         assert!(!seq.load_file(&mark_path));
         assert_eq!(seq.text_events().len(), 1);
-        assert_eq!(seq.loading_errors(), "No playable MIDI events<br/>");
+        assert_eq!(seq.loading_errors(), "No playable MIDI events\n");
         let text_path = dir.path().join("textonly.wrk");
         std::fs::write(&text_path, &text_only).unwrap();
         assert!(seq.load_file(&text_path), "{:?}", seq.loading_errors);
@@ -1299,26 +1300,26 @@ mod tests {
         corrupt.push(TIMEBASE_CHUNK);
         corrupt.extend_from_slice(&0xFFFFu32.to_le_bytes());
         let cases: &[(&str, Vec<u8>, bool, &str, &str)] = &[
-            ("empty", vec![], false, "Invalid WRK header<br/>", ""),
+            ("empty", vec![], false, "Invalid WRK header\n", ""),
             (
                 "short",
                 b"CAKEWALK\x00\x02".to_vec(),
                 false,
-                "Invalid WRK header<br/>",
+                "Invalid WRK header\n",
                 "",
             ),
             (
                 "bad-head",
                 [b"CAKEWALX".as_slice(), &[0; 8]].concat(),
                 false,
-                "Invalid WRK header<br/>",
+                "Invalid WRK header\n",
                 "",
             ),
             (
                 "corrupt",
                 corrupt,
                 false,
-                "Corrupted WRK chunk<br/>",
+                "Corrupted WRK chunk\n",
                 "WRK file version v1.2",
             ),
             (
@@ -1343,7 +1344,7 @@ mod tests {
         std::fs::write(&path, &cases[4].1).unwrap();
         let mut seq = Sequence::default();
         assert!(!seq.load_file(&path));
-        assert_eq!(seq.loading_errors(), "No playable MIDI events<br/>");
+        assert_eq!(seq.loading_errors(), "No playable MIDI events\n");
     }
 
     #[test]

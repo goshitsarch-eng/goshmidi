@@ -131,6 +131,7 @@ const PACING_CHUNK_MS: u64 = 5;
 /// shell converts this to its own `LoadedSong` (`From`, no bridge code).
 #[derive(Debug, Clone, PartialEq)]
 pub struct SongSnapshot {
+    pub path: PathBuf,
     pub title: String,
     pub format: String,
     pub bars: i32,
@@ -157,15 +158,14 @@ pub struct SongSnapshot {
 }
 
 /// Engine → UI events: the 12 C++ player callbacks plus open/load/output
-/// results. Owned here; `crate::message` re-exports this type (D19), so the
-/// app and the engine can never drift.
+/// results. The portable application controller consumes this owned protocol.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlayerEvent {
     /// Boxed: the snapshot is ~0.5 KB but `Opened` fires once per song,
     /// while the other variants flow at event rate.
     Opened(Box<SongSnapshot>),
     LoadFailed {
-        file: String,
+        file: PathBuf,
         errors: Vec<String>,
     },
     Time {
@@ -567,6 +567,7 @@ pub struct Engine<C: PlayerClock = RealClock> {
     playing: bool,
     paused: bool,
     resume_without_reset: bool,
+    pending_play: bool,
     position_ticks: i64,
     loop_enabled: bool,
     loop_start: i32,
@@ -595,6 +596,7 @@ impl<C: PlayerClock> Engine<C> {
             playing: false,
             paused: false,
             resume_without_reset: false,
+            pending_play: false,
             position_ticks: 0,
             loop_enabled: false,
             loop_start: 1,
@@ -621,7 +623,16 @@ impl<C: PlayerClock> Engine<C> {
     /// wakeup), run the scheduler for `Play`. Returns on `Shutdown` or once
     /// all handles are dropped.
     pub fn run(&mut self, rx: &mpsc::Receiver<EngineCommand>, events: &mut EventEmitter) {
-        while let Ok(cmd) = rx.recv() {
+        loop {
+            let cmd = if self.pending_play {
+                self.pending_play = false;
+                EngineCommand::Play
+            } else {
+                match rx.recv() {
+                    Ok(command) => command,
+                    Err(_) => break,
+                }
+            };
             if matches!(cmd, EngineCommand::Shutdown) {
                 break;
             }
@@ -940,6 +951,23 @@ impl<C: PlayerClock> Engine<C> {
         abort: &mut AbortState,
     ) {
         while let Some(cmd) = cmds.poll() {
+            // A rapid Pause/Play or Stop/Play pair can arrive in one drain.
+            // Preserve the second start for after the scheduler's postlude.
+            if matches!(cmd, EngineCommand::Play)
+                && (abort.paused || abort.stopped)
+                && abort.load.is_none()
+                && !abort.shutdown
+            {
+                self.pending_play = true;
+            } else if matches!(
+                cmd,
+                EngineCommand::Pause
+                    | EngineCommand::Stop { .. }
+                    | EngineCommand::Load(_)
+                    | EngineCommand::Shutdown
+            ) {
+                self.pending_play = false;
+            }
             match self.handle_command(cmd, events) {
                 CommandEffect::Continue => {}
                 CommandEffect::Stop { reset } => abort.stop(reset),
@@ -1189,7 +1217,7 @@ impl<C: PlayerClock> Engine<C> {
             events.emit(PlayerEvent::Opened(Box::new(self.snapshot())));
         } else {
             events.emit(PlayerEvent::LoadFailed {
-                file: path.to_string_lossy().into_owned(),
+                file: path.to_path_buf(),
                 errors: self.song.loading_errors.clone(),
             });
         }
@@ -1198,6 +1226,7 @@ impl<C: PlayerClock> Engine<C> {
     fn snapshot(&self) -> SongSnapshot {
         let len = self.song.song_length_ticks().max(0);
         SongSnapshot {
+            path: PathBuf::from(&self.song.current_file_full),
             title: self.song.current_file(),
             format: self.song.file_format().to_string(),
             bars: self.song.last_bar(),
@@ -3406,7 +3435,7 @@ mod tests {
         assert_eq!(events.len(), 1);
         match &events[0] {
             PlayerEvent::LoadFailed { file, errors } => {
-                assert!(file.contains("t7-missing.mid"));
+                assert!(file.ends_with("t7-missing.mid"));
                 assert!(!errors.is_empty());
             }
             other => panic!("expected LoadFailed, got {other:?}"),

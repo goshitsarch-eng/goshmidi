@@ -242,7 +242,24 @@ impl Sequence {
             self.loading_errors.push("File not found".to_string());
             return false;
         }
-        let bytes = std::fs::read(file_name).unwrap_or_default();
+        if !crate::core::event::is_supported_midi_file(file_name) {
+            self.loading_errors
+                .push("Unsupported MIDI extension".into());
+            return false;
+        }
+        if std::fs::metadata(file_name).is_ok_and(|metadata| metadata.len() > 128 * 1024 * 1024) {
+            self.loading_errors
+                .push("MIDI file exceeds the 128 MiB limit".into());
+            return false;
+        }
+        let bytes = match std::fs::read(file_name) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                self.loading_errors
+                    .push(format!("Unable to read file: {error}"));
+                return false;
+            }
+        };
         if bytes.is_empty() {
             self.loading_errors.push("Unable to read file".to_string());
             return false;
@@ -612,25 +629,25 @@ impl Sequence {
         format!("{h:02}:{m:02}:{s:02}.{ms:03}")
     }
 
-    /// RIFF INFO metadata as HTML lines (C++ `metadataInfo`; empty in T3
+    /// RIFF INFO metadata as plain text lines (C++ `metadataInfo`; empty in T3
     /// — T4's RMI decoder fills the map).
     pub fn metadata_info(&self) -> String {
         let mut out = String::new();
         for (k, v) in &self.info_map {
             out.push_str(k);
-            out.push_str(": <b>");
+            out.push_str(": ");
             out.push_str(v);
-            out.push_str("</b><br/>");
+            out.push('\n');
         }
         out
     }
 
-    /// Loading errors as HTML lines (C++ `loadingErrors`).
+    /// Loading errors as plain text lines (C++ `loadingErrors`).
     pub fn loading_errors(&self) -> String {
         let mut out = String::new();
         for e in &self.loading_errors {
             out.push_str(e);
-            out.push_str("<br/>");
+            out.push('\n');
         }
         out
     }
@@ -1169,13 +1186,13 @@ mod tests {
         let mut seq = Sequence::default();
         assert!(!seq.load_file(Path::new("/tmp/goshmidi-t3-no-such-file-12345.mid")));
         assert_eq!(seq.errors_count(), 1);
-        assert_eq!(seq.loading_errors(), "File not found<br/>");
+        assert_eq!(seq.loading_errors(), "File not found\n");
 
         let dir = tempfile::tempdir().unwrap();
         let empty = dir.path().join("empty.mid");
         std::fs::write(&empty, b"").unwrap();
         assert!(!seq.load_file(&empty));
-        assert_eq!(seq.loading_errors(), "Unable to read file<br/>");
+        assert_eq!(seq.loading_errors(), "Unable to read file\n");
         assert_eq!(seq.metadata_info(), "");
     }
 
@@ -1185,10 +1202,10 @@ mod tests {
         // surface each decoder's own header error (C++ oracle strings).
         let dir = tempfile::tempdir().unwrap();
         for (name, error) in [
-            ("song.rmi", "Not a RIFF file<br/>"),
-            ("song.RMI", "Not a RIFF file<br/>"),
-            ("song.wrk", "Invalid WRK header<br/>"),
-            ("song.WRK", "Invalid WRK header<br/>"),
+            ("song.rmi", "Not a RIFF file\n"),
+            ("song.RMI", "Not a RIFF file\n"),
+            ("song.wrk", "Invalid WRK header\n"),
+            ("song.WRK", "Invalid WRK header\n"),
         ] {
             let path = dir.path().join(name);
             std::fs::write(&path, b"nonempty but not a container").unwrap();

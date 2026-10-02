@@ -610,7 +610,7 @@ impl Settings {
     /// there is no config dirty flag in C++ either.
     pub fn save(&self, paths: &Paths) -> std::io::Result<()> {
         paths.ensure_config_dir()?;
-        std::fs::write(paths.config_file(), self.to_data())
+        crate::platform::persistence::write_atomic(paths.config_file(), self.to_data())
     }
 
     /// Serialize exactly as [`Settings::save`] would write.

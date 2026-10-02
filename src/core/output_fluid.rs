@@ -12,7 +12,7 @@
 //!
 //! Dependency rule (arch §5): `std`/`core` only — no iced/libcosmic in `core`.
 
-use std::ffi::{CStr, CString};
+use std::ffi::CString;
 use std::path::Path;
 use std::ptr;
 
@@ -34,7 +34,9 @@ use super::output::{MidiOutput, MidiPort, OutputError};
 /// this build supports `alsa, file, jack, oss, pipewire, pulseaudio` —
 /// neither SDL name; the Flatpak module probes `sdl3` present). On builds
 /// without SDL the entry fails harmlessly like any other miss.
-pub const AUDIO_DRIVERS: [&CStr; 5] = [c"pulseaudio", c"pipewire", c"alsa", c"jack", c"sdl3"];
+#[cfg(test)]
+pub const AUDIO_DRIVERS: [&std::ffi::CStr; 5] =
+    [c"pulseaudio", c"pipewire", c"alsa", c"jack", c"sdl3"];
 
 /// Synth gain (output.cpp:300).
 pub const SYNTH_GAIN: f64 = 0.6;
@@ -66,20 +68,10 @@ pub const BUNDLED_SOUNDFONT_NAME: &str = "FluidR3Mono_GM.sf3";
 /// host `/usr` is invisible inside Flatpak), then the 8 host paths in exact
 /// C++ order (output.cpp:403-414).
 pub fn default_sound_font_paths() -> Vec<String> {
-    [
-        "/app/share/soundfonts/FluidR3Mono_GM.sf3",
-        "/usr/share/sounds/sf2/FluidR3_GM.sf2",
-        "/usr/share/soundfonts/FluidR3_GM.sf2",
-        "/usr/share/sounds/sf2/default-GM.sf2",
-        "/usr/share/soundfonts/default.sf2",
-        "/usr/share/sounds/sf3/default.sf3",
-        "/usr/share/sounds/sf2/TimGM6mb.sf2",
-        "/usr/share/sounds/sf2/FluidR3_GS.sf2",
-        "/usr/local/share/soundfonts/default.sf2",
-    ]
-    .iter()
-    .map(ToString::to_string)
-    .collect()
+    crate::platform::soundfont_candidates()
+        .into_iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect()
 }
 
 /// First existing search-path entry, or `""` when no SoundFont is anywhere
@@ -202,6 +194,7 @@ impl MidiOutput for FluidOutput {
 
     fn open(&mut self, _port_id: &str) -> Result<(), OutputError> {
         self.close();
+        ffi::available().map_err(OutputError::new)?;
         // SAFETY: each pointer is null or freshly returned by its constructor;
         // all C strings are valid (`c"..."` literals or `CString`); teardown
         // runs in reverse order in `close`/`Drop`, exactly once per object.
@@ -218,7 +211,7 @@ impl MidiOutput for FluidOutput {
                 return Err(OutputError::new("Unable to create FluidSynth"));
             }
             self.synth = synth;
-            for driver_name in AUDIO_DRIVERS {
+            for driver_name in crate::platform::audio_drivers() {
                 ffi::fluid_settings_setstr(
                     settings,
                     c"audio.driver".as_ptr(),
@@ -417,26 +410,29 @@ mod tests {
     }
 
     #[test]
-    fn search_path_order_sandbox_first_then_cpp() {
+    fn search_path_order_packaged_then_platform() {
         let paths = default_sound_font_paths();
-        assert_eq!(paths.len(), 9);
-        // P7: the bundled T15 file leads, at the manifest's install path.
-        assert_eq!(paths[0], "/app/share/soundfonts/FluidR3Mono_GM.sf3");
-        assert!(paths[0].ends_with(BUNDLED_SOUNDFONT_NAME));
-        // Then the 8 host paths in exact C++ order (output.cpp:403-414).
         assert_eq!(
-            &paths[1..],
-            [
-                "/usr/share/sounds/sf2/FluidR3_GM.sf2",
-                "/usr/share/soundfonts/FluidR3_GM.sf2",
-                "/usr/share/sounds/sf2/default-GM.sf2",
-                "/usr/share/soundfonts/default.sf2",
-                "/usr/share/sounds/sf3/default.sf3",
-                "/usr/share/sounds/sf2/TimGM6mb.sf2",
-                "/usr/share/sounds/sf2/FluidR3_GS.sf2",
-                "/usr/local/share/soundfonts/default.sf2",
-            ]
+            paths,
+            crate::platform::soundfont_candidates()
+                .into_iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
         );
+        assert!(paths[0].ends_with(BUNDLED_SOUNDFONT_NAME));
+        assert!(std::path::Path::new(&paths[0]).is_absolute());
+        #[cfg(target_os = "linux")]
+        {
+            let bundled = paths
+                .iter()
+                .position(|path| path == "/app/share/soundfonts/FluidR3Mono_GM.sf3")
+                .unwrap();
+            let system = paths
+                .iter()
+                .position(|path| path == "/usr/share/sounds/sf2/FluidR3_GM.sf2")
+                .unwrap();
+            assert!(bundled < system);
+        }
     }
 
     #[test]

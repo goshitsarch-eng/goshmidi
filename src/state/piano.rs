@@ -360,6 +360,23 @@ impl PianoState {
     }
 }
 
+/// Every advertised palette has a distinct, defined rendering.
+pub fn highlight_note_rgba(
+    ch: u8,
+    note: u8,
+    velocity: u8,
+    palette: i32,
+    single_color: &str,
+    velocity_color: bool,
+) -> Rgba {
+    let channel = match palette {
+        1 => u8::from(note_is_black(note)),
+        3 => note % 12,
+        _ => ch,
+    };
+    highlight_rgba(channel, velocity, palette, single_color, velocity_color)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

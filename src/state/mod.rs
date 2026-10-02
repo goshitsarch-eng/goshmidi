@@ -7,7 +7,6 @@
 
 pub mod channels;
 pub mod dialogs;
-pub mod keys;
 pub mod lyrics;
 pub mod midi;
 pub mod piano;

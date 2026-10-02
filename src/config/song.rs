@@ -13,13 +13,13 @@
 //!   returns `None` and the caller changes nothing (C++ early-returns).
 //! - `encoding`: applied only when the key holds a valid string (even `""`);
 //!   missing/invalid → untouched.
-//! - `volume`/`timeskew`: applied only when the key holds a valid **non-zero**
-//!   integer (C++ `if (vol)` / `if (skew)`); missing/invalid/zero → untouched.
+//! - `volume` and channel `level` accept zero so silent mixes round-trip.
+//!   `timeskew` retains the legacy non-zero guard; invalid/missing → untouched.
 //! - `pitch`: applied **unconditionally** — missing/invalid reads as 0 and
 //!   still resets the control (C++ `set_value` with no guard).
 //! - A channel group that is absent is skipped wholesale; when present,
 //!   missing/invalid `muted`/`solo`/`locked` read as `false`, a missing
-//!   `patch` as 0, a missing `name` as untouched, and a missing/invalid/zero
+//!   `patch` as 0, a missing `name` as untouched, and a missing/invalid
 //!   `level` as untouched.
 //! - `file` is write-only metadata (C++ never reads it); it round-trips here
 //!   as informational data.
@@ -61,8 +61,7 @@ pub struct SongChannelSettings {
     /// Missing/invalid key reads as 0. Clamping (`clampMidi`) happens at
     /// apply time in T9, not here.
     pub patch: i32,
-    /// Channel level slider. `None` = missing/invalid/**zero** → untouched
-    /// (C++ `if (lvl)`).
+    /// Channel level slider. `None` = missing/invalid → untouched.
     pub level: Option<i32>,
 }
 
@@ -119,9 +118,7 @@ impl SongSettings {
         if let Some(Ok(v)) = kf.get_string(GLOBAL, "encoding") {
             settings.encoding = Some(v);
         }
-        if let Some(Ok(v)) = kf.get_int(GLOBAL, "volume")
-            && v != 0
-        {
+        if let Some(Ok(v)) = kf.get_int(GLOBAL, "volume") {
             settings.volume = Some(v);
         }
         // Unconditional: missing/invalid is a 0 that still applies.
@@ -160,10 +157,7 @@ impl SongSettings {
                     .get_int(&group, "patch")
                     .and_then(Result::ok)
                     .unwrap_or(0),
-                level: match kf.get_int(&group, "level") {
-                    Some(Ok(v)) if v != 0 => Some(v),
-                    _ => None,
-                },
+                level: kf.get_int(&group, "level").and_then(Result::ok),
             });
         }
         // Unknown tail: everything except known [Global] keys and known
@@ -187,7 +181,7 @@ impl SongSettings {
     /// `None` name/level keys are skipped so partial loads round-trip
     /// stably; T9-constructed saves always carry full data.
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        std::fs::write(path, self.to_data())
+        crate::platform::persistence::write_atomic(path, self.to_data())
     }
 
     /// Serialize exactly as [`SongSettings::save`] would write.
@@ -406,17 +400,16 @@ mod tests {
     }
 
     #[test]
-    fn load_quirks_mirror_cpp_guards() {
-        // volume/timeskew/level of 0 are skipped; pitch missing still applies 0.
+    fn silent_levels_round_trip_and_legacy_tempo_guard_is_retained() {
         let s = SongSettings::parse(
             "[Global]\nvolume=0\ntimeskew=0\n\n[MIDI Channel  2]\nlevel=0\npatch=3\n",
         )
         .unwrap();
-        assert_eq!(s.volume, None);
+        assert_eq!(s.volume, Some(0));
         assert_eq!(s.timeskew, None);
         assert_eq!(s.pitch, 0);
         let ch = s.channels[1].as_ref().unwrap();
-        assert_eq!(ch.level, None);
+        assert_eq!(ch.level, Some(0));
         assert_eq!(ch.patch, 3);
         // Group present but keys missing: bools false, patch 0, name untouched.
         assert!(!ch.muted && !ch.solo && !ch.locked);
@@ -604,11 +597,11 @@ mod tests {
         assert_eq!(ch.patch, 0);
         assert_eq!(ch.level, None);
         // Valid bools still apply next to an overflowing patch and a zero
-        // level (zero level = untouched, C++ `if (lvl)`).
+        // level (a silent channel must remain silent on reload).
         let ch = s.channels[4].as_ref().unwrap();
         assert!(ch.muted && ch.solo && !ch.locked);
         assert_eq!(ch.patch, 0);
-        assert_eq!(ch.level, None);
+        assert_eq!(ch.level, Some(0));
         assert_eq!(ch.name, None);
     }
 

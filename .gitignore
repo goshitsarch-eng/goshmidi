@@ -9,3 +9,12 @@ build-dir/
 *.so.*
 CMakeLists.txt.user*
 .directory
+
+# Generated native packages and downloaded release resources
+/dist/
+/packaging/resources/
+/flatpak/vendor/
+__pycache__/
+*.pyc
+/packaging/windows/vcpkg_installed/
+/packaging/windows/WebView2Setup.exe

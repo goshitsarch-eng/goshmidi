@@ -1,0 +1,168 @@
+name: Native desktop and Flatpak
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+        with:
+          arch: amd64
+      - name: Linux system WebView and audio dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libxdo-dev libayatana-appindicator3-dev libasound2-dev libfluidsynth3 xvfb dbus-x11 xdg-desktop-portal-gtk
+      - name: macOS synthesizer runtime
+        if: runner.os == 'macOS'
+        run: brew install fluidsynth
+      - name: Windows synthesizer runtime
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git "$env:RUNNER_TEMP/vcpkg"
+          git -C "$env:RUNNER_TEMP/vcpkg" checkout fdd4e6059c803f56bb5df86e285bf374d9d44407
+          & "$env:RUNNER_TEMP/vcpkg/bootstrap-vcpkg.bat" -disableMetrics
+          & "$env:RUNNER_TEMP/vcpkg/vcpkg.exe" install --triplet x64-windows --x-manifest-root=packaging/windows --x-install-root=packaging/windows/vcpkg_installed
+          dotnet tool install --global wix --version 4.0.6
+          Invoke-WebRequest https://go.microsoft.com/fwlink/?linkid=2124701 -OutFile packaging/windows/WebView2Setup.exe
+          $signature = Get-AuthenticodeSignature packaging/windows/WebView2Setup.exe
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'Microsoft Corporation') { throw 'Invalid WebView2 installer signature' }
+          Get-FileHash packaging/windows/WebView2Setup.exe | Format-List
+      - name: Formatting and lint
+        run: |
+          cargo fmt --check
+          cargo clippy --locked --all-targets --target ${{ matrix.target }} -- -D warnings
+      - name: Tests
+        run: cargo test --locked --target ${{ matrix.target }}
+      - name: Build release
+        run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Resource checksums
+        run: |
+          cargo fetch --locked
+          python scripts/fetch-resources.py
+      - name: Stage native artifacts
+        run: python scripts/package-native.py --target ${{ matrix.target }}
+      - name: Build WebView acceptance harness
+        run: cargo build --locked --features ui-test --target ${{ matrix.target }}
+      - name: Linux live WebView suite
+        if: runner.os == 'Linux'
+        run: xvfb-run -a dbus-run-session -- python scripts/desktop-qa.py target/${{ matrix.target }}/debug/dmidiplayer
+      - name: macOS live WebView suite
+        if: runner.os == 'macOS'
+        run: python scripts/desktop-qa.py target/${{ matrix.target }}/debug/dmidiplayer
+      - name: Windows live WebView suite
+        if: runner.os == 'Windows'
+        run: python scripts/desktop-qa.py target/${{ matrix.target }}/debug/dmidiplayer.exe
+      - name: Installed Windows MSI smoke
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $msi = (Get-ChildItem dist/*.msi).FullName
+          $install = Start-Process msiexec.exe -ArgumentList @('/i', $msi, '/qn', '/l*vx', "$env:RUNNER_TEMP/gosh-msi.log") -Wait -PassThru
+          if ($install.ExitCode -notin @(0,3010)) { Get-Content "$env:RUNNER_TEMP/gosh-msi.log"; throw 'MSI installation failed' }
+          & "$env:LOCALAPPDATA/Gosh MIDI Player/dmidiplayer.exe" --dry-run examples/test.mid
+          if ($LASTEXITCODE -ne 0) { throw 'Installed binary did not decode the example' }
+      - name: macOS bundle smoke
+        if: runner.os == 'macOS'
+        run: |
+          app=$(find dist -type d -name 'Gosh MIDI Player.app' -print -quit)
+          "$app/Contents/MacOS/dmidiplayer" --dry-run examples/test.mid
+          codesign --verify --deep --strict "$app"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.target }}
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+            dist/*.msi
+            dist/*.deb
+            dist/SHA256SUMS
+          if-no-files-found: error
+  flatpak:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install runtime and SDK
+        run: |
+          sudo apt-get update && sudo apt-get install -y flatpak flatpak-builder xvfb dbus-x11 xdg-desktop-portal-gtk
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user -y flathub org.gnome.Platform//50 org.gnome.Sdk//50 org.freedesktop.Sdk.Extension.rust-stable//25.08
+      - name: Locked offline source freshness
+        run: |
+          python3 flatpak/flatpak-cargo-generator.py Cargo.lock -o /tmp/sources.json
+          diff -u flatpak/cargo-sources.json /tmp/sources.json
+      - name: Build and install
+        run: flatpak-builder --force-clean --user --install --repo=flatpak-repo build-dir flatpak/com.goshapps.GoshMIDI.yml
+      - name: Installed sandbox parser and UI launch
+        run: |
+          flatpak run com.goshapps.GoshMIDI --dry-run /app/share/dmidiplayer/test.mid
+          flatpak run com.goshapps.GoshMIDI --dump-info /app/share/dmidiplayer/twinkle.kar
+          set +e
+          timeout 15s xvfb-run -a dbus-run-session -- flatpak run com.goshapps.GoshMIDI --driver Dummy --connection dummy /app/share/dmidiplayer/test.mid
+          result=$?
+          test "$result" -eq 124
+      - name: Bundle and checksum
+        run: |
+          mkdir -p dist
+          flatpak build-bundle flatpak-repo dist/gosh-midi-x86_64.flatpak com.goshapps.GoshMIDI
+          cd dist && sha256sum *.flatpak > SHA256SUMS
+      - name: Installed sandbox WebView acceptance
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          manifest = Path('flatpak/com.goshapps.GoshMIDI.yml').read_text()
+          Path('flatpak/qa.yml').write_text(manifest.replace('--release --locked', '--release --locked --features ui-test'))
+          PY
+          flatpak-builder --force-clean --user --install --repo=qa-repo qa-build flatpak/qa.yml
+          cat > /tmp/gosh-flatpak-qa <<'SH'
+          #!/bin/sh
+          exec flatpak run --filesystem="$(dirname "$GOSH_MIDI_UI_REPORT")" --filesystem="$PWD/examples:ro" --env=GOSH_MIDI_UI_REPORT="$GOSH_MIDI_UI_REPORT" com.goshapps.GoshMIDI "$@"
+          SH
+          chmod +x /tmp/gosh-flatpak-qa
+          xvfb-run -a dbus-run-session -- python3 scripts/desktop-qa.py /tmp/gosh-flatpak-qa
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flatpak-x86_64
+          path: dist/*
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [native,flatpak]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Create reviewed prerelease artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          find artifacts -type f ! -name SHA256SUMS -exec cp {} . \;
+          sha256sum *.msi *.zip *.tar.gz *.deb *.flatpak > SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --prerelease --generate-notes *.msi *.zip *.tar.gz *.deb *.flatpak SHA256SUMS

@@ -12,8 +12,11 @@
 use std::error::Error;
 use std::fmt::{self, Display};
 
+#[cfg(target_os = "linux")]
 use super::output_alsa::AlsaOutput;
 use super::output_fluid::FluidOutput;
+#[cfg(not(target_os = "linux"))]
+use crate::platform::midi::NativeMidiOutput;
 
 /// An output port: `client:port` id plus the human-readable label shown in
 /// MIDI Setup (C++ `MidiPort`).
@@ -188,7 +191,10 @@ impl MidiOutputManager {
             backends: Vec::new(),
             current: None,
         };
+        #[cfg(target_os = "linux")]
         manager.add_backend(Box::new(AlsaOutput::new()));
+        #[cfg(not(target_os = "linux"))]
+        manager.add_backend(Box::new(NativeMidiOutput::new()));
         manager.add_backend(Box::new(FluidOutput::new()));
         manager.add_backend(Box::new(DummyOutput::new()));
         manager
@@ -418,7 +424,12 @@ mod tests {
         assert_eq!(
             manager.backend_names(),
             vec![
-                "ALSA".to_string(),
+                if cfg!(target_os = "linux") {
+                    "ALSA"
+                } else {
+                    "MIDI"
+                }
+                .to_string(),
                 "FluidSynth".to_string(),
                 "Dummy".to_string()
             ]
@@ -429,14 +440,19 @@ mod tests {
     #[test]
     fn manager_find_unknown_resolves_to_front() {
         let manager = MidiOutputManager::new();
-        assert_eq!(manager.find("ALSA").unwrap().backend_name(), "ALSA");
+        let native = if cfg!(target_os = "linux") {
+            "ALSA"
+        } else {
+            "MIDI"
+        };
+        assert_eq!(manager.find(native).unwrap().backend_name(), native);
         assert_eq!(
             manager.find("FluidSynth").unwrap().backend_name(),
             "FluidSynth"
         );
         assert_eq!(manager.find("Dummy").unwrap().backend_name(), "Dummy");
         // Unknown → front backend = ALSA (output.cpp:449, A6c).
-        assert_eq!(manager.find("Nope").unwrap().backend_name(), "ALSA");
+        assert_eq!(manager.find("Nope").unwrap().backend_name(), native);
         assert_eq!(manager.find_index("Nope"), Some(0));
     }
 
@@ -451,7 +467,14 @@ mod tests {
         // `open` may fail without hardware, but the selection sticks either
         // way (C++ assigns m_current before open, output.cpp:457-460).
         let _ = manager.select("Nope", "14:0");
-        assert_eq!(manager.current().unwrap().backend_name(), "ALSA");
+        assert_eq!(
+            manager.current().unwrap().backend_name(),
+            if cfg!(target_os = "linux") {
+                "ALSA"
+            } else {
+                "MIDI"
+            }
+        );
     }
 
     #[test]

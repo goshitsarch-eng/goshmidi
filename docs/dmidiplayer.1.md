@@ -1,133 +1,65 @@
-% DMIDIPLAYER(1) dmidiplayer 0.0.0 | Drumstick MIDI File Player
-% Pedro López-Cabanillas <plcl@users.sf.net>
+% DMIDIPLAYER(1) Gosh MIDI Player 2.0.0-alpha.1
+% Gosh MIDI Player contributors; original dmidiplayer by Pedro López-Cabanillas
 
 # NAME
 
-**dmidiplayer** — Plays MIDI, Karaoke and Cakewalk Files
+dmidiplayer — MIDI and karaoke player
 
 # SYNOPSIS
 
-| **dmidiplayer** \[**-p**|**--portable**] [**-f**|**--file** _file_] [**-d**|**--driver** _driver_] [**-c**|**--connection** _connection_] \[_midi_files_]
-| **dmidiplayer** \[**-h**|**--help**|**-v**|**--version**]
+`dmidiplayer [OPTIONS] [MIDI_FILES_OR_PLAYLISTS]`
 
 # DESCRIPTION
 
-This program is a multiplatform MIDI file player for Linux, Windows and macOS. 
-It reads .MID (Standard MIDI Files), .KAR (Karaoke), .RMI (RIFF RMID), and .WRK (Cakewalk) file formats, 
-and outputs MIDI events to hardware MIDI ports and also software synths.
+Gosh MIDI Player uses Rust and Dioxus Desktop. It reads MID, MIDI, KAR, RMI and
+WRK files, with FluidSynth or native external MIDI output. Linux uses ALSA;
+Windows and macOS use the native MIDI backend. A `.lst` playlist contains one
+path per line; relative entries resolve against that playlist's directory.
 
-## Options
+# OPTIONS
 
--h, --help
+`-p, --portable`
+: Settings in the working directory.
 
-:   Prints brief usage information.
+`-f, --file PATH`
+: Explicit portable settings file.
 
--v, --version
+`-d, --driver BACKEND` and `-c, --connection PORT`
+: Select output together. Backends: ALSA on Linux; MIDI on Windows/macOS;
+  FluidSynth or Dummy on all targets. Dummy is intentionally silent.
 
-:   Prints the current version number.
+`--dry-run`
+: Decode inputs without a GUI. Invalid/missing inputs return failure.
 
--p, --portable
+`--dump-info`
+: Decode inputs and print JSON metadata without a GUI.
 
-:   Portable settings mode.
+`-h, --help`; `-v, --version`
+: Show help or version.
 
--f, --file _portableFile_
+`--`
+: Treat subsequent arguments as paths, including names beginning with `-`.
 
-:   Portable settings file name.
-  
--d, --driver _driver_
+# DATA
 
-:   MIDI Out backend: `ALSA`, `FluidSynth`, or `Dummy`.
+Legacy key-file settings and song mixes remain readable. Linux configuration is
+normally `~/.config/dmidiplayer/dmidiplayer.conf`; native Windows/macOS app-data
+locations are used there. New per-song settings use hashed full-path names in
+the application's data directory and read `~/.dmidiplayer/*.cfg` as a fallback.
 
--c, --connection _connection_
+# SHORTCUTS
 
-:   MIDI Out connection (ALSA `client:port`, or `fluidsynth`). Use this to send
-    events to your own synth (for example Munt/MT-32 or an SC-55 on USB MIDI).
+Control on Linux/Windows, Command on macOS: O opens, Q quits, P pauses/resumes,
+S stops, Left/Right changes song, comma opens preferences. Space plays/pauses;
+F1 opens help. Editing controls and modal dialogs scope application shortcuts;
+Escape cancels a modal. Native menus provide editing actions.
 
-## Standard Options
+# STATUS
 
-The following options apply to all Qt5 applications:
+This version is a prerelease. Consult the repository's validation record for
+native-platform and installed-package verification; compilation alone is not
+cross-platform acceptance.
 
--style= _style_ / -style _style_
-:   Set the application GUI style. Possible values depend on the system configuration. 
-    If Qt is compiled with additional styles or has additional styles as plugins these
-    will be available to the -style command line option.
+# LICENSE
 
--stylesheet= _stylesheet_ / -stylesheet _stylesheet_
-:   Set the application styleSheet. The value must be a path to a file that contains the Style Sheet.
-
--widgetcount
-:   Print debug message at the end about number of widgets left undestroyed and maximum number of widgets existed at the same time.
-
--reverse
-:   Set the application's layout direction to Qt::RightToLeft. This option is intended to aid debugging and should not be used in production. 
-    The default value is automatically detected from the user's locale (see also QLocale::textDirection()).
-
--platform _platformName[:options]_
-:   Specify the Qt Platform Abstraction (QPA) plugin.
-
--platformpluginpath _path_
-:   Specify the path to platform plugins.
-
--platformtheme _platformTheme_
-:   Specify the platform theme.
-
--plugin _plugin_
-:   Specify additional plugins to load. The argument may appear multiple times.
-
--qwindowgeometry _geometry_
-:   Specify the window geometry for the main window using the X11-syntax. For example: -qwindowgeometry 100x100+50+50
-
--qwindowicon _icon_
-:   Set the default window icon.
-
--qwindowtitle _title_
-:   Set the title of the first window.
-
--session _session_
-:   Restore the application from an earlier session.
-
--display _hostname:screen_number_
-:   Switch displays on X11. Overrides the DISPLAY environment variable.
-
--geometry _geometry_
-:   Specify the window geometry for the main window on X11. For example: -geometry 100x100+50+50
-
--dialogs= _[xp|none]_
-:   Only available for the Windows platform. XP uses native style dialogs and none disables them.
-
--fontengine= _freetype_
-:   Use the FreeType font engine.
-
-## Arguments
-
-_midi_files_
-
-:   Input MID/KAR/RMI/WRK file name(s). The set of provided file names becomes a temporary playlist.
-
-# FILES
-
-*\*.lst*
-
-:   Playlist files. The last opened or saved playlist file shall be remembered the next time the program is started, but playlists are not saved automatically.
-
-    Playlists are simple text files, with a file name on each text line. The file names can be relative to the location of the playlist file itself (so they do not have an absolute path prepended) or each file can have an absolute path on its own.
-
-    Users may have several playlists that can be created easily outside of the program, for instance in the Linux command line this command creates a playlist file named "my_playlist.lst" with all the MIDI files located at the working directory:
-
-~~~
-$ ls -1 *.mid > my_playlist.lst
-~~~
-
-# ENVIRONMENT
-
-**DRUMSTICKRT**
-
-:   Location of Drumstick::RT plugins. Useful if the plugins are not installed at a standard place.
-
-# BUGS
-
-See Tickets at Sourceforge <https://sourceforge.net/p/dmidiplayer/tickets/> and GitHub <https://github.com/pedrolcl/dmidiplayer/issues/>
-
-# SEE ALSO
-
-**qt5options (7)**
+GPL-3.0-or-later. See LICENSE and THIRD_PARTY_NOTICES.md.

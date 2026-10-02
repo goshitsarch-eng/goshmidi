@@ -1,134 +1,102 @@
-# Gosh MIDI Player (Rust/libcosmic port) — Flatpak manifest (packaging.md §1).
-# Runtime 25.08: 24.08's rustc 1.89 is below the libcosmic MSRV 1.93 (D16);
-# the 25.08 rust-stable extension ships rustc 1.98.1, matching rust-toolchain.toml.
+# Dioxus Linux host uses WebKitGTK 4.1 and libxdo.
+# File access uses portals; --device=all retains ALSA sequencer access.
 app-id: com.goshapps.GoshMIDI
-runtime: org.freedesktop.Platform
-runtime-version: "25.08"
-sdk: org.freedesktop.Sdk
+runtime: org.gnome.Platform
+runtime-version: '50'
+sdk: org.gnome.Sdk
 sdk-extensions:
-  - org.freedesktop.Sdk.Extension.rust-stable
+- org.freedesktop.Sdk.Extension.rust-stable
 command: dmidiplayer
 finish-args:
-  - --share=ipc
-  - --socket=fallback-x11
-  - --socket=wayland
-  - --device=dri
-  - --socket=pulseaudio
-  # ALSA sequencer (/dev/snd/seq) for external synths; no seq-only rule exists.
-  - --device=all
-  # No --filesystem=host: file access goes through portals (packaging.md §1.5).
+- --share=ipc
+- --socket=fallback-x11
+- --socket=wayland
+- --device=dri
+- --socket=pulseaudio
+- --device=all
 modules:
-  # FluidSynth 2.6.0 — packaging.md §1.1 contingency: freedesktop SDK 25.08
-  # ships no fluidsynth (rust-lld failed on -lfluidsynth; alsa was fine).
-  # Pinned release tarballs (sha256 verified by two downloads, 2026-09-12):
-  #   fluidsynth v2.6.0 (latest stable; matches fluid_ffi.rs "2.6 headers"):
-  #     url https://github.com/FluidSynth/fluidsynth/archive/refs/tags/v2.6.0.tar.gz
-  #     sha256 6d17570ea2086dd6fbcac995465773a6f316e689089b7fb7ba0b34c2ec6f680d
-  #   gcem @012ae73c (REQUIRED header-only dep; FindGCEM.cmake would
-  #   net-download it at configure time, which the offline sandbox forbids):
-  #     url https://github.com/kthohr/gcem/archive/012ae73c6d0a2cb09ffe86475f5c6fba3926e200.tar.gz
-  #     sha256 34ab0ee87a9eb26d3087fa9b49c2572ea8ee03db0c9705b83648301a3a3fc172
-  # Configure: -Denable-signalsmith=OFF (its CMakeLists FetchContents 3 more
-  # git repos at configure time — unbuildable offline; limiter defaults off
-  # and the default Dattorro reverb is in-tree, so no audible difference),
-  # -DCMAKE_BUILD_TYPE=Release. All other options at defaults: SDK 25.08
-  # provides alsa/pulse/jack/pipewire/sdl3/dbus/readline/sndfile/ladspa/
-  # openmp/systemd (probed present; runtime ships the matching .so files),
-  # portaudio/midishare auto-off. Tests are EXCLUDE_FROM_ALL and
-  # doxygen/examples are non-ALL custom targets — no extra lean flags needed.
-  - name: fluidsynth
-    buildsystem: cmake-ninja
-    config-opts:
-      - -DCMAKE_BUILD_TYPE=Release
-      - -Denable-signalsmith=OFF
-    sources:
-      - type: archive
-        url: https://github.com/FluidSynth/fluidsynth/archive/refs/tags/v2.6.0.tar.gz
-        sha256: 6d17570ea2086dd6fbcac995465773a6f316e689089b7fb7ba0b34c2ec6f680d
-      - type: archive
-        url: https://github.com/kthohr/gcem/archive/012ae73c6d0a2cb09ffe86475f5c6fba3926e200.tar.gz
-        sha256: 34ab0ee87a9eb26d3087fa9b49c2572ea8ee03db0c9705b83648301a3a3fc172
-        dest: gcem
-    cleanup:
-      - /include
-      - /lib/pkgconfig
-      - /lib/cmake
-      - /share/doc
-      - /share/man
-  # Bundled GM SoundFont (T15, packaging.md §5 risk 2 / §6; the T6-recorded
-  # .sf3 substitution — same Fluid R3 GM set at one-tenth the size of the
-  # 141.5 MiB stereo .sf2). The host's /usr/share SoundFonts are invisible
-  # in the sandbox, so this file is what makes fresh-profile FluidSynth
-  # playback audible with zero host setup. The engine searches it first
-  # (output_fluid.rs BUNDLED_SOUNDFONT_NAME + default_sound_font_paths).
-  # Pinned `type: file` sources (sha256 verified by two downloads, 2026-09-12):
-  #   FluidR3Mono_GM.sf3 v2.312 (2016-12-05, 14,563,174 bytes, MIT —
-  #   FluidR3Mono_License.md: Frank Wen 2000-2002/2008 + Michael Cowgill
-  #   2014-16, full COPYING text; the file shipped in MuseScore 2.0):
-  #     url https://raw.githubusercontent.com/LibreScore/sf3/3a6eda823dac2ec3e134d38544ca839217358f08/FluidR3Mono_GM.sf3.wasm
-  #     sha256 cfcd66d89e8386823400eca64934b14fbea7bf48ba1f00d21189af1262794ec2
-  # The `.wasm` suffix is upstream's web-compression alias (LibreScore/sf3
-  # v0.6.0 rename); the bytes are the .sf3 (RIFF....sfbk magic, consistent
-  # size field — verified). `dest-filename` restores the play-ready name.
-  # The license file installs alongside (MIT attribution requirement).
-  # Decode proven pre-merge: host FluidSynth 2.6.0 (this manifest's pin)
-  # renders examples/test.mid through it to 121,408 non-silent frames.
-  - name: soundfont
-    buildsystem: simple
-    build-commands:
-      - install -Dm644 FluidR3Mono_GM.sf3 /app/share/soundfonts/FluidR3Mono_GM.sf3
-      - install -Dm644 FluidR3Mono_License.md /app/share/soundfonts/FluidR3Mono_License.md
-    sources:
-      - type: file
-        url: https://raw.githubusercontent.com/LibreScore/sf3/3a6eda823dac2ec3e134d38544ca839217358f08/FluidR3Mono_GM.sf3.wasm
-        sha256: cfcd66d89e8386823400eca64934b14fbea7bf48ba1f00d21189af1262794ec2
-        dest-filename: FluidR3Mono_GM.sf3
-      - type: file
-        url: https://raw.githubusercontent.com/LibreScore/sf3/3a6eda823dac2ec3e134d38544ca839217358f08/FluidR3Mono_License.md
-        sha256: c21ed6be2fea862673953977c616befc28d1b20dfa60349e4461b97c759db6ca
-        dest-filename: FluidR3Mono_License.md
-  - name: dmidiplayer
-    buildsystem: simple
-    build-options:
-      append-path: /usr/lib/sdk/rust-stable/bin
-      env:
-        CARGO_HOME: /run/build/dmidiplayer/cargo
-        CARGO_NET_OFFLINE: "true"
-        # T6: flatpak-builder exports LDFLAGS (make-only) but no LIBRARY_PATH,
-        # and neither rustc nor cc reads LDFLAGS — plain -lfluidsynth would not
-        # find the fluidsynth module's /app/lib. Point rustc there explicitly.
-        RUSTFLAGS: "-L /app/lib"
-    build-commands:
-      - cargo --offline fetch --locked --manifest-path Cargo.toml
-      - cargo --offline build --release --locked
-      - install -Dm755 target/release/dmidiplayer /app/bin/dmidiplayer
-      - install -Dm644 com.goshapps.GoshMIDI.desktop /app/share/applications/com.goshapps.GoshMIDI.desktop
-      - install -Dm644 com.goshapps.GoshMIDI.metainfo.xml /app/share/metainfo/com.goshapps.GoshMIDI.metainfo.xml
-      # S5 (REPORT §4 blocker): the desktop file claims DBusActivatable=true
-      # (P8), so this service file must be installed — without it
-      # `flatpak build-export` fails ("service file not exported") and the
-      # app can neither be installed, bundled, nor D-Bus-activated.
-      # (Flatpak rewrites Exec to the `flatpak run` wrapper at install;
-      # the staged export keeps the /app path verbatim.)
-      - install -Dm644 com.goshapps.GoshMIDI.service /app/share/dbus-1/services/com.goshapps.GoshMIDI.service
-      # S5 (pack minor): the retired docs/CMakeLists.txt installed the man
-      # page to man1 in both branches; the Flatpak module does the same.
-      - install -Dm644 docs/dmidiplayer.1 /app/share/man/man1/dmidiplayer.1
-      - for s in 24x24 32x32 48x48 64x64 128x128; do install -Dm644 icons/dmidiplayer_$s.png /app/share/icons/hicolor/$s/apps/com.goshapps.GoshMIDI.png; done
-      - install -Dm644 icons/dmidiplayer.svgz /app/share/icons/hicolor/scalable/apps/com.goshapps.GoshMIDI.svgz
-      # T14c: hicolor fallback for every symbolic icon the app + libcosmic
-      # widgets look up (packaging.md §1.6, icons/fallback/SOURCES.md).
-      # Themed hosts still win (requested theme is searched first); these
-      # only render where no theme covers the name (e.g. GNOME/KDE hosts).
-      - for f in icons/fallback/actions/*.svg; do install -Dm644 "$f" "/app/share/icons/hicolor/scalable/actions/$(basename "$f")"; done
-      - for f in icons/fallback/status/*.svg; do install -Dm644 "$f" "/app/share/icons/hicolor/scalable/status/$(basename "$f")"; done
-      # P6: replicate examples/CMakeLists.txt — generate examples.lst (*.kar
-      # then *.mid basenames, sorted) and install it with the example files.
-      - mkdir -p /app/share/dmidiplayer && (cd examples && for f in *.kar *.mid; do [ -e "$f" ] || continue; printf '%s\n' "$f"; done > /app/share/dmidiplayer/examples.lst) && for f in examples/*.mid examples/*.kar; do [ -e "$f" ] || continue; install -m644 "$f" /app/share/dmidiplayer/; done
-    sources:
-      - type: dir
-        path: ..
-        skip: [target, build, build-dir, .flatpak-builder, .git]
-      # Vendored + pinned generator output (P4c/P5); regenerate with:
-      # python3 flatpak/flatpak-cargo-generator.py Cargo.lock -o flatpak/cargo-sources.json
-      - cargo-sources.json
+- name: libxdo
+  buildsystem: simple
+  build-commands:
+  - make libxdo.so
+  - install -Dm755 libxdo.so /app/lib/libxdo.so.3
+  - ln -s libxdo.so.3 /app/lib/libxdo.so
+  - install -Dm644 COPYRIGHT /app/share/licenses/libxdo/COPYRIGHT
+  sources:
+  - type: archive
+    url: https://codeload.github.com/jordansissel/xdotool/tar.gz/f11c44edd4d426d69bcff479b0d643a4da8bc99b
+    sha256: 48112e7fdddd7bfa66e0b221eb4f1a1602dfefe079d83f072b62953299665641
+- name: fluidsynth
+  buildsystem: cmake-ninja
+  config-opts:
+  - -DCMAKE_BUILD_TYPE=Release
+  - -Denable-signalsmith=OFF
+  sources:
+  - type: archive
+    url: https://github.com/FluidSynth/fluidsynth/archive/refs/tags/v2.6.0.tar.gz
+    sha256: 6d17570ea2086dd6fbcac995465773a6f316e689089b7fb7ba0b34c2ec6f680d
+  - type: archive
+    url: https://github.com/kthohr/gcem/archive/012ae73c6d0a2cb09ffe86475f5c6fba3926e200.tar.gz
+    sha256: 34ab0ee87a9eb26d3087fa9b49c2572ea8ee03db0c9705b83648301a3a3fc172
+    dest: gcem
+  cleanup:
+  - /include
+  - /lib/pkgconfig
+  - /lib/cmake
+  - /share/doc
+  - /share/man
+  post-install:
+  - install -Dm644 LICENSE /app/share/licenses/fluidsynth/LICENSE
+- name: soundfont
+  buildsystem: simple
+  build-commands:
+  - install -Dm644 FluidR3Mono_GM.sf3 /app/share/soundfonts/FluidR3Mono_GM.sf3
+  - install -Dm644 FluidR3Mono_License.md /app/share/soundfonts/FluidR3Mono_License.md
+  sources:
+  - type: file
+    url: https://raw.githubusercontent.com/LibreScore/sf3/3a6eda823dac2ec3e134d38544ca839217358f08/FluidR3Mono_GM.sf3.wasm
+    sha256: cfcd66d89e8386823400eca64934b14fbea7bf48ba1f00d21189af1262794ec2
+    dest-filename: FluidR3Mono_GM.sf3
+  - type: file
+    url: https://raw.githubusercontent.com/LibreScore/sf3/3a6eda823dac2ec3e134d38544ca839217358f08/FluidR3Mono_License.md
+    sha256: c21ed6be2fea862673953977c616befc28d1b20dfa60349e4461b97c759db6ca
+    dest-filename: FluidR3Mono_License.md
+- name: dmidiplayer
+  buildsystem: simple
+  build-options:
+    append-path: /usr/lib/sdk/rust-stable/bin
+    env:
+      CARGO_HOME: /run/build/dmidiplayer/cargo
+      CARGO_NET_OFFLINE: 'true'
+      RUSTFLAGS: -L /app/lib
+  build-commands:
+  - cargo --offline fetch --locked --manifest-path Cargo.toml
+  - cargo --offline build --release --locked
+  - cargo --offline test --no-default-features --locked
+  - install -Dm755 target/release/dmidiplayer /app/bin/dmidiplayer
+  - install -Dm644 LICENSE /app/share/licenses/dmidiplayer/LICENSE
+  - install -Dm644 THIRD_PARTY_NOTICES.md /app/share/licenses/dmidiplayer/THIRD_PARTY_NOTICES.md
+  - install -Dm644 com.goshapps.GoshMIDI.desktop /app/share/applications/com.goshapps.GoshMIDI.desktop
+  - install -Dm644 com.goshapps.GoshMIDI.metainfo.xml /app/share/metainfo/com.goshapps.GoshMIDI.metainfo.xml
+  - install -Dm644 docs/dmidiplayer.1 /app/share/man/man1/dmidiplayer.1
+  - for s in 24x24 32x32 48x48 64x64 128x128; do install -Dm644 icons/dmidiplayer_$s.png /app/share/icons/hicolor/$s/apps/com.goshapps.GoshMIDI.png;
+    done
+  - install -Dm644 icons/dmidiplayer.svgz /app/share/icons/hicolor/scalable/apps/com.goshapps.GoshMIDI.svgz
+  - mkdir -p /app/share/dmidiplayer && (cd examples && for f in *.kar *.mid; do [ -e "$f" ] || continue; printf
+    '%s\n' "$f"; done > /app/share/dmidiplayer/examples.lst) && for f in examples/*.mid examples/*.kar; do [ -e
+    "$f" ] || continue; install -m644 "$f" /app/share/dmidiplayer/; done
+  sources:
+  - type: dir
+    path: ..
+    skip:
+    - target
+    - build
+    - build-dir
+    - .flatpak-builder
+    - .git
+    - dist
+    - packaging/resources
+    - qa-build
+    - flatpak-repo
+    - qa-repo
+  - cargo-sources.json

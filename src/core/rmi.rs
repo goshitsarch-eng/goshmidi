@@ -232,12 +232,13 @@ mod tests {
         assert_eq!(seq.info_map["Name"], "Mini Song");
         assert_eq!(
             seq.metadata_info(),
-            "Artist: <b>Mini Artist</b><br/>Copyright: <b>2026</b><br/>\
-             IXYZ: <b>mystery</b><br/>Name: <b>Mini Song</b><br/>"
+            "Artist: Mini Artist\nCopyright: 2026\n\
+             IXYZ: mystery\nName: Mini Song\n"
         );
         // Full event stream, verbatim oracle `EV` rows (sorted order: the
         // SMF parse order is already sorted; beats join in finalize).
-        let rows: Vec<(Kind, i64, i32, i32, i32, i32, i32, u64, String)> = seq
+        type TraceRow = (Kind, i64, i32, i32, i32, i32, i32, u64, String);
+        let rows: Vec<TraceRow> = seq
             .events()
             .iter()
             .map(|ev| {
@@ -295,24 +296,24 @@ mod tests {
         bad_smf_data.extend_from_slice(&8u32.to_le_bytes());
         bad_smf_data.extend_from_slice(b"12345678");
         let cases: &[(&str, Vec<u8>, bool, &str)] = &[
-            ("empty", vec![], false, "Not a RIFF file<br/>"),
+            ("empty", vec![], false, "Not a RIFF file\n"),
             (
                 "short",
                 b"RIFF\x04\0\0\0".to_vec(),
                 false,
-                "Not a RIFF file<br/>",
+                "Not a RIFF file\n",
             ),
             (
                 "non-riff",
                 b"XXXX\x04\0\0\0XXXX".to_vec(),
                 false,
-                "Not a RIFF file<br/>",
+                "Not a RIFF file\n",
             ),
             (
                 "non-rmid",
                 [b"RIFF".as_slice(), &4u32.to_le_bytes(), b"XXXX"].concat(),
                 false,
-                "Not an RMID container<br/>",
+                "Not an RMID container\n",
             ),
             (
                 "no-data",
@@ -326,7 +327,7 @@ mod tests {
                 ]
                 .concat(),
                 false,
-                "RMID container has no MIDI data<br/>",
+                "RMID container has no MIDI data\n",
             ),
             (
                 "short-data",
@@ -340,9 +341,9 @@ mod tests {
                 ]
                 .concat(),
                 false,
-                "RMID container has no MIDI data<br/>",
+                "RMID container has no MIDI data\n",
             ),
-            ("bad-smf", bad_smf_data, false, "Missing MThd header<br/>"),
+            ("bad-smf", bad_smf_data, false, "Missing MThd header\n"),
         ];
         for (name, bytes, ok, errors) in cases {
             let mut seq = Sequence::default();
@@ -357,7 +358,7 @@ mod tests {
         std::fs::write(&path, &cases[4].1).unwrap();
         let mut seq = Sequence::default();
         assert!(!seq.load_file(&path));
-        assert_eq!(seq.loading_errors(), "RMID container has no MIDI data<br/>");
+        assert_eq!(seq.loading_errors(), "RMID container has no MIDI data\n");
     }
 
     /// Lead-confirmed parity (devil fixture): a `JUNK` chunk declaring

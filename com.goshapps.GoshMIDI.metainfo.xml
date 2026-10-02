@@ -7,7 +7,7 @@
     <metadata_license>CC0-1.0</metadata_license>
     <project_license>GPL-3.0-or-later</project_license>
     <description>
-        <p>Gosh MIDI Player is a libcosmic/Rust MIDI file player based on dmidiplayer
+        <p>Gosh MIDI Player is a Rust/Dioxus Desktop MIDI file player based on dmidiplayer
         (Drumstick MIDI File Player) by Pedro López-Cabanillas. The command name remains
         dmidiplayer. Advanced features:</p>
         <ul>
@@ -15,7 +15,7 @@
             <li>Transpose song tonality between -12 and +12 semitones</li>
             <li>Change MIDI volume level (using MIDI CC7)</li>
             <li>Scale song speed between half and double tempo</li>
-            <li>Piano, MIDI Channels, and Lyrics (Karaoke) views, plus dashboard rhythm lamps that follow the meter</li>
+            <li>Piano, MIDI Channels, and Lyrics (Karaoke) views, plus live beat and tempo indicators</li>
             <li>First-class playlists with shuffle, repeat, and auto-advance</li>
             <li>Supports .MID (Standard MIDI files), .RMI (RIFF RMID), .KAR (MIDI Karaoke), and .WRK (Cakewalk) file formats</li>
         </ul>
@@ -30,11 +30,12 @@
     <content_rating type="oars-1.1" />
     <screenshots>
         <screenshot type="default">
-            <image>https://raw.githubusercontent.com/goshitsarch-eng/goshmidi/Main/screenshot.png</image>
+            <image>https://raw.githubusercontent.com/goshitsarch-eng/goshmidi/Main/docs/screenshots/linux-light.png</image>
             <caption>Playing a MIDI file with Gosh MIDI Player</caption>
         </screenshot>
     </screenshots>
     <releases>
+        <release version="2.0.0-alpha.1" date="2026-10-01" type="development" />
         <release version="1.8.0" date="2026-09-12" />
         <release version="1.7.5" date="2024-12-30" />
         <release version="1.7.4" date="2024-08-31" />
