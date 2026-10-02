@@ -42,8 +42,13 @@ flatpak build-bundle flatpak-repo gosh-midi.flatpak com.goshapps.GoshMIDI
 ```
 
 The runtime/SDK and registry source archives are pinned. Build commands run
-Cargo offline with the lockfile. File access uses portals; no host filesystem or
-network sharing is granted. Audio uses the PulseAudio socket. `--device=all` is
+Cargo offline with the lockfile. File access uses portals. Network namespace
+sharing is required for Dioxus's authenticated localhost edit stream to reach
+WebKit's nested Flatpak helpers; the application makes no remote playback requests.
+Flatpak cannot scope this permission to loopback, so it also permits remote network
+access. This requirement was established by installed-app A/B testing: the UI
+was blank without it and passed all nine WebView stages with it.
+Audio uses the PulseAudio socket. `--device=all` is
 retained for `/dev/snd/seq`: Flatpak has no sequencer-only device permission.
 The manifest installs the application, SoundFont/license, examples, icons,
 metadata, notices and man page. Native single-instance activation replaces the
@@ -52,3 +57,7 @@ old D-Bus-only service.
 Install and interact with the built sandbox application before release. A host
 binary or successful manifest parse is insufficient. Check chooser/document
 portal access, clipboard, print portal, audio, external MIDI, theme and scale.
+The managed cloud host passes installed parser/WebView checks but has no FUSE
+device for exporting documents through the portal. External-file grants and
+printing inside Flatpak require further desktop acceptance; native host portal
+success is separate evidence.

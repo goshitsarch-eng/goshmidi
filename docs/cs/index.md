@@ -1,5 +1,8 @@
 % Index nápovědy
 
+> Historical manual: this page describes earlier releases. For the current Rust/Dioxus prerelease, see the [user guide](../USER_GUIDE.md) and [validation record](../VALIDATION.md). Translation updates are pending.
+
+
 ## Úvod
 
 Tato aplikace je multiplatformní MIDI přehrávač souborů pro operační systémy Linux, Windows a 

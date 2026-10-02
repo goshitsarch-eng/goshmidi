@@ -9,7 +9,7 @@ def permissions(root):
   if not path.is_symlink():path.chmod(0o755 if path.is_dir() or path.stat().st_mode&0o111 else 0o644)
 def rust_notices(destination):
  cargo=pathlib.Path(os.environ.get('CARGO_HOME',str(pathlib.Path.home()/'.cargo')))
- registries=list((cargo/'registry/src').glob('*'));records=[]
+ registries=[*list((cargo/'registry/src').glob('*')),cargo/'vendor'];records=[]
  for package in tomllib.loads((ROOT/'Cargo.lock').read_text())['package']:
   if not package.get('source','').startswith('registry+'):continue
   identity=package['name']+'-'+package['version']
@@ -119,7 +119,8 @@ def checksums(dist):
  files=sorted(path for path in dist.iterdir() if path.is_file() and path.name!='SHA256SUMS')
  (dist/'SHA256SUMS').write_text(''.join(hashlib.sha256(path.read_bytes()).hexdigest()+'  '+path.name+'\n' for path in files))
 def main():
- parser=argparse.ArgumentParser();parser.add_argument('--target');parser.add_argument('--runtime');args=parser.parse_args()
+ parser=argparse.ArgumentParser();parser.add_argument('--target');parser.add_argument('--runtime');parser.add_argument('--licenses-only');args=parser.parse_args()
+ if args.licenses_only:rust_notices(pathlib.Path(args.licenses_only));return
  version=tomllib.loads((ROOT/'Cargo.toml').read_text())['package']['version'];host=platform.system();arch=platform.machine().lower();dist=ROOT/'dist';dist.mkdir(exist_ok=True)
  build=ROOT/'target';build=build/args.target if args.target else build;binary=build/'release'/('dmidiplayer.exe' if host=='Windows' else 'dmidiplayer')
  if not binary.is_file():raise RuntimeError('Build the release binary before packaging: '+str(binary))

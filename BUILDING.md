@@ -110,9 +110,14 @@ flatpak build-bundle flatpak-repo gosh-midi.flatpak com.goshapps.GoshMIDI
 ```
 
 Test chooser/document portals, printing, clipboard, real sound and activation
-inside the installed sandbox. The manifest/source checks passed here; installation
-was initially blocked by the cloud network policy; final access checks now
-succeed and installed sandbox validation is in progress.
+inside the installed sandbox. The actual GNOME SDK build, 338 core tests, installed
+parser and nine-stage WebView suite passed here. Document portals still need a
+desktop with working FUSE; the cloud host has no `/dev/fuse`.
+
+The managed cloud machine has no FUSE device. Use
+`flatpak-builder --disable-rofiles-fuse` there, with
+`FLATPAK_USER_DIR=/workspace/goshmidi-environment/flatpak-user` and the environment's
+activation script. That supported copy mode keeps the normal build/runtime sandbox.
 
 ## Checks
 

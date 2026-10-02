@@ -14,6 +14,7 @@ CMakeLists.txt.user*
 /dist/
 /packaging/resources/
 /flatpak/vendor/
+/flatpak/qa.local.yml
 __pycache__/
 *.pyc
 /packaging/windows/vcpkg_installed/

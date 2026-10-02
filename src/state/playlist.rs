@@ -516,7 +516,10 @@ mod tests {
     #[test]
     fn save_failure_reports_false() {
         let mut p = three();
-        assert!(!p.save(Path::new("/nonexistent/dir/out.lst")));
+        let temp = tempfile::tempdir().unwrap();
+        let parent = temp.path().join("parent-file");
+        std::fs::write(&parent, b"not a directory").unwrap();
+        assert!(!p.save(&parent.join("out.lst")));
         // Untouched on failure: items, source, index and dirty flag kept.
         assert_eq!(p.len(), 3);
         assert_eq!(p.source_path(), None);

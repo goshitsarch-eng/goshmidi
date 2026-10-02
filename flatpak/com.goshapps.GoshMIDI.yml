@@ -9,6 +9,9 @@ sdk-extensions:
 command: dmidiplayer
 finish-args:
 - --share=ipc
+# Dioxus streams authenticated edits over localhost. WebKit's nested Flatpak
+# helpers need the shared network namespace to reach that loopback listener.
+- --share=network
 - --socket=fallback-x11
 - --socket=wayland
 - --device=dri
@@ -25,6 +28,7 @@ modules:
   sources:
   - type: archive
     url: https://codeload.github.com/jordansissel/xdotool/tar.gz/f11c44edd4d426d69bcff479b0d643a4da8bc99b
+    archive-type: tar-gzip
     sha256: 48112e7fdddd7bfa66e0b221eb4f1a1602dfefe079d83f072b62953299665641
 - name: fluidsynth
   buildsystem: cmake-ninja
@@ -73,9 +77,11 @@ modules:
   - cargo --offline fetch --locked --manifest-path Cargo.toml
   - cargo --offline build --release --locked
   - cargo --offline test --no-default-features --locked
+  - python3 scripts/package-native.py --licenses-only /app/share/licenses/dmidiplayer/rust
   - install -Dm755 target/release/dmidiplayer /app/bin/dmidiplayer
   - install -Dm644 LICENSE /app/share/licenses/dmidiplayer/LICENSE
   - install -Dm644 THIRD_PARTY_NOTICES.md /app/share/licenses/dmidiplayer/THIRD_PARTY_NOTICES.md
+  - install -Dm644 examples/README.md /app/share/dmidiplayer/README.md
   - install -Dm644 com.goshapps.GoshMIDI.desktop /app/share/applications/com.goshapps.GoshMIDI.desktop
   - install -Dm644 com.goshapps.GoshMIDI.metainfo.xml /app/share/metainfo/com.goshapps.GoshMIDI.metainfo.xml
   - install -Dm644 docs/dmidiplayer.1 /app/share/man/man1/dmidiplayer.1

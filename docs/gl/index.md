@@ -1,5 +1,8 @@
 % Índice de axuda
 
+> Historical manual: this page describes earlier releases. For the current Rust/Dioxus prerelease, see the [user guide](../USER_GUIDE.md) and [validation record](../VALIDATION.md). Translation updates are pending.
+
+
 ## Introdución
 
 Esta aplicación é un reprodutor de ficheiros MIDI multiplataforma para Linux, Windows e

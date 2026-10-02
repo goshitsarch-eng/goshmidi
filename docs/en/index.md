@@ -1,5 +1,8 @@
 % Help Index
 
+> Historical manual: this page describes earlier releases. For the current Rust/Dioxus prerelease, see the [user guide](../USER_GUIDE.md) and [validation record](../VALIDATION.md). Translation updates are pending.
+
+
 ## Introduction
 
 This application is a MIDI file player for Linux. It reads .MID (Standard MIDI Files), .KAR (Karaoke), .RMI (RIFF RMID), and .WRK (Cakewalk) file formats, and outputs MIDI events to ALSA sequencer ports (including your own MT-32, SC-55, or USB MIDI module) and FluidSynth.

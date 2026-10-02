@@ -129,7 +129,7 @@ hardware/platform-dependent live checks remain explicitly distinguished.
 | Follow System/Light/Dark | NOT IMPLEMENTED choice | ui/theme.rs | Old toolkit chooses theme; no persisted explicit user choice | Rebuilt; Linux controls/domain verified | Live OS theme |
 | Language / notesFont keys | DEAD application behavior | config/settings.rs | Persisted, no applied translation or notes font | Language preserved; notesFont now applied | Keep data; don't advertise fake functionality |
 | Windows/macOS packages | NOT IMPLEMENTED | .github/workflows | Native app, installer/bundle and platform QA required | Packagers + CI implemented; native acceptance blocked | OS runners |
-| Flatpak release | UNKNOWN current instance | flatpak/*.yml | Must build/install/run inside sandbox; host success insufficient | Manifest/CI rebuilt; installed check blocked | GNOME/WebKit runtime and portals |
+| Flatpak release | UNKNOWN current instance | flatpak/*.yml | Must build/install/run inside sandbox; host success insufficient | SDK build, installed parser/WebView and bundle checked | GNOME/WebKit runtime and portals |
 
 ## Confirmed defects to address
 
@@ -179,45 +179,45 @@ requires external runtime/access. Current documentation covers every row.
 
 | Feature | Reimplemented | Domain | Linux UI/native | Windows | macOS | Flatpak | Docs |
 |---|---|---|---|---|---|---|---|
-| MID/MIDI/KAR decoding | Yes | Pass | Pass | Compile only | Core compile only | Blocked | Updated |
-| RMI/WRK decoding | Yes | Pass | Pass | Compile only | Core compile only | Blocked | Updated |
-| Open files / multi-select | Yes | Pass | Pass | Compile only | Core compile only | Blocked | Updated |
-| Add songs | Yes | Pass | Pass | Compile only | Core compile only | Blocked | Updated |
-| Drag/drop | Yes | Pass | Source; drop unverified | Compile only | Core compile only | Blocked | Updated |
-| Playlist select / activate | Yes | Pass | Pass | Compile only | Core compile only | Blocked | Updated |
-| Remove / move / clear / shuffle | Yes | Pass | Pass | Compile only | Core compile only | Blocked | Updated |
-| Playlist load/save | Yes | Pass | Pass | Compile only | Core compile only | Blocked | Updated |
-| Play/pause/resume/stop | Yes | Pass | Pass | Compile only | Core compile only | Blocked | Updated |
-| Previous/next / auto advance | Yes | Pass | Pass | Compile only | Core compile only | Blocked | Updated |
-| Seek / bar steps / jump | Yes | Pass | Pass | Compile only | Core compile only | Blocked | Updated |
-| Loop and repeat policies | Yes | Pass | Pass | Compile only | Core compile only | Blocked | Updated |
-| Tempo / volume / transpose | Yes | Pass | Pass | Compile only | Core compile only | Blocked | Updated |
-| Channel mixer | Yes | Pass | Pass | Compile only | Core compile only | Blocked | Updated |
-| GM/GS/MT-32 profiles | Yes | Pass | Pass | Compile only | Core compile only | Blocked | Updated |
-| Lyrics/text filters and charset | Yes | Pass | Pass | Compile only | Core compile only | Blocked | Updated |
-| Lyrics copy/save | Yes | Pass | Pass | Compile only | Core compile only | Blocked | Updated |
-| Lyrics print | Yes | Pass | Pass | Compile only | Core compile only | Blocked | Updated |
-| Lyrics font/color/alignment | Yes | Pass | Pass | Compile only | Core compile only | Blocked | Updated |
-| Piano monitor/audition | Yes | Pass | Pass | Compile only | Core compile only | Blocked | Updated |
-| Piano display preferences | Yes | Pass | Pass | Compile only | Core compile only | Blocked | Updated |
-| MIDI setup/refresh/test/apply | Yes | Pass | Pass | Compile only | Core compile only | Blocked | Updated |
-| FluidSynth + SF2/SF3 | Yes | Pass | Pass | Compile only | Core compile only | Blocked | Updated |
-| ALSA external MIDI | Yes | Pass | No device | Compile only | Core compile only | Blocked | Updated |
-| Dummy output | Yes | Pass | Pass | Compile only | Core compile only | Blocked | Updated |
-| Companion SysEx/reset | Yes | Pass | Device unverified | Compile only | Core compile only | Blocked | Updated |
-| Preferences commit/cancel | Yes | Pass | Pass | Compile only | Core compile only | Blocked | Updated |
-| Song settings load/save/auto | Yes | Pass | Pass | Compile only | Core compile only | Blocked | Updated |
-| Recent files / saved sidebar | Yes | Pass | Pass | Compile only | Core compile only | Blocked | Updated |
-| Window size persistence | Yes | Pass | Pass | Compile only | Core compile only | Blocked | Updated |
-| Menus / nine shortcuts | Yes | Pass | Pass | Compile only | Core compile only | Blocked | Updated |
-| Help/about/browser links | Yes | Pass | Dialogs pass; opener unverified | Compile only | Core compile only | Blocked | Updated |
-| CLI help/version/portable | Yes | Pass | Pass | Compile only | Core compile only | Blocked | Updated |
-| CLI dry-run/dump-info | Yes | Pass | Pass | Compile only | Core compile only | Blocked | Updated |
-| Single-instance/file activation | Yes | Pass | Pass | Compile only | Core compile only | Blocked | Updated |
-| Follow System/Light/Dark | Yes | Pass | Pass | Compile only | Core compile only | Blocked | Updated |
-| Language / notesFont keys | Font applied; language key retained | Pass | Font pass; no translation advertised | Compile only | Core compile only | Blocked | Updated |
-| Windows/macOS packages | Yes | N/A | N/A | Compile only | Core compile only | Blocked | Updated |
-| Flatpak release | Yes | Sources checked | N/A | Compile only | Core compile only | Blocked | Updated |
+| MID/MIDI/KAR decoding | Yes | Pass | Pass | Compile only | Core compile only | SDK + installed pass | Updated |
+| RMI/WRK decoding | Yes | Pass | Pass | Compile only | Core compile only | SDK tests pass | Updated |
+| Open files / multi-select | Yes | Pass | Pass | Compile only | Core compile only | Core pass; portal blocked | Updated |
+| Add songs | Yes | Pass | Pass | Compile only | Core compile only | Core pass; portal blocked | Updated |
+| Drag/drop | Yes | Pass | Source; drop unverified | Compile only | Core compile only | Native unverified | Updated |
+| Playlist select / activate | Yes | Pass | Pass | Compile only | Core compile only | Core pass | Updated |
+| Remove / move / clear / shuffle | Yes | Pass | Pass | Compile only | Core compile only | Core pass; clear guard live | Updated |
+| Playlist load/save | Yes | Pass | Pass | Compile only | Core compile only | Core pass; portal blocked | Updated |
+| Play/pause/resume/stop | Yes | Pass | Pass | Compile only | Core compile only | Live pass | Updated |
+| Previous/next / auto advance | Yes | Pass | Pass | Compile only | Core compile only | Core pass | Updated |
+| Seek / bar steps / jump | Yes | Pass | Pass | Compile only | Core compile only | Live pass | Updated |
+| Loop and repeat policies | Yes | Pass | Pass | Compile only | Core compile only | Live pass | Updated |
+| Tempo / volume / transpose | Yes | Pass | Pass | Compile only | Core compile only | Live pass | Updated |
+| Channel mixer | Yes | Pass | Pass | Compile only | Core compile only | Live pass | Updated |
+| GM/GS/MT-32 profiles | Yes | Pass | Pass | Compile only | Core compile only | Core pass; setup live | Updated |
+| Lyrics/text filters and charset | Yes | Pass | Pass | Compile only | Core compile only | Live pass | Updated |
+| Lyrics copy/save | Yes | Pass | Pass | Compile only | Core compile only | Copy pass; portal blocked | Updated |
+| Lyrics print | Yes | Pass | Pass | Compile only | Core compile only | Native unverified | Updated |
+| Lyrics font/color/alignment | Yes | Pass | Pass | Compile only | Core compile only | Live preferences pass | Updated |
+| Piano monitor/audition | Yes | Pass | Pass | Compile only | Core compile only | Live pass | Updated |
+| Piano display preferences | Yes | Pass | Pass | Compile only | Core compile only | Live pass | Updated |
+| MIDI setup/refresh/test/apply | Yes | Pass | Pass | Compile only | Core compile only | Dummy live pass | Updated |
+| FluidSynth + SF2/SF3 | Yes | Pass | Pass | Compile only | Core compile only | Bundled SF3 audio pass | Updated |
+| ALSA external MIDI | Yes | Pass | No device | Compile only | Core compile only | No device | Updated |
+| Dummy output | Yes | Pass | Pass | Compile only | Core compile only | Live pass | Updated |
+| Companion SysEx/reset | Yes | Pass | Device unverified | Compile only | Core compile only | SDK pass; device unverified | Updated |
+| Preferences commit/cancel | Yes | Pass | Pass | Compile only | Core compile only | Live pass | Updated |
+| Song settings load/save/auto | Yes | Pass | Pass | Compile only | Core compile only | Live save/load pass | Updated |
+| Recent files / saved sidebar | Yes | Pass | Pass | Compile only | Core compile only | Core + live sidebar pass | Updated |
+| Window size persistence | Yes | Pass | Pass | Compile only | Core compile only | Core pass | Updated |
+| Menus / nine shortcuts | Yes | Pass | Pass | Compile only | Core compile only | Menus live; shortcuts open | Updated |
+| Help/about/browser links | Yes | Pass | Dialogs pass; opener unverified | Compile only | Core compile only | Dialogs pass; opener open | Updated |
+| CLI help/version/portable | Yes | Pass | Pass | Compile only | Core compile only | Installed CLI pass | Updated |
+| CLI dry-run/dump-info | Yes | Pass | Pass | Compile only | Core compile only | Installed pass | Updated |
+| Single-instance/file activation | Yes | Pass | Pass | Compile only | Core compile only | Installed activation pass | Updated |
+| Follow System/Light/Dark | Yes | Pass | Pass | Compile only | Core compile only | Live selection pass | Updated |
+| Language / notesFont keys | Font applied; language key retained | Pass | Font pass; no translation advertised | Compile only | Core compile only | Live font; language retained | Updated |
+| Windows/macOS packages | Yes | N/A | N/A | Compile only | Core compile only | N/A | Updated |
+| Flatpak release | Yes | Sources checked | N/A | Compile only | Core compile only | Built, installed, bundled | Updated |
 
 ## Additional migration fixes
 
@@ -237,13 +237,14 @@ requires external runtime/access. Current documentation covers every row.
   report visible errors. Seatless Wayland clipboard access is guarded.
 - Confirmed Quit changes the host window policy to close and exits, rather than
   leaving a hidden process under the temporary dirty/save guard policy.
-- Linux activation uses a private Unix socket, so Flatpak's separate network
-  namespaces do not require network-sharing permission.
+- Linux activation uses a private Unix socket. Dioxus's separate localhost
+  edit stream requires network sharing for WebKit's nested Flatpak helper;
+  installed-app A/B tests established this requirement.
 
 Linux X11 and Wayland WebView suites, native chooser/save/clipboard/PDF,
 nonzero FluidSynth sound and extracted DEB checks passed. The 338 ordinary
 Rust tests pass; a separate explicit live-audio check also passed. Remaining
 Windows/macOS native UI/install, physical MIDI, signing, drop/opener/scale/OS
-theme events and installed Flatpak acceptance remain open. See
+theme events and Flatpak document portals/device checks remain open. See
 [docs/VALIDATION.md](docs/VALIDATION.md) for evidence and blockers. The rewrite
 is intentionally not labeled a completed production migration.

@@ -30,8 +30,8 @@
     <content_rating type="oars-1.1" />
     <screenshots>
         <screenshot type="default">
-            <image>https://raw.githubusercontent.com/goshitsarch-eng/goshmidi/Main/docs/screenshots/linux-light.png</image>
-            <caption>Playing a MIDI file with Gosh MIDI Player</caption>
+            <image>https://raw.githubusercontent.com/goshitsarch-eng/goshmidi/619569f5394db60b95dcd03d7d1fad1d923e8230/docs/screenshots/linux-light.png</image>
+            <caption>Gosh MIDI Player in light mode</caption>
         </screenshot>
     </screenshots>
     <releases>

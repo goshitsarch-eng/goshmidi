@@ -10,7 +10,7 @@ arboard 3 (MIT OR Apache-2.0), and opener 0.8 (MIT OR Apache-2.0) provide the
 UI and portable OS integrations. GTK/WebKitGTK are Linux system WebView and
 clipboard dependencies; WKWebView and WebView2 provide the macOS and Windows
 WebViews. No Node runtime is shipped. Cargo.lock records exact Rust versions
-and checksums. Native packages include an inventory and available license texts
+and checksums. Packages include an inventory and available license texts
 from every locked registry dependency, plus Rust standard library notices.
 
 FluidSynth shared libraries are LGPL-2.1-or-later. Their license is shipped

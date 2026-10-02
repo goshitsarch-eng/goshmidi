@@ -6,9 +6,12 @@ native external MIDI ports. The executable retains the name `dmidiplayer`.
 
 **2.0.0-alpha.1 is a prerelease.** Linux desktop, native dialogs, real audio,
 clipboard, printing and Linux packages have been exercised. Windows desktop
-code and both macOS core targets compile, but native Windows/macOS acceptance
-and an installed Flatpak remain unverified. See [validation](docs/VALIDATION.md)
+code and both macOS core targets compile. The installed Flatpak passes its core
+and WebView checks; native Windows/macOS acceptance and Flatpak document portals
+remain open. See [validation](docs/VALIDATION.md)
 for evidence and remaining release gates.
+
+The [user guide](docs/USER_GUIDE.md) describes the current controls and workflows.
 
 ![Karaoke in the Linux desktop](docs/screenshots/linux-karaoke.png)
 

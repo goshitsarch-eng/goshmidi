@@ -1,5 +1,9 @@
 # hicolor fallback icons — provenance (T14c)
 
+This records the earlier libcosmic frontend's retained assets. The Dioxus
+frontend uses its own controls; current packaging does not install these
+fallback action icons. The provenance and hashes below remain historical.
+
 29 symbolic SVGs installed by the Flatpak module into
 `/app/share/icons/hicolor/scalable/{actions,status}/` as the guaranteed
 fallback for every `icon::from_name` lookup the app and its libcosmic
